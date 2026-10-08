@@ -332,7 +332,6 @@ pub use framing::{encode_envelope, encode_header};
 #[cfg(test)]
 mod checkpoint;
 
-#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use replay::FramedCaptureStep;
 pub(crate) use replay::{same_commit_state, validate_envelope_framing};
 /// Metadata-only binding reused by the native storage participant. The retained

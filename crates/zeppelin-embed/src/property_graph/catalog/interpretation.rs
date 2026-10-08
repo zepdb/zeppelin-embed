@@ -36,6 +36,20 @@ impl<'a> DocumentDeclaration<'a> {
         value.validate()?;
         Ok(value)
     }
+    pub(crate) fn to_tower(self) -> EmbeddingTower {
+        EmbeddingTower {
+            model_id: self.model_id.to_owned(),
+            model_version: self.model_version.to_owned(),
+            weights_digest: self.weights_digest.to_vec(),
+            dims: self.dims,
+            normalization: self.normalization,
+            prompt_prefix: self.prompt_prefix.to_owned(),
+            max_tokens: self.max_tokens,
+            runtime: self.runtime,
+            compute_units: self.compute_units,
+            os_build: self.os_build.map(str::to_owned),
+        }
+    }
     /// Returns declared coordinate count, independent of live vector membership.
     pub const fn dimensions(self) -> u32 {
         self.dims

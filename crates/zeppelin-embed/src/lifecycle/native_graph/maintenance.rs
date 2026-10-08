@@ -163,6 +163,14 @@ fn capture_record_at(
             }
         }
     }
+    for descriptor in capture.reader_objects() {
+        if let Some(record) = take(ProtectedRecord::descriptor(
+            ProtectedClass::Reader,
+            descriptor,
+        )) {
+            return Some(record);
+        }
+    }
     for descriptor in capture.prepared().iter().copied() {
         if let Some(record) = take(ProtectedRecord::descriptor(
             ProtectedClass::PreparedAllocation,

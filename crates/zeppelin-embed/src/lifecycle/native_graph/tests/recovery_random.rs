@@ -137,13 +137,13 @@ fn open(path: &Path, vfs: &Arc<SequenceVfs>, options: OpenOptions) -> Store {
 // with a document/document/graph run. Close immediately after the graph receipt;
 // only recovery consumes the changed WAL sequence count. The byte recorder is
 // below the adapter, so every crash cut contains exactly the bytes written.
-struct SequenceVfs {
+pub(crate) struct SequenceVfs {
     recorded: ByteRecorder<RecordingVfs>,
-    mixed: Arc<std::sync::Mutex<Option<Vec<u128>>>>,
+    pub(crate) mixed: Arc<std::sync::Mutex<Option<Vec<u128>>>>,
 }
 
 impl SequenceVfs {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             recorded: ByteRecorder::new(RecordingVfs::default()),
             mixed: Arc::new(std::sync::Mutex::new(None)),
@@ -210,7 +210,14 @@ impl Vfs for SequenceVfs {
         self.recorded.for_each_direct_child(path, visitor)
     }
     fn delete(&self, path: &Path) -> std::io::Result<()> {
-        self.recorded.delete(path)
+        // StoreLock creates this OS lock file outside Vfs. Its staging cleanup
+        // cannot enter the byte-image model as a delete without a recorded
+        // creation. Engine files and their deletions remain fully recorded.
+        if path.file_name().is_some_and(|name| name == "writer.lock") {
+            self.recorded.inner().delete(path)
+        } else {
+            self.recorded.delete(path)
+        }
     }
 }
 
@@ -759,8 +766,51 @@ pub(super) fn run() {
                             assert_eq!(backup.snapshot().unwrap().generation(), captured);
                             assert!(same_visibility(&visible(&backup, &all_documents), &model));
                         }
+                        model.acknowledge(captured);
+                        // A post-pin export refusal creates no source mutation
+                        // and must leave its writer usable. The existing VFS
+                        // seam fires after the graph checkpoint has completed.
+                        let fault_vfs = vfs.clone();
+                        vfs.recorded.inner().after_next_directory_create(move || {
+                            fault_vfs.recorded.inner().arm_fault(FaultPoint::OpenAppend);
+                        });
+                        let failed_copy = root.as_path().join(format!("snapshot-failed-{index}"));
+                        assert!(matches!(
+                            s.write_snapshot(&failed_copy),
+                            Err(crate::lifecycle::StoreError::Io { .. })
+                        ));
+                        vfs.recorded.inner().assert_fired_once();
+                        assert!(!failed_copy.exists());
+                        // The snapshot retry can acknowledge a graph write of
+                        // its own. Finish that model step before the subsequent
+                        // source mutation, so crash cuts retain each real receipt.
+                        steps.push(Step {
+                            start,
+                            end: vfs.operations().unwrap().len(),
+                            before: before.clone(),
+                            after: model.clone(),
+                            purge: false,
+                        });
+                        start = vfs.operations().unwrap().len();
+                        before = model.clone();
+                        let view = s.open_snapshot().unwrap();
+                        let pinned_model = model.clone();
+                        let (later, generation) =
+                            write_node(s, &format!("after-copy-refusal-{index}"));
+                        model.nodes.insert(later);
+                        assert!(same_visibility(
+                            &visible(&view, &all_documents),
+                            &pinned_model
+                        ));
+                        view.close().unwrap();
+                        model.acknowledge(generation);
+                        // Preserve Snapshot's folded-tail postcondition so the
+                        // existing purge-retry fault remains eligible for seeded
+                        // coverage after this additional acknowledged mutation.
+                        s.checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                            .unwrap();
                         graph_unfolded = false;
-                        captured
+                        s.snapshot().unwrap().generation()
                     }
                     Operation::Oversized => {
                         use crate::lifecycle::StoreError;

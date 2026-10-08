@@ -83,10 +83,9 @@ struct Pinned {
     wal_first_seq: LogSeq,
     wal_records: Vec<VisibleRecord>,
     #[cfg(feature = "graph-cypher")]
-    graph_objects: Vec<(
-        crate::property_graph::storage::artifact::ArtifactId,
-        Vec<u8>,
-    )>,
+    graph_objects: Vec<crate::manifest::GraphObject>,
+    #[cfg(feature = "graph-cypher")]
+    graph_pin: Option<super::native_graph::NativeSnapshotPin>,
 }
 
 impl Store {
@@ -107,7 +106,8 @@ impl Store {
     /// seal and maintenance run during the copy and are absent from the
     /// snapshot. Close cancels an in-flight snapshot
     /// ([`StoreError::ReadCancelled`]); a failed snapshot removes its
-    /// staging directory and never creates `target`.
+    /// staging directory. A parent-directory sync failure may return an error
+    /// after publishing a complete `target`.
     ///
     /// A graph snapshot first checkpoints the graph tail and may advance the
     /// manifest generation. Unabsorbed namespace document writes must be sealed
@@ -173,7 +173,9 @@ impl Store {
         // Fold the graph tail under the locks already excluding every publisher.
         // Its manifest inventory then contains all objects needed by the copy.
         #[cfg(feature = "graph-cypher")]
-        if let Some(through) = self.graph_checkpoint_through(self.vfs.as_ref())? {
+        if writer.durable_end() != 0
+            && let Some(through) = self.graph_checkpoint_through(self.vfs.as_ref())?
+        {
             self.checkpoint_native_graph_locked(writer, active, through, self.vfs.as_ref())
                 .map_err(|error| match error {
                     super::native_graph::NativeGraphError::Store(error) => error,
@@ -195,7 +197,19 @@ impl Store {
         let manifest = self.pinned_manifest(&published)?;
         #[cfg(feature = "graph-cypher")]
         let graph_objects = self.pinned_graph_objects(manifest.as_deref())?;
+        #[cfg(feature = "graph-cypher")]
+        let graph_pin = if published.graph_enabled {
+            Some(self.native_graph.pin_snapshot(&graph_objects)?)
+        } else {
+            None
+        };
         let absorbed_through = published.absorbed_through();
+        #[cfg(feature = "graph-cypher")]
+        let absorbed_through = if published.graph_enabled {
+            absorbed_through.min(published.graph_absorbed_through)
+        } else {
+            absorbed_through
+        };
         let wal_records = writer.unabsorbed_records(absorbed_through)?;
         // Prepared namespace records bind to their original participant directory.
         // A standalone copy cannot carry the parent transaction authority.
@@ -209,49 +223,54 @@ impl Store {
                 detail: "seal namespace document writes before exporting a graph snapshot",
             });
         }
+        let wal_first_seq = LogSeq::new(absorbed_through.saturating_add(1));
+        #[cfg(feature = "graph-cypher")]
+        let wal_first_seq = if published.graph_enabled {
+            // An older graph watermark can precede a retired document-only
+            // prefix. Preserve the retained WAL boundary, including an empty
+            // WAL's durable end, instead of inventing absent records.
+            match wal_records.first() {
+                Some(record) => record.seq,
+                None => LogSeq::new(
+                    writer
+                        .durable_end()
+                        .checked_add(1)
+                        .ok_or(StoreError::GenerationOverflow)?,
+                ),
+            }
+        } else {
+            wal_first_seq
+        };
         drop(active_slot);
         drop(wal);
         drop(state);
         Ok(Pinned {
             lease: SnapshotLease::new_at(published, generation),
             manifest,
-            wal_first_seq: LogSeq::new(absorbed_through.saturating_add(1)),
+            wal_first_seq,
             wal_records,
             #[cfg(feature = "graph-cypher")]
             graph_objects,
+            #[cfg(feature = "graph-cypher")]
+            graph_pin,
         })
     }
 
-    // The enable catalog is small and immutable. Capture its bytes while
-    // the same manifest/WAL lock is held, so the snapshot owns everything
-    // its manifest references before releasing the writer.
+    // ZE-346 checkpoints the entire graph tail before this census. Its
+    // inventory includes prepared objects and reclaim-proof participants, so
+    // no WAL parser or directory enumeration is needed here.
     #[cfg(feature = "graph-cypher")]
     fn pinned_graph_objects(
         &self,
         manifest: Option<&[u8]>,
-    ) -> Result<
-        Vec<(
-            crate::property_graph::storage::artifact::ArtifactId,
-            Vec<u8>,
-        )>,
-        StoreError,
-    > {
-        let mut objects = Vec::new();
-        if let Some(bytes) = manifest {
-            let manifest =
-                decode_manifest("snapshot manifest", bytes).map_err(StoreError::Manifest)?;
-            if let Some(graph) = manifest.graph {
-                for object in graph.objects {
-                    let path = crate::property_graph::storage::allocation::artifact_path(
-                        &self.directory,
-                        object.artifact,
-                    );
-                    let bytes = self.vfs.read(&path).map_err(|source| io(&path, source))?;
-                    objects.push((object.artifact, bytes));
-                }
-            }
+    ) -> Result<Vec<crate::manifest::GraphObject>, StoreError> {
+        match manifest {
+            Some(bytes) => Ok(decode_manifest("snapshot manifest", bytes)
+                .map_err(StoreError::Manifest)?
+                .graph
+                .map_or_else(Vec::new, |graph| graph.objects)),
+            None => Ok(Vec::new()),
         }
-        Ok(objects)
     }
 
     /// Reads the committed manifest and proves it describes `published`.
@@ -263,6 +282,12 @@ impl Store {
         let bytes = match self.vfs.read(&path) {
             Ok(bytes) => bytes,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(feature = "graph-cypher")]
+                if published.graph_enabled {
+                    return Err(StoreError::SnapshotPin {
+                        detail: "the graph-enabled snapshot has no committed manifest",
+                    });
+                }
                 if published.all_segments().is_empty() && published.absorbed_through() == 0 {
                     return Ok(None);
                 }
@@ -405,8 +430,43 @@ fn stage(vfs: &dyn Vfs, staging: &Path, pinned: &Pinned) -> Result<(), StoreErro
         )?;
     }
     #[cfg(feature = "graph-cypher")]
-    for (artifact, bytes) in &pinned.graph_objects {
-        let path = crate::property_graph::storage::allocation::artifact_path(staging, *artifact);
+    for object in &pinned.graph_objects {
+        use crate::property_graph::storage::{
+            NativeReadonlyMapping,
+            allocation::artifact_path,
+            artifact::{self, ContainerKind, MAX_ARTIFACT_BYTES},
+        };
+        let pin = pinned.graph_pin.as_ref().ok_or(StoreError::SnapshotPin {
+            detail: "graph objects have no retention pin",
+        })?;
+        let source = artifact_path(pin.bundle().directory(), object.artifact);
+        let file = pin
+            .bundle()
+            .vfs()
+            .open_for_map(&source)
+            .map_err(|error| io(&source, error))?;
+        let mapping = NativeReadonlyMapping::open_recovery(
+            file,
+            &source,
+            pin.publication(),
+            MAX_ARTIFACT_BYTES,
+        )
+        .map_err(super::native_graph::snapshot_error)?;
+        let bytes = mapping.as_bytes();
+        let frame = artifact::decode(
+            ContainerKind::Object,
+            Some((pin.bundle().base().store, object.artifact)),
+            bytes,
+        )
+        .map_err(|error| {
+            StoreError::Manifest(crate::manifest::ManifestError::Decode(error.to_string()))
+        })?;
+        if bytes.len() as u64 != object.length || frame.file_checksum() != object.checksum {
+            return Err(StoreError::SnapshotPin {
+                detail: "graph object differs from its pinned inventory",
+            });
+        }
+        let path = artifact_path(staging, object.artifact);
         write_file(vfs, &path, lease, bytes.chunks(COPY_CHUNK_BYTES).map(Ok))?;
     }
     write_wal(vfs, &staging.join(WAL_FILE), pinned)?;

@@ -202,3 +202,29 @@ test('snapshot rejects unusable targets and handles', async () => {
     rmSync(backups, { force: true, recursive: true });
   }
 });
+
+test('backupAsync restores graph nodes and relationships in the same store', async (t) => {
+  const { GraphStore, Store, verify } = require('..');
+  if (!GraphStore.isSupported()) { t.skip('graph unavailable'); return; }
+  const root = temporaryRoot('zeppelin-node-backup-graph-');
+  const source = join(root, 'source');
+  const target = join(root, 'backup');
+  try {
+    const graph = GraphStore.open(source, { autoReclaim: false });
+    graph.apply([
+      { kind: 'node', operation: 'create', namespace: 'test', key: 'a', revision: 1n },
+      { kind: 'node', operation: 'create', namespace: 'test', key: 'b', revision: 1n },
+      { kind: 'relationship', operation: 'create', namespace: 'test', key: 'ab', revision: 1n,
+        type: 'LINKS', source: { local: 0 }, target: { local: 1 } },
+    ]);
+    graph.close();
+    const store = new Store(source, FAST);
+    try { await store.backupAsync(target); } finally { store.close(); }
+    assert.equal(verify(target).findings.length, 0);
+    for (const mode of ['readOnly', 'readWrite']) {
+      const restored = GraphStore.open(target, { mode });
+      try { assert.deepEqual(restored.cypher('MATCH (a)-[:LINKS]->(b) RETURN count(a)').rows, [[1n]]); }
+      finally { restored.close(); }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

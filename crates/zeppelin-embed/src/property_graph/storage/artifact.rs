@@ -198,6 +198,9 @@ impl ArtifactFrame<'_> {
     pub const fn kind(&self) -> ContainerKind {
         self.kind
     }
+    pub(crate) const fn file_checksum(&self) -> u64 {
+        self.file_checksum
+    }
     pub(crate) const fn validation(&self) -> ValidatedArtifact {
         ValidatedArtifact {
             identity: self.identity,

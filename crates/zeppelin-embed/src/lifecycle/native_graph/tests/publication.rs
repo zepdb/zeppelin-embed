@@ -297,6 +297,7 @@ pub(crate) struct RecordingVfs {
     wal_sync_gate: SyncGate,
     faults: Arc<Mutex<FaultSchedule>>,
     after_create: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    after_directory_create: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     after_manifest_version: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     after_selector_sync: Mutex<Option<ManifestSyncHook>>,
     list_calls: AtomicU64,
@@ -403,6 +404,16 @@ impl RecordingVfs {
         assert!(previous.is_none());
     }
 
+    pub(crate) fn after_next_directory_create(&self, action: impl FnOnce() + Send + 'static) {
+        assert!(
+            self.after_directory_create
+                .lock()
+                .unwrap()
+                .replace(Box::new(action))
+                .is_none()
+        );
+    }
+
     pub(crate) fn after_create_is_armed(&self) -> bool {
         self.after_create
             .lock()
@@ -471,12 +482,31 @@ impl VfsFile for RecordingFile {
     }
 
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
-        if kind == SyncKind::Full && self.path.file_name().is_some_and(|name| name == "wal.ze") {
+        let point = if self
+            .path
+            .extension()
+            .is_some_and(|extension| extension == "zgraph")
+        {
+            Some(FaultPoint::ObjectSync)
+        } else if self.path.file_name().is_some_and(|name| name == "wal.ze") {
+            Some(FaultPoint::WalSync)
+        } else {
+            None
+        };
+        if kind == SyncKind::Full
+            && let Some(point) = point
+        {
             let mut faults = self.faults.lock().expect("fault schedule");
-            if faults.armed == Some(FaultPoint::WalSync) {
+            if faults.armed == Some(point) && faults.skip > 0 {
+                faults.skip -= 1;
+            } else if faults.armed == Some(point) {
                 faults.armed = None;
                 faults.fires += 1;
-                return Err(std::io::Error::other("scheduled WAL Full-sync failure"));
+                return Err(std::io::Error::other(if point == FaultPoint::WalSync {
+                    "scheduled WAL Full-sync failure"
+                } else {
+                    "scheduled graph Full-sync failure"
+                }));
             }
         }
         self.inner.sync(kind)?;
@@ -513,7 +543,15 @@ impl Vfs for RecordingVfs {
     }
 
     fn create_directory(&self, path: &Path) -> std::io::Result<()> {
-        StdVfs.create_directory(path)
+        StdVfs.create_directory(path)?;
+        if let Some(action) = self.after_directory_create.lock().unwrap().take() {
+            action();
+        }
+        Ok(())
+    }
+
+    fn remove_directory(&self, path: &Path) -> std::io::Result<()> {
+        StdVfs.remove_directory(path)
     }
 
     fn open(&self, path: &Path) -> std::io::Result<u64> {
@@ -3952,4 +3990,763 @@ fn ze76_ordered_commit_counts_only_full_syncs() {
     assert_eq!(after.full_sync_attempts - before.full_sync_attempts, 0);
     assert_eq!(after.full_sync_successes - before.full_sync_successes, 0);
     store.close().unwrap();
+}
+
+#[cfg(test)]
+mod snapshot {
+    use super::*;
+
+    fn write_node(store: &Store, key: &str) -> NodeId {
+        let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let receipts = store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "snapshot", key).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&contents)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .unwrap();
+        match receipts[0].entity {
+            EntityId::Node(node) => node,
+            _ => panic!("node receipt"),
+        }
+    }
+
+    #[test]
+    fn open_snapshot_pins_the_graph_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        store.enable_graph().unwrap();
+        let old = write_node(&store, "old");
+        let original = store.admit_native_read().unwrap().bundle().base();
+        let view = store.open_snapshot().unwrap();
+        assert_eq!(view.admit_native_read().unwrap().bundle().base(), original);
+        let new = write_node(&store, "new");
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        store
+            .maintain_native_graph_cycle(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        store.close().unwrap();
+        assert_eq!(view.admit_native_read().unwrap().bundle().base(), original);
+        assert!(super::super::recovery::observe_node(&view, old).is_some());
+        assert!(super::super::recovery::observe_node(&view, new).is_none());
+        assert!(Store::open(directory.path(), OpenOptions::new()).is_err());
+        view.close().unwrap();
+        Store::open(directory.path(), OpenOptions::new())
+            .unwrap()
+            .close()
+            .unwrap();
+    }
+
+    #[test]
+    fn write_snapshot_copies_every_reachable_zgraph() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("source"), OpenOptions::new()).unwrap();
+        store.enable_graph().unwrap();
+        let target = root.path().join("empty");
+        store.write_snapshot(&target).unwrap();
+        for access in [
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+        ] {
+            let restored =
+                Store::open(&target, OpenOptions::new().with_access_mode(access)).unwrap();
+            assert!(restored.admit_native_read().is_ok());
+            restored.close().unwrap();
+        }
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn mixed_runs_restore_documents_nodes_and_edges_before_and_after_seal() {
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        for graph_first in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let vfs = Arc::new(super::super::recovery::SequenceVfs::new());
+            let store = Store::open_with_test_dependencies(
+                &source,
+                super::super::recovery::native_options(),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::SystemMonotonicClock),
+                ),
+            )
+            .unwrap();
+            store.enable_graph().unwrap();
+            write_node(&store, "before-mixed-run");
+            *vfs.mixed.lock().unwrap() = Some(vec![101, 102]);
+            let a = write_node(&store, "a");
+            drop(store);
+            let store = Store::open(&source, super::super::recovery::native_options()).unwrap();
+            let b = write_node(&store, "b");
+            let edge = store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Relationship, "snapshot", "ab")
+                            .unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Relationship {
+                            source: NodeRef::Existing(a),
+                            target: NodeRef::Existing(b),
+                            relationship_type: GraphName::new("LINKS").unwrap(),
+                            properties: &[],
+                        }),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .unwrap();
+            if graph_first {
+                store
+                    .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                    .unwrap();
+                store
+                    .ingest(IngestBatch::new(vec![IngestDocument::new(
+                        DocumentVersion::new(DocId::new(103), Revision::new(1)),
+                        vec![1.0, 0.0],
+                    )]))
+                    .unwrap();
+                store.seal().unwrap();
+            }
+            let target = root.path().join("copy");
+            let captured = store.write_snapshot(&target).unwrap();
+            let manifest = crate::manifest::decode_manifest(
+                "manifest",
+                &std::fs::read(target.join("manifest.ze")).unwrap(),
+            )
+            .unwrap();
+            let graph = manifest.graph.as_ref().unwrap();
+            if graph_first {
+                assert_eq!(manifest.log_seq, graph.graph_absorbed_through);
+            } else {
+                assert!(manifest.log_seq < graph.graph_absorbed_through);
+            }
+            for object in &graph.objects {
+                assert!(
+                    crate::property_graph::storage::allocation::artifact_path(
+                        &target,
+                        object.artifact
+                    )
+                    .is_file()
+                );
+            }
+            for access in [
+                crate::lifecycle::AccessMode::ReadOnly,
+                crate::lifecycle::AccessMode::ReadWrite,
+            ] {
+                let restored = Store::open(
+                    &target,
+                    super::super::recovery::native_options().with_access_mode(access),
+                )
+                .unwrap();
+                assert_eq!(restored.snapshot().unwrap().generation(), captured);
+                assert_eq!(
+                    restored.count_documents(None, None).unwrap().count,
+                    if graph_first { 3 } else { 2 }
+                );
+                assert!(super::super::recovery::observe_node(&restored, a).is_some());
+                assert!(super::super::recovery::observe_node(&restored, b).is_some());
+                let lease = restored.admit_native_read().unwrap();
+                let rows = out_rows_for_lease(&restored, &lease, a, b);
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].source, a);
+                assert_eq!(rows[0].target, b);
+                assert_eq!(EntityId::Relationship(rows[0].rel), edge[0].entity);
+                drop(lease);
+                restored.close().unwrap();
+            }
+            store.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn document_watermark_ahead_of_empty_graph_restores() {
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let options = super::super::recovery::native_options();
+        let store = Store::open(&source, options.clone()).unwrap();
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(100), Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .unwrap();
+        store.seal().unwrap();
+        store.enable_graph().unwrap();
+        drop(store);
+        let path = source.join("manifest.ze");
+        let mut manifest =
+            crate::manifest::decode_manifest("manifest", &std::fs::read(&path).unwrap()).unwrap();
+        // Seal currently advances both watermarks. An initial empty graph can
+        // cover no graph WAL records while documents cover the sealed prefix.
+        // Keep its real checkpoint/inventory and lower only that mark.
+        manifest.graph.as_mut().unwrap().graph_absorbed_through = 0;
+        assert!(manifest.log_seq > manifest.graph.as_ref().unwrap().graph_absorbed_through);
+        let before = crate::manifest::encode_manifest(&manifest).unwrap();
+        std::fs::write(&path, &before).unwrap();
+        // Prove this unequal-watermark fixture is a valid source before export.
+        let store = Store::open(&source, options.clone()).unwrap();
+        let target = root.path().join("copy");
+        let generation = store.write_snapshot(&target).unwrap();
+        assert_eq!(std::fs::read(target.join("manifest.ze")).unwrap(), before);
+        for access in [
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+        ] {
+            let restored = Store::open(&target, options.clone().with_access_mode(access)).unwrap();
+            assert_eq!(restored.snapshot().unwrap().generation(), generation);
+            assert_eq!(restored.count_documents(None, None).unwrap().count, 1);
+            assert!(restored.admit_native_read().is_ok());
+            restored.close().unwrap();
+        }
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn open_snapshot_installs_the_graph_bundle_read_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        let node = write_node(&store, "original");
+        vfs.clear_events();
+        let before = super::super::recovery::file_snapshot(directory.path());
+        let view = store.open_snapshot().unwrap();
+        assert!(super::super::recovery::observe_node(&view, node).is_some());
+        assert!(matches!(
+            view.enable_graph(),
+            Err(crate::lifecycle::StoreError::ReadOnly)
+        ));
+        assert!(matches!(
+            view.maintain_native_graph_cycle(&QueryControl::Cancel(CancelToken::new())),
+            Err(crate::lifecycle::native_graph::NativeGraphError::Store(
+                crate::lifecycle::StoreError::ReadOnly
+            ))
+        ));
+        let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        assert!(matches!(
+            view.apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "snapshot", "refused").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&contents)),
+                }],
+                &QueryControl::Cancel(CancelToken::new())
+            ),
+            Err(crate::lifecycle::native_graph::NativeGraphError::Store(
+                crate::lifecycle::StoreError::ReadOnly
+            ))
+        ));
+        assert!(vfs.take().is_empty());
+        assert_eq!(
+            before,
+            super::super::recovery::file_snapshot(directory.path())
+        );
+        view.close().unwrap();
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn copy_pin_protects_replay_objects_during_reclaim() {
+        for steps in 0..=2 {
+            let root = tempfile::tempdir().unwrap();
+            let vfs = Arc::new(RecordingVfs::default());
+            let store = Arc::new(
+                Store::open_with_test_dependencies(
+                    root.path().join("source"),
+                    super::super::recovery::native_options(),
+                    crate::lifecycle::StoreTestDependencies::new(
+                        vfs.clone(),
+                        Arc::new(crate::lifecycle::SystemMonotonicClock),
+                    ),
+                )
+                .unwrap(),
+            );
+            store.enable_graph().unwrap();
+            let old = write_node(&store, "original");
+            for _ in 0..steps {
+                store
+                    .maintain_native_graph_step(&QueryControl::Cancel(CancelToken::new()))
+                    .unwrap();
+            }
+            let source = store.clone();
+            let new_node = Arc::new(Mutex::new(None));
+            let created = new_node.clone();
+            *vfs.after_directory_create.lock().unwrap() = Some(Box::new(move || {
+                *created.lock().unwrap() = Some(write_node(&source, "later"));
+                for _ in 0..4 {
+                    let report = source
+                        .maintain_native_graph_step(&QueryControl::Cancel(CancelToken::new()))
+                        .unwrap();
+                    if report.cycle_complete {
+                        break;
+                    }
+                }
+            }));
+            let target = root.path().join("copy");
+            let captured = store.write_snapshot(&target).unwrap();
+            let new = new_node
+                .lock()
+                .unwrap()
+                .expect("mutation while copy is pinned");
+            for access in [
+                crate::lifecycle::AccessMode::ReadOnly,
+                crate::lifecycle::AccessMode::ReadWrite,
+            ] {
+                let restored = Store::open(
+                    &target,
+                    super::super::recovery::native_options().with_access_mode(access),
+                )
+                .unwrap();
+                // Writable open resumes a copied pending reclaim, which is a
+                // subsequent publication. Read-only open preserves the pin.
+                if access == crate::lifecycle::AccessMode::ReadOnly {
+                    assert_eq!(restored.snapshot().unwrap().generation(), captured);
+                } else {
+                    assert!(restored.snapshot().unwrap().generation() >= captured);
+                }
+                assert!(super::super::recovery::observe_node(&restored, old).is_some());
+                assert!(super::super::recovery::observe_node(&restored, new).is_none());
+                restored.close().unwrap();
+            }
+            store.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn graph_copy_io_cancellation_and_parent_sync_obey_publication_boundary() {
+        for (point, skip, published) in [
+            (FaultPoint::OpenAppend, 0, false),
+            (FaultPoint::Append, 0, false),
+            (FaultPoint::PartialAppend, 0, false),
+            (FaultPoint::ObjectSync, 0, false),
+            (FaultPoint::WalSync, 0, false),
+            (FaultPoint::Rename, 0, false),
+            (FaultPoint::DirectorySync, 0, false),
+            (FaultPoint::DirectorySync, 1, true),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let vfs = Arc::new(RecordingVfs::default());
+            let store = Store::open_with_test_dependencies(
+                root.path().join("source"),
+                super::super::recovery::native_options(),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::SystemMonotonicClock),
+                ),
+            )
+            .unwrap();
+            store.enable_graph().unwrap();
+            let before = super::super::recovery::file_snapshot(&store.directory);
+            vfs.arm_fault_after(point, skip);
+            let target = root.path().join("copy");
+            assert!(store.write_snapshot(&target).is_err(), "{point:?}/{skip}");
+            vfs.assert_fired_once();
+            assert_eq!(target.exists(), published, "{point:?}/{skip}");
+            assert_eq!(
+                super::super::recovery::file_snapshot(&store.directory),
+                before
+            );
+            assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            }));
+            if published {
+                for access in [
+                    crate::lifecycle::AccessMode::ReadOnly,
+                    crate::lifecycle::AccessMode::ReadWrite,
+                ] {
+                    let restored = Store::open(
+                        &target,
+                        super::super::recovery::native_options().with_access_mode(access),
+                    )
+                    .unwrap();
+                    assert!(restored.admit_native_read().is_ok());
+                    restored.close().unwrap();
+                }
+            }
+            write_node(&store, "after-export-refusal");
+            store.close().unwrap();
+        }
+        let root = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Arc::new(
+            Store::open_with_test_dependencies(
+                root.path().join("source"),
+                super::super::recovery::native_options()
+                    .with_reader_drain_timeout(std::time::Duration::ZERO),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::SystemMonotonicClock),
+                ),
+            )
+            .unwrap(),
+        );
+        store.enable_graph().unwrap();
+        let source = store.clone();
+        let cancellation = store.snapshot().unwrap();
+        let closer = Arc::new(Mutex::new(None));
+        let close_thread = closer.clone();
+        vfs.after_next_directory_create(move || {
+            *close_thread.lock().unwrap() =
+                Some(std::thread::spawn(move || source.close().unwrap()));
+            cancellation.wait_for_close_cancellation().unwrap();
+        });
+        let target = root.path().join("cancelled");
+        assert!(matches!(
+            store.write_snapshot(&target),
+            Err(crate::lifecycle::StoreError::ReadCancelled)
+        ));
+        closer.lock().unwrap().take().unwrap().join().unwrap();
+        assert!(!target.exists());
+        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+    }
+
+    #[test]
+    fn missing_graph_manifest_refuses_export_without_fencing() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("source"), OpenOptions::new()).unwrap();
+        store.enable_graph().unwrap();
+        let path = store.directory.join("manifest.ze");
+        let manifest = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let before = super::super::recovery::file_snapshot(&store.directory);
+        let target = root.path().join("copy");
+        let result = store.write_snapshot(&target);
+        assert!(
+            matches!(
+                result,
+                Err(crate::lifecycle::StoreError::SnapshotPin { .. })
+            ),
+            "{result:?}"
+        );
+        assert!(!target.exists());
+        assert_eq!(
+            before,
+            super::super::recovery::file_snapshot(&store.directory)
+        );
+        std::fs::write(path, manifest).unwrap();
+        write_node(&store, "after-manifest-refusal");
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn graph_copy_failure_never_publishes_a_partial_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            root.path().join("source"),
+            OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        let manifest = crate::manifest::decode_manifest(
+            "manifest",
+            &std::fs::read(store.directory.join("manifest.ze")).unwrap(),
+        )
+        .unwrap();
+        let object = manifest.graph.unwrap().objects[0];
+        let path = crate::property_graph::storage::allocation::artifact_path(
+            &store.directory,
+            object.artifact,
+        );
+        let original = std::fs::read(&path).unwrap();
+        let mut damaged = original.clone();
+        damaged[100] ^= 1;
+        let corrupt_path = path.clone();
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fault_fired = fired.clone();
+        *vfs.after_directory_create.lock().unwrap() = Some(Box::new(move || {
+            std::fs::write(&corrupt_path, &damaged).unwrap();
+            fault_fired.store(true, Ordering::Release);
+        }));
+        let target = root.path().join("copy");
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        let result = store.write_snapshot(&target);
+        std::fs::write(&path, original).unwrap();
+        assert!(fired.load(Ordering::Acquire), "post-pin corruption fired");
+        assert!(
+            matches!(&result, Err(crate::lifecycle::StoreError::Manifest(_))),
+            "copy validation error: {result:?}"
+        );
+        assert!(!target.exists());
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(after, before, "no staging directory survives");
+        write_node(&store, "after-definite-refusal");
+        store.close().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod verify {
+    use super::*;
+
+    #[test]
+    fn reports_a_corrupt_zgraph() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        store.enable_graph().unwrap();
+        drop(store);
+        let manifest = crate::manifest::decode_manifest(
+            "manifest",
+            &std::fs::read(directory.path().join("manifest.ze")).unwrap(),
+        )
+        .unwrap();
+        let object = manifest.graph.unwrap().objects[0];
+        let path = crate::property_graph::storage::allocation::artifact_path(
+            directory.path(),
+            object.artifact,
+        );
+        let mut damaged = std::fs::read(&path).unwrap();
+        damaged[100] ^= 1;
+        std::fs::write(&path, &damaged).unwrap();
+        let report = crate::verify::verify_store(directory.path()).unwrap();
+        assert_eq!(report.findings.len(), 1, "{report:?}");
+        assert_eq!(report.findings[0].kind.as_str(), "graphObjectCorrupt");
+        assert_eq!(
+            report.findings[0].file,
+            path.file_name().unwrap().to_str().unwrap()
+        );
+        assert_eq!(std::fs::read(path).unwrap(), damaged);
+    }
+    #[test]
+    fn validates_graph_replay_without_mutating_the_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        drop(store);
+        let path = directory.path().join("manifest.ze");
+        let mut manifest =
+            crate::manifest::decode_manifest("manifest", &std::fs::read(&path).unwrap()).unwrap();
+        let graph = manifest.graph.take().unwrap();
+        let mut state = graph.state().unwrap();
+        state.high_waters.node = 1;
+        manifest.graph = Some(
+            crate::manifest::GraphManifest::new(
+                state,
+                graph.graph_absorbed_through,
+                graph.objects.clone(),
+            )
+            .unwrap(),
+        );
+        std::fs::write(&path, crate::manifest::encode_manifest(&manifest).unwrap()).unwrap();
+        let before = super::super::recovery::file_snapshot(directory.path());
+        vfs.clear_events();
+        let report = crate::verify::verify_store_on_vfs(vfs.as_ref(), directory.path()).unwrap();
+        assert_eq!(report.findings.len(), 1, "{report:?}");
+        assert_eq!(report.findings[0].kind.as_str(), "graphInventoryInvalid");
+        assert_eq!(
+            before,
+            super::super::recovery::file_snapshot(directory.path())
+        );
+        assert!(vfs.take().is_empty());
+    }
+
+    #[test]
+    fn missing_truncated_and_wrong_identity_objects_are_reported_without_writes() {
+        for shape in [0, 1, 2] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+            store.enable_graph().unwrap();
+            drop(store);
+            let manifest = crate::manifest::decode_manifest(
+                "manifest",
+                &std::fs::read(directory.path().join("manifest.ze")).unwrap(),
+            )
+            .unwrap();
+            let object = manifest.graph.unwrap().objects[0];
+            let path = crate::property_graph::storage::allocation::artifact_path(
+                directory.path(),
+                object.artifact,
+            );
+            match shape {
+                0 => std::fs::remove_file(&path).unwrap(),
+                1 => std::fs::write(&path, [0; 16]).unwrap(),
+                _ => {
+                    let other = tempfile::tempdir().unwrap();
+                    let store = Store::open(other.path(), OpenOptions::new()).unwrap();
+                    store.enable_graph().unwrap();
+                    drop(store);
+                    let other_manifest = crate::manifest::decode_manifest(
+                        "manifest",
+                        &std::fs::read(other.path().join("manifest.ze")).unwrap(),
+                    )
+                    .unwrap();
+                    let other_object = other_manifest.graph.unwrap().objects[0];
+                    let bytes =
+                        std::fs::read(crate::property_graph::storage::allocation::artifact_path(
+                            other.path(),
+                            other_object.artifact,
+                        ))
+                        .unwrap();
+                    std::fs::write(&path, bytes).unwrap();
+                }
+            }
+            let before = super::super::recovery::file_snapshot(directory.path());
+            let report = crate::verify::verify_store(directory.path()).unwrap();
+            assert_eq!(report.findings.len(), 1, "{shape}: {report:?}");
+            assert_eq!(
+                report.findings[0].kind.as_str(),
+                if shape == 0 {
+                    "graphObjectMissing"
+                } else {
+                    "graphObjectCorrupt"
+                }
+            );
+            assert_eq!(
+                report.findings[0].file,
+                path.file_name().unwrap().to_str().unwrap()
+            );
+            assert_eq!(
+                before,
+                super::super::recovery::file_snapshot(directory.path())
+            );
+        }
+    }
+
+    #[test]
+    fn valid_graph_tail_and_pending_reclaim_are_verified_without_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            super::super::recovery::native_options(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        super::super::recovery::commit_tail_test_node(&store, "first");
+        super::super::recovery::commit_tail_test_node(&store, "second");
+        for step in 0..=4 {
+            let before = super::super::recovery::file_snapshot(directory.path());
+            vfs.clear_events();
+            let report =
+                crate::verify::verify_store_on_vfs(vfs.as_ref(), directory.path()).unwrap();
+            assert!(
+                report.findings.is_empty(),
+                "maintenance step {step}: {report:?}"
+            );
+            assert_eq!(
+                before,
+                super::super::recovery::file_snapshot(directory.path())
+            );
+            assert!(vfs.take().is_empty());
+            if step == 0 {
+                store
+                    .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                    .unwrap();
+            } else {
+                store
+                    .maintain_native_graph_step(&QueryControl::Cancel(CancelToken::new()))
+                    .unwrap();
+            }
+        }
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn reports_every_corrupt_tail_only_object() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            Store::open(directory.path(), super::super::recovery::native_options()).unwrap();
+        store.enable_graph().unwrap();
+        super::super::recovery::commit_tail_test_node(&store, "tail-a");
+        super::super::recovery::commit_tail_test_node(&store, "tail-b");
+        drop(store);
+        let manifest = crate::manifest::decode_manifest(
+            "manifest",
+            &std::fs::read(directory.path().join("manifest.ze")).unwrap(),
+        )
+        .unwrap();
+        let inventory: std::collections::BTreeSet<_> = manifest
+            .graph
+            .unwrap()
+            .objects
+            .iter()
+            .map(|object| {
+                crate::property_graph::storage::allocation::artifact_path(
+                    directory.path(),
+                    object.artifact,
+                )
+            })
+            .collect();
+        let mut tails: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "zgraph")
+                    && !inventory.contains(path)
+            })
+            .collect();
+        tails.sort();
+        assert!(tails.len() >= 2, "two independent tail-only files");
+        let mut expected = std::collections::BTreeSet::new();
+        for path in tails.iter().take(2) {
+            let mut bytes = std::fs::read(path).unwrap();
+            bytes[100] ^= 1;
+            std::fs::write(path, bytes).unwrap();
+            expected.insert(path.file_name().unwrap().to_str().unwrap().to_owned());
+        }
+        let before = super::super::recovery::file_snapshot(directory.path());
+        let report = crate::verify::verify_store(directory.path()).unwrap();
+        let actual: std::collections::BTreeSet<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.kind.as_str() == "graphObjectCorrupt")
+            .map(|finding| finding.file.clone())
+            .collect();
+        assert_eq!(actual, expected, "{report:?}");
+        assert_eq!(
+            before,
+            super::super::recovery::file_snapshot(directory.path())
+        );
+    }
 }

@@ -10,6 +10,8 @@ pub(super) struct SnapshotPin {
     // A source closed before its views must not permit a new writer to reclaim
     // their retired files through open-time orphan cleanup.
     _writer: Arc<StoreLock>,
+    #[cfg(feature = "graph-cypher")]
+    _graph: Option<super::native_graph::NativeSnapshotPin>,
 }
 
 impl Drop for SnapshotPin {
@@ -59,10 +61,18 @@ impl Store {
         let published = published.as_ref().ok_or(StoreError::Closed)?;
         let snapshot = published.fork_read_view(&self.accounting)?;
         #[cfg(feature = "graph-cypher")]
-        let native_graph = super::native_graph::NativeGraphPublication::new(
-            &self.accounting,
-            published.graph_enabled,
-        )?;
+        let graph_pin = if published.graph_enabled {
+            Some(self.native_graph.pin_snapshot(&[])?)
+        } else {
+            None
+        };
+        #[cfg(feature = "graph-cypher")]
+        let native_graph = match graph_pin.as_ref() {
+            Some(pin) => {
+                super::native_graph::NativeGraphPublication::fork_snapshot(&self.accounting, pin)?
+            }
+            None => super::native_graph::NativeGraphPublication::new(&self.accounting, false)?,
+        };
         self.snapshot_pins
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_add(1)
@@ -71,6 +81,8 @@ impl Store {
         let pin = SnapshotPin {
             count: Arc::clone(&self.snapshot_pins),
             _writer: writer,
+            #[cfg(feature = "graph-cypher")]
+            _graph: graph_pin,
         };
         Ok(Self {
             private_preparation: None,

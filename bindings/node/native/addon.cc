@@ -1754,6 +1754,12 @@ const char *VerifyFindingKindName(uint32_t kind) {
     return "unreadable";
   case ZE_VERIFY_PURGE_INTENT_CORRUPT:
     return "purgeIntentCorrupt";
+  case ZE_VERIFY_GRAPH_OBJECT_MISSING:
+    return "graphObjectMissing";
+  case ZE_VERIFY_GRAPH_OBJECT_CORRUPT:
+    return "graphObjectCorrupt";
+  case ZE_VERIFY_GRAPH_INVENTORY_INVALID:
+    return "graphInventoryInvalid";
   default:
     return nullptr;
   }

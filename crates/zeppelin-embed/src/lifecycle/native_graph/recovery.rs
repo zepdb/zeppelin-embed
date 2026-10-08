@@ -33,7 +33,6 @@ use crate::property_graph::storage::tree::{
         TreeResources, lookup_entry, lookup_fence_entry, verify_directory,
     },
 };
-#[cfg(any(test, feature = "test-seams"))]
 use crate::property_graph::wal::FramedCaptureStep;
 use crate::property_graph::wal::{
     ArtifactDescriptor, Change, ChangeReader, CommitState, InventoryChange, InventoryState,
@@ -577,21 +576,44 @@ fn validate_inventory_fold_transition(
     Ok(())
 }
 
+/// The semantic validator only needs reads, mapping accounting and lexical
+/// interpretation. Verification supplies these without opening a Store.
+pub(super) trait RecoveryRead {
+    fn vfs(&self) -> &dyn Vfs;
+    fn publication(&self) -> &Arc<super::NativeGraphPublication>;
+    fn lexical(&self) -> crate::fts::tokenizer::TokenizerEpoch;
+    fn observe_mapping(&self, path: &Path);
+}
+
+impl RecoveryRead for Store {
+    fn vfs(&self) -> &dyn Vfs {
+        self.vfs.as_ref()
+    }
+    fn publication(&self) -> &Arc<super::NativeGraphPublication> {
+        &self.native_graph
+    }
+    fn lexical(&self) -> crate::fts::tokenizer::TokenizerEpoch {
+        self.tokenizer.epoch()
+    }
+    fn observe_mapping(&self, _: &Path) {}
+}
+
 fn map_file(
-    store: &Store,
+    store: &dyn RecoveryRead,
     path: &Path,
     maximum: usize,
 ) -> Result<NativeReadonlyMapping, NativeGraphError> {
+    store.observe_mapping(path);
     #[cfg(test)]
     let timer = ReopenTimer::new("mapping", 0);
     let file = store
-        .vfs
+        .vfs()
         .open_for_map(path)
         .map_err(|source| NativeGraphError::Io {
             path: path.to_path_buf(),
             source,
         })?;
-    let result = NativeReadonlyMapping::open_recovery(file, path, &store.native_graph, maximum);
+    let result = NativeReadonlyMapping::open_recovery(file, path, store.publication(), maximum);
     #[cfg(test)]
     {
         let mut timer = timer;
@@ -630,7 +652,7 @@ pub(super) enum CapturedStateVisit<'a> {
 /// Test oracle over the manifest checkpoint and the single outer WAL.
 #[cfg(any(test, feature = "test-seams"))]
 pub(super) fn visit_captured_state(
-    store: &Store,
+    store: &dyn RecoveryRead,
     directory: &Path,
     bundle: &super::NativeGraphBundle,
     target_sequence: u64,
@@ -638,11 +660,11 @@ pub(super) fn visit_captured_state(
     control: &QueryControl,
     mut visit: impl FnMut(CapturedStateVisit<'_>, &mut WalResources<'_>) -> Result<(), NativeGraphError>,
 ) -> Result<(), NativeGraphError> {
-    let reader = crate::wal::WalReader::open(store.vfs.as_ref(), &directory.join("wal.ze"))
+    let reader = crate::wal::WalReader::open(store.vfs(), &directory.join("wal.ze"))
         .map_err(|error| NativeGraphError::Store(crate::lifecycle::StoreError::Wal(error)))?;
     use crate::manifest::io::DurableLog as _;
     let manifest = crate::manifest::io::load_manifest(
-        store.vfs.as_ref(),
+        store.vfs(),
         &directory.join("manifest.ze"),
         reader.durable_end(),
     )
@@ -733,7 +755,7 @@ struct RecoveryArtifactWindow<'source, 'store, 'm> {
 }
 
 struct RecoverySource<'a, 'm> {
-    store: &'a Store,
+    store: &'a dyn RecoveryRead,
     directory: &'a Path,
     expected_store: crate::property_graph::StoreInstanceId,
     generation: crate::property_graph::GraphGeneration,
@@ -754,7 +776,7 @@ struct RecoverySource<'a, 'm> {
 
 impl<'a, 'm> RecoverySource<'a, 'm> {
     fn new(
-        store: &'a Store,
+        store: &'a dyn RecoveryRead,
         directory: &'a Path,
         state: CommitState<'_>,
         memory: &'m StorageMemory<'m>,
@@ -771,7 +793,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
     }
 
     fn new_scoped(
-        store: &'a Store,
+        store: &'a dyn RecoveryRead,
         directory: &'a Path,
         state: CommitState<'_>,
         memory: &'m StorageMemory<'m>,
@@ -781,7 +803,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
     }
 
     fn new_with_capacity(
-        store: &'a Store,
+        store: &'a dyn RecoveryRead,
         directory: &'a Path,
         state: CommitState<'_>,
         memory: &'m StorageMemory<'m>,
@@ -1320,7 +1342,7 @@ pub(super) enum CapturedTraceDepth {
     reason = "one exact captured state and completed mark authority"
 )]
 pub(super) fn trace_captured_state_references<'m, V>(
-    store: &Store,
+    store: &dyn RecoveryRead,
     directory: &Path,
     checkpoint: RequiredRef,
     state: CommitState<'_>,
@@ -1429,7 +1451,7 @@ where
                     checkpoint,
                     state,
                     document,
-                    store.tokenizer.epoch(),
+                    store.lexical(),
                     memory,
                     resources,
                 )?
@@ -1503,7 +1525,7 @@ where
                     checkpoint,
                     state,
                     document,
-                    store.tokenizer.epoch(),
+                    store.lexical(),
                     memory,
                     &mut output,
                     &mut verify_row,
@@ -1538,7 +1560,7 @@ where
     reason = "one exact captured state and completed mark authority"
 )]
 fn validate_captured_state_reachability<'m>(
-    store: &Store,
+    store: &dyn RecoveryRead,
     directory: &Path,
     checkpoint: RequiredRef,
     state: CommitState<'_>,
@@ -1578,7 +1600,7 @@ fn validate_captured_state_reachability<'m>(
     reason = "one complete framed change list and completed mark authority"
 )]
 pub(super) fn trace_captured_change_references<'m, V>(
-    store: &Store,
+    store: &dyn RecoveryRead,
     directory: &Path,
     state: CommitState<'_>,
     mut changes: ChangeReader<'_>,
@@ -1675,7 +1697,7 @@ where
     reason = "one complete framed change list and completed mark authority"
 )]
 fn validate_captured_change_references<'m>(
-    store: &Store,
+    store: &dyn RecoveryRead,
     directory: &Path,
     state: CommitState<'_>,
     changes: ChangeReader<'_>,
@@ -1709,7 +1731,7 @@ fn validate_captured_change_references<'m>(
     reason = "one independently reconstructed reclaim authority"
 )]
 fn validate_complete_reclaim_authority(
-    store: &Store,
+    store: &dyn RecoveryRead,
     directory: &Path,
     current_state: CommitState<'_>,
     authentic_base: Option<CommitState<'_>>,
@@ -1851,7 +1873,7 @@ fn validate_complete_reclaim_authority(
     reason = "one exact self-contained proof binding"
 )]
 fn visit_captured_base(
-    store: &Store,
+    store: &dyn RecoveryRead,
     directory: &Path,
     reference: RequiredRef,
     sequence: u64,
@@ -4029,10 +4051,13 @@ fn artifact_name(path: &Path) -> Option<ArtifactId> {
     ArtifactId::new(u128::from_str_radix(digits, 16).ok()?).ok()
 }
 
-fn artifact_inventory_capacity(store: &Store, directory: &Path) -> Result<usize, NativeGraphError> {
+fn artifact_inventory_capacity(
+    store: &dyn RecoveryRead,
+    directory: &Path,
+) -> Result<usize, NativeGraphError> {
     let mut count = 0_usize;
     store
-        .vfs
+        .vfs()
         .for_each_direct_child(directory, &mut |path| {
             if artifact_name(path).is_some() {
                 count = count
@@ -4049,7 +4074,7 @@ fn artifact_inventory_capacity(store: &Store, directory: &Path) -> Result<usize,
 }
 
 fn scan_creation_serials(
-    store: &Store,
+    store: &dyn RecoveryRead,
     resources: &GraphResources,
     directory: &Path,
     expected_store: crate::property_graph::StoreInstanceId,
@@ -4074,7 +4099,7 @@ fn scan_creation_serials(
         .map_err(|_| NativeGraphError::Invalid("recovery serial scan allocation"))?;
     serials.resize_with(capacity, OnceCell::new);
     store
-        .vfs
+        .vfs()
         .for_each_direct_child(directory, &mut |path| {
             if first_error.is_some() {
                 return Ok(());
@@ -4088,7 +4113,7 @@ fn scan_creation_serials(
                     return Ok(());
                 };
                 let length = store
-                    .vfs
+                    .vfs()
                     .open(path)
                     .map_err(|source| NativeGraphError::Io {
                         path: path.to_path_buf(),
@@ -4098,7 +4123,7 @@ fn scan_creation_serials(
                     return Ok(());
                 }
                 let header = store
-                    .vfs
+                    .vfs()
                     .read_range(path, 0, artifact::HEADER_BYTES)
                     .map_err(|source| NativeGraphError::Io {
                         path: path.to_path_buf(),
@@ -4258,7 +4283,7 @@ struct PendingWalCompletion {
 }
 
 struct SemanticReplay<'a, 'm> {
-    store: &'a Store,
+    store: &'a dyn RecoveryRead,
     directory: &'a Path,
     expected: GraphInterpretation<'a>,
     document: Option<&'a EmbeddingTower>,
@@ -4288,7 +4313,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         reason = "independent resource owners and lifetimes are explicit at this private seam"
     )]
     fn new(
-        store: &'a Store,
+        store: &'a dyn RecoveryRead,
         directory: &'a Path,
         expected: GraphInterpretation<'a>,
         document: Option<&'a EmbeddingTower>,
@@ -4914,7 +4939,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                     state.catalog,
                     &catalog,
                     self.document,
-                    self.store.tokenizer.epoch(),
+                    self.store.lexical(),
                     self.memory,
                     &mut tree,
                 )?;
@@ -5702,7 +5727,7 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                         target.catalog,
                         &catalog,
                         self.document,
-                        self.store.tokenizer.epoch(),
+                        self.store.lexical(),
                         changes,
                         resources,
                         &mut replay_error,
@@ -5720,7 +5745,7 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                         target.catalog,
                         &catalog,
                         self.document,
-                        self.store.tokenizer.epoch(),
+                        self.store.lexical(),
                         self.memory,
                         &mut tree,
                     )?;
@@ -6131,9 +6156,11 @@ fn install_unified_inner(
             .map(|epoch| epoch.embedding.document.clone())
     });
     let expected = GraphInterpretation::new(store.tokenizer.epoch(), document.as_ref())?;
-    let mut validator = SemanticReplay::new(
+    let (validator, final_state, (_replay_work, replay_remaining)) = replay_unified(
         store,
         &store.directory,
+        checkpoint,
+        commits,
         expected,
         document.as_ref(),
         &control,
@@ -6142,67 +6169,8 @@ fn install_unified_inner(
         &storage,
     )?;
     let mut cancelled = || control.checkpoint().is_err();
-    let replay_work = u64::try_from(capacity)
-        .ok()
-        .and_then(|count| count.checked_mul(MAX_ARTIFACT_BYTES as u64))
-        .and_then(|bytes| bytes.checked_mul(8))
-        .and_then(|work| {
-            commits.iter().try_fold(work, |work, commit| {
-                u64::try_from(commit.bytes.len())
-                    .ok()
-                    .and_then(|bytes| bytes.checked_mul(128))
-                    .and_then(|bytes| work.checked_add(bytes))
-            })
-        })
-        .ok_or(NativeGraphError::Invalid("unified recovery work bound"))?;
-    let mut resources = WalResources::new(replay_work, STACK_RESERVATION_BYTES, &mut cancelled)?;
-    #[cfg(test)]
-    reopen_phase("manifest_checkpoint_setup", &mut phase_start);
-    validator
-        .validate_checkpoint_state(checkpoint, &mut resources)
-        .map_err(|error| {
-            validator
-                .first_error
-                .take()
-                .unwrap_or(NativeGraphError::Wal(error))
-        })?;
-    #[cfg(test)]
-    reopen_phase("checkpoint_validation", &mut phase_start);
-    let mut final_state = checkpoint;
-    for commit in commits {
-        let mut replay = Replay::envelope(&commit.bytes, final_state);
-        match replay
-            .next_envelope(&mut validator, &mut resources)
-            .map_err(|error| {
-                validator
-                    .first_error
-                    .take()
-                    .unwrap_or(NativeGraphError::Wal(error))
-            })? {
-            ReplayStep::Envelope(envelope) => {
-                if envelope.state.generation.get() != commit.generation {
-                    return Err(NativeGraphError::Store(
-                        crate::lifecycle::StoreError::WalMutation {
-                            seq: commit.seq,
-                            op: crate::ingest::wal_payload::GRAPH_COMMIT_V1,
-                            source: crate::ingest::wal_payload::PayloadError::GraphEnvelope(
-                                WalError::Sequence,
-                            ),
-                        },
-                    ));
-                }
-                final_state = envelope.state;
-            }
-            ReplayStep::End(_) => {
-                return Err(NativeGraphError::Invalid(
-                    "incomplete unified graph envelope",
-                ));
-            }
-        }
-    }
-    #[cfg(test)]
-    reopen_phase("wal_watermark_replay", &mut phase_start);
-    validator.validate_deferred_checkpoint_allocations(final_state, &mut resources)?;
+    let mut resources =
+        WalResources::new(replay_remaining, STACK_RESERVATION_BYTES, &mut cancelled)?;
     let mut prepared = Vec::new();
     for index in 0..final_state.prepared_inventories.len()? {
         prepared.push(
@@ -6292,7 +6260,7 @@ fn install_unified_inner(
     #[cfg(test)]
     OPEN_METRICS.with(|metrics| {
         metrics.set((
-            resources.consumed(),
+            _replay_work.saturating_add(resources.consumed()),
             storage.peak_reserved_bytes(),
             FENCE_CANDIDATES.with(Cell::get),
             resident_peak,
@@ -6301,6 +6269,380 @@ fn install_unified_inner(
     #[cfg(test)]
     reopen_phase("bundle_writer_installation", &mut phase_start);
     Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "read dependencies and borrowed replay/resource lifetimes are explicit"
+)]
+fn replay_unified<'a, 'm>(
+    store: &'a dyn RecoveryRead,
+    directory: &'a Path,
+    checkpoint: CommitState<'a>,
+    commits: &'a [crate::ingest::RecoveredGraphCommit],
+    expected: GraphInterpretation<'a>,
+    document: Option<&'a EmbeddingTower>,
+    control: &'a QueryControl,
+    capacity: usize,
+    shared: &'a GraphResources,
+    storage: &'m StorageMemory<'m>,
+) -> Result<(SemanticReplay<'a, 'm>, CommitState<'a>, (u64, u64)), NativeGraphError> {
+    #[cfg(test)]
+    let mut phase_start = std::time::Instant::now();
+    let mut validator = SemanticReplay::new(
+        store, directory, expected, document, control, capacity, shared, storage,
+    )?;
+    let mut cancelled = || control.checkpoint().is_err();
+    let replay_work = u64::try_from(capacity)
+        .ok()
+        .and_then(|count| count.checked_mul(MAX_ARTIFACT_BYTES as u64))
+        .and_then(|bytes| bytes.checked_mul(8))
+        .and_then(|work| {
+            commits.iter().try_fold(work, |work, commit| {
+                u64::try_from(commit.bytes.len())
+                    .ok()
+                    .and_then(|bytes| bytes.checked_mul(128))
+                    .and_then(|bytes| work.checked_add(bytes))
+            })
+        })
+        .ok_or(NativeGraphError::Invalid("unified recovery work bound"))?;
+    let mut resources = WalResources::new(replay_work, STACK_RESERVATION_BYTES, &mut cancelled)?;
+    #[cfg(test)]
+    reopen_phase("manifest_checkpoint_setup", &mut phase_start);
+    validator
+        .validate_checkpoint_state(checkpoint, &mut resources)
+        .map_err(|error| {
+            validator
+                .first_error
+                .take()
+                .unwrap_or(NativeGraphError::Wal(error))
+        })?;
+    #[cfg(test)]
+    reopen_phase("checkpoint_validation", &mut phase_start);
+    let mut final_state = checkpoint;
+    for commit in commits {
+        let mut replay = Replay::envelope(&commit.bytes, final_state);
+        match replay
+            .next_envelope(&mut validator, &mut resources)
+            .map_err(|error| {
+                validator
+                    .first_error
+                    .take()
+                    .unwrap_or(NativeGraphError::Wal(error))
+            })? {
+            ReplayStep::Envelope(envelope) => {
+                if envelope.state.generation.get() != commit.generation {
+                    return Err(NativeGraphError::Store(
+                        crate::lifecycle::StoreError::WalMutation {
+                            seq: commit.seq,
+                            op: crate::ingest::wal_payload::GRAPH_COMMIT_V1,
+                            source: crate::ingest::wal_payload::PayloadError::GraphEnvelope(
+                                WalError::Sequence,
+                            ),
+                        },
+                    ));
+                }
+                final_state = envelope.state;
+            }
+            ReplayStep::End(_) => {
+                return Err(NativeGraphError::Invalid(
+                    "incomplete unified graph envelope",
+                ));
+            }
+        }
+    }
+    #[cfg(test)]
+    reopen_phase("wal_watermark_replay", &mut phase_start);
+    validator.validate_deferred_checkpoint_allocations(final_state, &mut resources)?;
+    Ok((
+        validator,
+        final_state,
+        (resources.consumed(), resources.remaining()),
+    ))
+}
+
+/// Census authority is the decoded manifest and complete outer WAL runs.
+/// This shares the envelope framer with recovery; it grants no replay or unlink
+/// authority. Semantic admission still runs separately, including reclaim proofs.
+pub(crate) fn snapshot_graph_objects(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    manifest: &crate::manifest::Manifest,
+    records: &[crate::wal::VisibleRecord],
+) -> Result<Vec<crate::manifest::GraphObject>, NativeGraphError> {
+    use crate::ingest::{committed_batches, wal_payload::MutationPayload};
+    use std::collections::BTreeMap;
+    let Some(graph) = &manifest.graph else {
+        return Ok(Vec::new());
+    };
+    let mut state = graph
+        .state()
+        .map_err(|error| NativeGraphError::Store(crate::lifecycle::StoreError::Manifest(error)))?;
+    let store = state.store;
+    let mut objects: BTreeMap<_, _> = graph
+        .objects
+        .iter()
+        .map(|object| (object.artifact, *object))
+        .collect();
+    let mut descriptors = BTreeMap::new();
+    let mut offer = |descriptor: ArtifactDescriptor| -> Result<(), NativeGraphError> {
+        if descriptor.store != store
+            || descriptors
+                .get(&descriptor.artifact)
+                .is_some_and(|prior| *prior != descriptor)
+        {
+            return Err(NativeGraphError::Invalid(
+                "snapshot descriptor identity contradiction",
+            ));
+        }
+        let object = crate::manifest::GraphObject {
+            artifact: descriptor.artifact,
+            length: u64::from(descriptor.bytes),
+            checksum: descriptor.checksum,
+        };
+        if objects
+            .get(&object.artifact)
+            .is_some_and(|prior| *prior != object)
+        {
+            return Err(NativeGraphError::Invalid(
+                "snapshot inventory descriptor contradiction",
+            ));
+        }
+        if objects.len() >= crate::property_graph::storage::MAX_NATIVE_ARTIFACTS
+            && !objects.contains_key(&object.artifact)
+        {
+            return Err(NativeGraphError::Invalid("snapshot graph census capacity"));
+        }
+        descriptors.insert(descriptor.artifact, descriptor);
+        objects.insert(object.artifact, object);
+        Ok(())
+    };
+    let boundary = manifest.log_seq.min(graph.graph_absorbed_through);
+    let decisions = crate::lifecycle::namespace_batch::transaction_decisions(
+        vfs, directory, records, boundary, None,
+    )?;
+    let batches = committed_batches(records, boundary, |binding| {
+        decisions.get(&binding.transaction).copied()
+    })?;
+    let mut cancelled = || false;
+    let bytes = records.iter().try_fold(0_u64, |sum, record| {
+        let bytes = record.encoded().map_err(|source| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::WalRecord {
+                seq: record.seq,
+                source,
+            })
+        })?;
+        sum.checked_add(bytes.len() as u64)
+            .ok_or(NativeGraphError::Invalid(
+                "snapshot graph census work bound",
+            ))
+    })?;
+    let work = bytes
+        .checked_mul(128)
+        .and_then(|bytes| bytes.checked_add(1024 * 1024))
+        .ok_or(NativeGraphError::Invalid(
+            "snapshot graph census work bound",
+        ))?;
+    let mut resources = WalResources::new(work, STACK_RESERVATION_BYTES, &mut cancelled)?;
+    for batch in &batches {
+        for (seq, _, mutation) in &batch.members {
+            if seq.get() <= graph.graph_absorbed_through {
+                continue;
+            }
+            let MutationPayload::GraphCommit(bytes) = mutation else {
+                continue;
+            };
+            let mut replay = Replay::envelope(bytes, state);
+            let FramedCaptureStep::Envelope(envelope) =
+                replay.next_framed_capture(&mut resources)?
+            else {
+                return Err(NativeGraphError::Invalid(
+                    "incomplete snapshot graph envelope",
+                ));
+            };
+            let _kind = envelope.kind;
+            if envelope.complete_bytes != bytes.len() {
+                return Err(NativeGraphError::Invalid("snapshot graph envelope extent"));
+            }
+            state = envelope.state;
+            for reference in state
+                .graph
+                .slots
+                .into_iter()
+                .flatten()
+                .chain(Some(state.catalog))
+                .chain(state.text)
+                .chain(state.vector)
+                .chain(state.reclaim)
+            {
+                offer(reference.object)?;
+            }
+            for index in 0..state.prepared_inventories.len()? {
+                offer(
+                    state
+                        .prepared_inventories
+                        .get(index, &mut resources)?
+                        .object,
+                )?;
+            }
+            let mut changes = envelope.changes();
+            while let Some(change) = changes.next_change(&mut resources)? {
+                match change {
+                    Change::Mutation(mutation) => {
+                        if let Some(reference) = mutation.canonical {
+                            offer(reference.object)?;
+                        }
+                    }
+                    Change::Inventory(change)
+                        if matches!(
+                            change.state,
+                            InventoryState::Prepared | InventoryState::Retained
+                        ) =>
+                    {
+                        offer(change.object)?
+                    }
+                    Change::ReclaimIntent(intent) => {
+                        offer(intent.protected_roots.object)?;
+                        offer(intent.completed_mark.object)?;
+                    }
+                    Change::ReclaimComplete(complete) => offer(complete.intent.object)?,
+                    Change::Inventory(_) => {}
+                }
+            }
+        }
+    }
+    Ok(objects.into_values().collect())
+}
+
+pub(crate) struct GraphVerificationError {
+    pub(crate) source: Box<NativeGraphError>,
+    pub(crate) file: Option<PathBuf>,
+}
+
+pub(crate) fn verify_unified(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    graph: &crate::manifest::GraphManifest,
+    manifest_generation: u64,
+    commits: &[crate::ingest::RecoveredGraphCommit],
+) -> Result<(), GraphVerificationError> {
+    struct Reads<'a> {
+        vfs: &'a dyn Vfs,
+        publication: Arc<super::NativeGraphPublication>,
+        lexical: crate::fts::tokenizer::TokenizerEpoch,
+        last_file: RefCell<Option<PathBuf>>,
+    }
+    impl RecoveryRead for Reads<'_> {
+        fn vfs(&self) -> &dyn Vfs {
+            self.vfs
+        }
+        fn publication(&self) -> &Arc<super::NativeGraphPublication> {
+            &self.publication
+        }
+        fn lexical(&self) -> crate::fts::tokenizer::TokenizerEpoch {
+            self.lexical
+        }
+        fn observe_mapping(&self, path: &Path) {
+            *self.last_file.borrow_mut() = Some(path.to_path_buf());
+        }
+    }
+    let mut last_file = None;
+    let result = (|| -> Result<(), NativeGraphError> {
+        let checkpoint = graph.state().map_err(|error| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Manifest(error))
+        })?;
+        if checkpoint.generation.get() > manifest_generation {
+            return Err(NativeGraphError::Invalid(
+                "checkpoint generation ahead of manifest",
+            ));
+        }
+        let accounting = Arc::new(crate::lifecycle::stats::Accounting::new(
+            crate::property_graph::resources::MAX_GRAPH_RESIDENT_BYTES,
+            u64::MAX,
+        ));
+        let publication = super::NativeGraphPublication::new(&accounting, true)?;
+        let catalog_path = crate::property_graph::storage::allocation::artifact_path(
+            directory,
+            checkpoint.catalog.object.artifact,
+        );
+        last_file = Some(catalog_path.clone());
+        let catalog_file =
+            vfs.open_for_map(&catalog_path)
+                .map_err(|source| NativeGraphError::Io {
+                    path: catalog_path.clone(),
+                    source,
+                })?;
+        let mapping = NativeReadonlyMapping::open_recovery(
+            catalog_file,
+            &catalog_path,
+            &publication,
+            MAX_ARTIFACT_BYTES,
+        )?;
+        let frame = artifact::decode(
+            ContainerKind::Object,
+            Some((checkpoint.store, checkpoint.catalog.object.artifact)),
+            mapping.as_bytes(),
+        )
+        .map_err(TreeError::Format)?;
+        let payload = frame
+            .resolve_framed_block(checkpoint.catalog.block)
+            .map_err(TreeError::Format)?;
+        let encoded = payload
+            .get(8..)
+            .ok_or(NativeGraphError::Invalid("catalog participant header"))?;
+        let shared = GraphResources::from_accounting(&accounting)?;
+        let count = encoded
+            .get(104..112)
+            .and_then(|bytes| bytes.first_chunk::<8>())
+            .copied()
+            .map(u64::from_le_bytes)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or(NativeGraphError::Invalid(
+                "verification catalog symbol count",
+            ))?;
+        let allowance = count
+            .checked_mul(std::mem::size_of::<SymbolEntry<'_>>())
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        let mut descriptors = shared.reserve(allowance)?;
+        let image = CatalogImage::decode(encoded, allowance, &mut || Ok(()))?;
+        descriptors.resize(image.symbols.allocated_bytes())?;
+        let expected = image.declaration.interpretation;
+        // The tower strings are bounded by the encoded catalog bytes.
+        let _document_charge = shared.reserve(encoded.len())?;
+        let document = expected
+            .embedding()
+            .map(|declaration| declaration.to_tower());
+        let reads = Reads {
+            vfs,
+            publication,
+            lexical: expected.lexical(),
+            last_file: RefCell::new(None),
+        };
+        let control = QueryControl::Cancel(CancelToken::new());
+        let write = WriteMemory::new(&shared, WriteLimits::default())?;
+        let storage = StorageMemory::new(&write, &control, 32 * 1024 * 1024)?;
+        let capacity = artifact_inventory_capacity(&reads, directory)?
+            .checked_add(crate::property_graph::storage::reclaim::MAX_CANDIDATES)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        let replay = replay_unified(
+            &reads,
+            directory,
+            checkpoint,
+            commits,
+            expected,
+            document.as_ref(),
+            &control,
+            capacity,
+            &shared,
+            &storage,
+        );
+        last_file = reads.last_file.borrow().clone();
+        replay.map(|_| ())
+    })();
+    result.map_err(|source| GraphVerificationError {
+        source: Box::new(source),
+        file: last_file,
+    })
 }
 
 /// Live inventory at a fold; prepared and retained packs remain immutable.
@@ -6444,6 +6786,12 @@ pub(super) fn manifest_inventory(
                     checkpoint: required,
                     ..
                 } => offer(required.object)?,
+                ProtectedValue::Descriptor(descriptor)
+                    if record.class
+                        == crate::property_graph::storage::reclaim::ProtectedClass::Reader =>
+                {
+                    offer(descriptor)?
+                }
                 ProtectedValue::Descriptor(_) | ProtectedValue::FoldAuthority { .. } => {}
             }
             Ok(())

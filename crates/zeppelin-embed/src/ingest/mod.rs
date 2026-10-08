@@ -57,6 +57,8 @@ pub(crate) use active::RecoveredGraphCommit;
 pub(crate) use active::{
     ActiveSegment, ActiveState, ManifestPublication, SealedTombstoneDemand, StoreWal,
 };
+#[cfg(feature = "graph-cypher")]
+pub(crate) use atomic_batch::committed_batches;
 pub(crate) use atomic_batch::{committed_mutations_with_decisions, cut_interrupted_append};
 
 /// Stable application document identifier.

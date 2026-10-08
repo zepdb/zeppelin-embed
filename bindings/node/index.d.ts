@@ -890,7 +890,10 @@ export type VerifyFindingKind =
   | 'walRecordCorrupt'
   | 'walRecordInvalid'
   | 'unreadable'
-  | 'purgeIntentCorrupt';
+  | 'purgeIntentCorrupt'
+  | 'graphObjectMissing'
+  | 'graphObjectCorrupt'
+  | 'graphInventoryInvalid';
 
 export interface VerifyFinding {
   readonly kind: VerifyFindingKind;

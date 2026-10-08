@@ -21,7 +21,10 @@ impl GraphResources {
     /// No second budget or independent accounting instance is created. The
     /// retained-view owner separately enforces admission and close cancellation.
     pub fn from_store(store: &Store) -> Result<Self, StoreError> {
-        let limit = store.accounting.resident_limit();
+        Self::from_accounting(&store.accounting)
+    }
+    pub(crate) fn from_accounting(accounting: &Arc<Accounting>) -> Result<Self, StoreError> {
+        let limit = accounting.resident_limit();
         if limit > MAX_GRAPH_RESIDENT_BYTES {
             return Err(StoreError::BudgetExceeded {
                 needed: limit,
@@ -30,7 +33,7 @@ impl GraphResources {
             });
         }
         Ok(Self {
-            accounting: Arc::clone(&store.accounting),
+            accounting: Arc::clone(accounting),
         })
     }
     /// Current engine capacities; application-retention reporting is reserved for ZE-310.

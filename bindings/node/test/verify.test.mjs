@@ -243,3 +243,24 @@ test('zeppelin-verify prints the report and exits 0 clean, 1 damaged, 2 unusable
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('verify reports graphObjectCorrupt without changing the directory', async (t) => {
+  const { GraphStore } = require('..');
+  if (!GraphStore.isSupported()) { t.skip('graph unavailable'); return; }
+  const root = mkdtempSync(join(tmpdir(), 'zeppelin-node-verify-graph-'));
+  const directory = join(root, 'store');
+  try {
+    const graph = GraphStore.open(directory, { autoReclaim: false });
+    graph.apply([{ kind: 'node', operation: 'create', namespace: 'test', key: 'a', revision: 1n }]);
+    graph.close();
+    const file = readdirSync(directory).find(name => name.endsWith('.zgraph'));
+    const path = join(directory, file);
+    const bytes = readFileSync(path);
+    bytes[100] ^= 1;
+    writeFileSync(path, bytes);
+    const before = hashes(directory);
+    const report = verify(directory);
+    assert.ok(report.findings.some(finding => finding.kind === 'graphObjectCorrupt' && finding.file === file), report.findings.map(finding => finding.kind).join(', '));
+    assert.deepEqual(hashes(directory), before);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

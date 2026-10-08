@@ -190,3 +190,23 @@ fn ze_verify_rejects_invalid_requests_with_a_precise_error() {
         ZeErrorCode::ZeErrInvalidArgument
     );
 }
+
+#[test]
+fn graph_finding_codes_are_append_only() {
+    let header = include_str!("../include/zeppelin_embed.h");
+    assert_eq!(ZE_VERIFY_MANIFEST_MISSING, 1);
+    assert_eq!(ZE_VERIFY_PURGE_INTENT_CORRUPT, 14);
+    assert_eq!(ZE_VERIFY_GRAPH_OBJECT_MISSING, 15);
+    assert_eq!(ZE_VERIFY_GRAPH_OBJECT_CORRUPT, 16);
+    assert_eq!(ZE_VERIFY_GRAPH_INVENTORY_INVALID, 17);
+    for (name, value) in [
+        ("GRAPH_OBJECT_MISSING", 15),
+        ("GRAPH_OBJECT_CORRUPT", 16),
+        ("GRAPH_INVENTORY_INVALID", 17),
+    ] {
+        assert!(
+            header.contains(&format!("#define ZE_VERIFY_{name} {value}")),
+            "missing appended finding {name}={value}"
+        );
+    }
+}

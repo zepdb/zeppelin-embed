@@ -607,6 +607,7 @@ fn validate_object_ref(base: BaseIdentity, reference: RequiredRef) -> Result<(),
 
 struct RegistryEntry {
     token: u64,
+    retention_only: bool,
     owner: Weak<NativeReadOwner>,
 }
 
@@ -1188,6 +1189,15 @@ impl NativeGraphPublication {
         self: &Arc<Self>,
         charge: GraphReservation,
     ) -> Result<NativeReadLease, NativeGraphError> {
+        self.admit_inner(charge, false, Vec::new())
+    }
+
+    fn admit_inner(
+        self: &Arc<Self>,
+        charge: GraphReservation,
+        retention_only: bool,
+        objects: Vec<ArtifactDescriptor>,
+    ) -> Result<NativeReadLease, NativeGraphError> {
         let mut state = self.state.lock().map_err(|_| {
             NativeGraphError::Store(StoreError::Synchronization {
                 component: "native graph publication",
@@ -1223,6 +1233,7 @@ impl NativeGraphPublication {
         let owner = Arc::new(NativeReadOwner {
             view: QueryView::new(bundle.base.store, bundle.base.generation),
             bundle,
+            objects,
             _charge: charge,
             cancelled: AtomicBool::new(false),
             registration: NativeReadRegistration {
@@ -1236,6 +1247,7 @@ impl NativeGraphPublication {
             .get_mut(slot)
             .ok_or(NativeGraphError::LeaseLimit)? = Some(RegistryEntry {
             token,
+            retention_only,
             owner: Arc::downgrade(&owner),
         });
         Ok(NativeReadLease { owner })
@@ -1449,7 +1461,12 @@ impl NativeGraphPublication {
         })?;
         state.closing = true;
         self.changed.notify_all();
-        while state.leases.iter().any(Option::is_some) {
+        while state
+            .leases
+            .iter()
+            .flatten()
+            .any(|entry| !entry.retention_only)
+        {
             let Some(deadline) = deadline else {
                 break;
             };
@@ -1465,13 +1482,19 @@ impl NativeGraphPublication {
                 })?;
             state = waited.0;
         }
-        if state.leases.iter().any(Option::is_some) {
+        if state
+            .leases
+            .iter()
+            .flatten()
+            .any(|entry| !entry.retention_only)
+        {
             let slot_count = state.leases.len();
             for index in 0..slot_count {
                 let Some((_token, owner)) = state
                     .leases
                     .get(index)
                     .and_then(Option::as_ref)
+                    .filter(|entry| !entry.retention_only)
                     .and_then(|entry| entry.owner.upgrade().map(|owner| (entry.token, owner)))
                 else {
                     continue;
@@ -1495,7 +1518,12 @@ impl NativeGraphPublication {
             }
             self.changed.notify_all();
         }
-        while state.leases.iter().any(Option::is_some) {
+        while state
+            .leases
+            .iter()
+            .flatten()
+            .any(|entry| !entry.retention_only)
+        {
             state = self
                 .changed
                 .wait(state)
@@ -1504,7 +1532,10 @@ impl NativeGraphPublication {
                 })?;
         }
         drop(state.current.take());
-        state.release_registries()
+        if state.leases.iter().all(Option::is_none) {
+            state.release_registries()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn cancel_and_clear_best_effort(&self) {
@@ -1519,6 +1550,7 @@ impl NativeGraphPublication {
                 .leases
                 .get(index)
                 .and_then(Option::as_ref)
+                .filter(|entry| !entry.retention_only)
                 .and_then(|entry| entry.owner.upgrade().map(|owner| (entry.token, owner)))
             else {
                 continue;
@@ -1548,6 +1580,137 @@ impl NativeGraphPublication {
         // publication, and with it the charge, drops once the last survivor
         // does. `Store::close` is the path Task 09 Part C gates, and it drains.
         self.changed.notify_all();
+    }
+}
+
+/// Retains a bundle without participating in source query cancellation/drain.
+/// The strong publication owner keeps its registry and accounting alive.
+pub(crate) struct NativeSnapshotPin {
+    lease: NativeReadLease,
+    _publication: Arc<NativeGraphPublication>,
+}
+
+impl NativeSnapshotPin {
+    pub(super) fn publication(&self) -> &Arc<NativeGraphPublication> {
+        &self._publication
+    }
+    pub(crate) fn bundle(&self) -> &Arc<NativeGraphBundle> {
+        self.lease.bundle()
+    }
+}
+
+impl NativeGraphPublication {
+    pub(crate) fn pin_snapshot(
+        self: &Arc<Self>,
+        objects: &[crate::manifest::GraphObject],
+    ) -> Result<NativeSnapshotPin, StoreError> {
+        use crate::property_graph::storage::{
+            NativeReadonlyMapping,
+            allocation::artifact_path,
+            artifact::{self, ContainerKind, MAX_ARTIFACT_BYTES},
+        };
+        let resources = GraphResources::from_accounting(&self.accounting)?;
+        let needed = objects
+            .len()
+            .checked_mul(std::mem::size_of::<ArtifactDescriptor>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    std::mem::size_of::<NativeReadOwner>() + 2 * std::mem::size_of::<usize>(),
+                )
+            })
+            .ok_or(StoreError::GenerationOverflow)?;
+        let mut charge = resources.reserve(needed)?;
+        let mut descriptors = Vec::new();
+        descriptors
+            .try_reserve_exact(objects.len())
+            .map_err(|_| StoreError::AllocationFailed {
+                needed: needed as u64,
+                component: "native snapshot objects",
+            })?;
+        charge.resize(
+            descriptors
+                .capacity()
+                .checked_mul(std::mem::size_of::<ArtifactDescriptor>())
+                .and_then(|bytes| {
+                    bytes.checked_add(
+                        std::mem::size_of::<NativeReadOwner>() + 2 * std::mem::size_of::<usize>(),
+                    )
+                })
+                .ok_or(StoreError::GenerationOverflow)?,
+        )?;
+        let bundle = self
+            .state
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "native graph publication",
+            })?
+            .current
+            .clone()
+            .ok_or_else(|| snapshot_error(NativeGraphError::NotInstalled))?;
+        for object in objects {
+            let path = artifact_path(bundle.directory(), object.artifact);
+            let file = bundle
+                .vfs()
+                .open_for_map(&path)
+                .map_err(|source| StoreError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            let mapping =
+                NativeReadonlyMapping::open_recovery(file, &path, self, MAX_ARTIFACT_BYTES)
+                    .map_err(snapshot_error)?;
+            let frame = artifact::decode(
+                ContainerKind::Object,
+                Some((bundle.base().store, object.artifact)),
+                mapping.as_bytes(),
+            )
+            .map_err(|error| {
+                snapshot_error(NativeGraphError::Read(
+                    crate::property_graph::storage::tree::directory::TreeError::Format(error),
+                ))
+            })?;
+            if mapping.as_bytes().len() as u64 != object.length
+                || frame.file_checksum() != object.checksum
+            {
+                return Err(StoreError::SnapshotPin {
+                    detail: "graph object differs from its pinned inventory",
+                });
+            }
+            descriptors.push(
+                persistence::artifact_descriptor(
+                    frame.identity(),
+                    ContainerKind::Object,
+                    mapping.as_bytes(),
+                )
+                .map_err(snapshot_error)?,
+            );
+        }
+        let lease = self
+            .admit_inner(charge, true, descriptors)
+            .map_err(snapshot_error)?;
+        Ok(NativeSnapshotPin {
+            lease,
+            _publication: Arc::clone(self),
+        })
+    }
+
+    pub(crate) fn fork_snapshot(
+        accounting: &Arc<super::stats::Accounting>,
+        pin: &NativeSnapshotPin,
+    ) -> Result<Arc<Self>, StoreError> {
+        let publication = Self::new(accounting, true)?;
+        publication
+            .install(Arc::clone(pin.bundle()))
+            .map_err(snapshot_error)?;
+        publication.mark_read_only();
+        Ok(publication)
+    }
+}
+
+pub(super) fn snapshot_error(error: NativeGraphError) -> StoreError {
+    match error {
+        NativeGraphError::Store(error) => error,
+        error => StoreError::Manifest(crate::manifest::ManifestError::Decode(error.to_string())),
     }
 }
 
@@ -1733,6 +1896,9 @@ impl Drop for NativeReadRegistration {
         {
             *slot = None;
         }
+        if state.closing && state.leases.iter().all(Option::is_none) {
+            let _ = state.release_registries();
+        }
         drop(state);
         publication.changed.notify_all();
     }
@@ -1742,6 +1908,7 @@ struct NativeReadOwner {
     // Drop order matters: protected bytes and query identity disappear before
     // the final registration removal wakes a close waiter.
     bundle: Arc<NativeGraphBundle>,
+    objects: Vec<ArtifactDescriptor>,
     view: QueryView,
     _charge: GraphReservation,
     cancelled: AtomicBool,
@@ -1934,6 +2101,12 @@ impl NativeProtectedRoots {
 
     pub(super) fn leases(&self) -> &[NativeReadLease] {
         &self.leases
+    }
+
+    pub(super) fn reader_objects(&self) -> impl Iterator<Item = ArtifactDescriptor> + '_ {
+        self.leases
+            .iter()
+            .flat_map(|lease| lease.owner.objects.iter().copied())
     }
 
     pub(super) fn prepared(&self) -> &[ArtifactDescriptor] {

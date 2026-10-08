@@ -37,6 +37,12 @@ pub const ZE_VERIFY_WAL_RECORD_INVALID: u32 = 12;
 pub const ZE_VERIFY_UNREADABLE: u32 = 13;
 /// The pending purge intent `purge.ze` failed its frame or decoder.
 pub const ZE_VERIFY_PURGE_INTENT_CORRUPT: u32 = 14;
+/// A required graph object is absent.
+pub const ZE_VERIFY_GRAPH_OBJECT_MISSING: u32 = 15;
+/// A required graph object failed length, identity or checksum validation.
+pub const ZE_VERIFY_GRAPH_OBJECT_CORRUPT: u32 = 16;
+/// A graph checkpoint or inventory failed semantic validation.
+pub const ZE_VERIFY_GRAPH_INVENTORY_INVALID: u32 = 17;
 
 /// Store verification request.
 #[derive(Clone, Copy)]
@@ -222,6 +228,12 @@ fn kind_code(kind: FindingKind) -> Result<u32, FfiError> {
         FindingKind::WalRecordInvalid => ZE_VERIFY_WAL_RECORD_INVALID,
         FindingKind::Unreadable => ZE_VERIFY_UNREADABLE,
         FindingKind::PurgeIntentCorrupt => ZE_VERIFY_PURGE_INTENT_CORRUPT,
+        #[cfg(feature = "graph-cypher")]
+        FindingKind::GraphObjectMissing => ZE_VERIFY_GRAPH_OBJECT_MISSING,
+        #[cfg(feature = "graph-cypher")]
+        FindingKind::GraphObjectCorrupt => ZE_VERIFY_GRAPH_OBJECT_CORRUPT,
+        #[cfg(feature = "graph-cypher")]
+        FindingKind::GraphInventoryInvalid => ZE_VERIFY_GRAPH_INVENTORY_INVALID,
         // `FindingKind` is non-exhaustive. A kind without a code is a build
         // that forgot to extend this table; refuse the report loudly rather
         // than drop or relabel the finding.

@@ -29,6 +29,8 @@ use std::sync::atomic::Ordering;
 #[cfg(test)]
 #[path = "recovery_random.rs"]
 mod random;
+#[cfg(test)]
+pub(super) use random::SequenceVfs;
 
 #[test]
 fn random_operation_sequences_reopen_to_the_model_state() {

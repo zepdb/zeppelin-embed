@@ -116,6 +116,21 @@
 #define ZE_VERIFY_PURGE_INTENT_CORRUPT 14
 
 /*
+ A required graph object is absent.
+ */
+#define ZE_VERIFY_GRAPH_OBJECT_MISSING 15
+
+/*
+ A required graph object failed length, identity or checksum validation.
+ */
+#define ZE_VERIFY_GRAPH_OBJECT_CORRUPT 16
+
+/*
+ A graph checkpoint or inventory failed semantic validation.
+ */
+#define ZE_VERIFY_GRAPH_INVENTORY_INVALID 17
+
+/*
  Frozen append-only status code returned by the C ABI.
  */
 enum ze_error_code

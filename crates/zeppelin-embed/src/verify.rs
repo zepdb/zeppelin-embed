@@ -69,6 +69,15 @@ pub enum FindingKind {
     Unreadable,
     /// The pending purge intent `purge.ze` failed its frame or decoder.
     PurgeIntentCorrupt,
+    /// A required graph object does not exist.
+    #[cfg(feature = "graph-cypher")]
+    GraphObjectMissing,
+    /// A required graph object failed length, identity or checksum validation.
+    #[cfg(feature = "graph-cypher")]
+    GraphObjectCorrupt,
+    /// The graph checkpoint or inventory failed semantic validation.
+    #[cfg(feature = "graph-cypher")]
+    GraphInventoryInvalid,
 }
 
 impl FindingKind {
@@ -90,6 +99,12 @@ impl FindingKind {
             Self::WalRecordInvalid => "walRecordInvalid",
             Self::Unreadable => "unreadable",
             Self::PurgeIntentCorrupt => "purgeIntentCorrupt",
+            #[cfg(feature = "graph-cypher")]
+            Self::GraphObjectMissing => "graphObjectMissing",
+            #[cfg(feature = "graph-cypher")]
+            Self::GraphObjectCorrupt => "graphObjectCorrupt",
+            #[cfg(feature = "graph-cypher")]
+            Self::GraphInventoryInvalid => "graphInventoryInvalid",
         }
     }
 }
@@ -224,6 +239,18 @@ pub fn verify_store_on_vfs(vfs: &dyn Vfs, path: &Path) -> Result<VerifyReport, V
     if let Some(decoded) = manifest.decoded() {
         walk.report.generation = decoded.generation;
         walk.segments(decoded);
+        #[cfg(feature = "graph-cypher")]
+        if let Some(graph) = &decoded.graph {
+            match graph.state() {
+                Ok(state) => walk.graph_objects(&graph.objects, state.store),
+                Err(error) => walk.record(
+                    FindingKind::GraphInventoryInvalid,
+                    MANIFEST_FILE,
+                    None,
+                    error.to_string(),
+                ),
+            }
+        }
     }
     walk.wal(&manifest, has_segment_files)?;
     walk.purge_intent();
@@ -303,6 +330,180 @@ impl Walk<'_> {
         for expected in &manifest.segments {
             self.report.segments_checked = self.report.segments_checked.saturating_add(1);
             self.segment(expected, &schema);
+        }
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    fn graph_objects(
+        &mut self,
+        objects: &[crate::manifest::GraphObject],
+        store: crate::property_graph::StoreInstanceId,
+    ) {
+        use crate::property_graph::storage::{
+            allocation::artifact_path,
+            artifact::{self, ContainerKind},
+        };
+        for object in objects {
+            let path = artifact_path(self.directory, object.artifact);
+            let file = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let length = match self.vfs.open(&path) {
+                Ok(length) => length,
+                Err(error) => {
+                    let kind = if error.kind() == std::io::ErrorKind::NotFound {
+                        FindingKind::GraphObjectMissing
+                    } else {
+                        FindingKind::Unreadable
+                    };
+                    self.record(kind, &file, None, error.to_string());
+                    continue;
+                }
+            };
+            if length != object.length
+                || length > crate::property_graph::storage::artifact::MAX_ARTIFACT_BYTES as u64
+            {
+                self.record(
+                    FindingKind::GraphObjectCorrupt,
+                    &file,
+                    None,
+                    "graph object length differs from its inventory or exceeds the format bound"
+                        .into(),
+                );
+                continue;
+            }
+            let bytes = match self.vfs.read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let kind = if error.kind() == std::io::ErrorKind::NotFound {
+                        FindingKind::GraphObjectMissing
+                    } else {
+                        FindingKind::Unreadable
+                    };
+                    self.record(kind, &file, None, error.to_string());
+                    continue;
+                }
+            };
+            let result = artifact::decode(
+                ContainerKind::Object,
+                Some((store, object.artifact)),
+                &bytes,
+            );
+            match result {
+                Ok(frame)
+                    if bytes.len() as u64 == object.length
+                        && frame.file_checksum() == object.checksum => {}
+                Ok(_) => self.record(
+                    FindingKind::GraphObjectCorrupt,
+                    &file,
+                    None,
+                    "graph object differs from its inventory length/checksum".into(),
+                ),
+                Err(error) => self.record(
+                    FindingKind::GraphObjectCorrupt,
+                    &file,
+                    None,
+                    error.to_string(),
+                ),
+            }
+        }
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    fn graph_replay(
+        &mut self,
+        manifest: &Manifest,
+        commits: &[crate::ingest::RecoveredGraphCommit],
+    ) {
+        let Some(graph) = &manifest.graph else {
+            return;
+        };
+        if self.report.findings.iter().any(|finding| {
+            matches!(
+                finding.kind,
+                FindingKind::GraphObjectMissing
+                    | FindingKind::GraphObjectCorrupt
+                    | FindingKind::Unreadable
+            )
+        }) {
+            return;
+        }
+        if let Err(error) = crate::lifecycle::native_graph::recovery::verify_unified(
+            self.vfs,
+            self.directory,
+            graph,
+            manifest.generation,
+            commits,
+        ) {
+            // An unreadable or corrupt tail-only participant gets its own file
+            // finding. A healthy file with inconsistent logical contents is a
+            // semantic inventory/envelope finding instead.
+            if let Some(path) = &error.file {
+                let state = match graph.state() {
+                    Ok(state) => state,
+                    Err(_) => return,
+                };
+                match self.vfs.read(path) {
+                    Err(source) => {
+                        let kind = if source.kind() == std::io::ErrorKind::NotFound {
+                            FindingKind::GraphObjectMissing
+                        } else {
+                            FindingKind::Unreadable
+                        };
+                        let file = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        self.record(kind, &file, None, source.to_string());
+                        return;
+                    }
+                    Ok(bytes) => {
+                        let artifact = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .and_then(|name| name.strip_prefix("graph-"))
+                            .and_then(|name| name.strip_suffix(".zgraph"))
+                            .and_then(|name| u128::from_str_radix(name, 16).ok())
+                            .and_then(|id| {
+                                crate::property_graph::storage::artifact::ArtifactId::new(id).ok()
+                            });
+                        let Some(artifact) = artifact else {
+                            self.record(
+                                FindingKind::GraphInventoryInvalid,
+                                MANIFEST_FILE,
+                                None,
+                                "invalid graph participant filename".into(),
+                            );
+                            return;
+                        };
+                        let result = crate::property_graph::storage::artifact::decode(
+                            crate::property_graph::storage::artifact::ContainerKind::Object,
+                            Some((state.store, artifact)),
+                            &bytes,
+                        );
+                        if let Err(source) = result {
+                            let file = path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            self.record(
+                                FindingKind::GraphObjectCorrupt,
+                                &file,
+                                None,
+                                source.to_string(),
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+            let (kind, file) = if commits.is_empty() {
+                (FindingKind::GraphInventoryInvalid, MANIFEST_FILE)
+            } else {
+                (FindingKind::WalRecordInvalid, WAL_FILE)
+            };
+            self.record(kind, file, None, error.source.to_string());
         }
     }
 
@@ -410,6 +611,14 @@ impl Walk<'_> {
         let decoded = manifest.decoded();
         let absent = matches!(manifest, ManifestState::Absent);
         let absorbed_through = decoded.map_or(0, |manifest| manifest.log_seq);
+        #[cfg(feature = "graph-cypher")]
+        let covered_through = decoded
+            .and_then(|manifest| manifest.graph.as_ref())
+            .map_or(absorbed_through, |graph| {
+                absorbed_through.max(graph.graph_absorbed_through)
+            });
+        #[cfg(not(feature = "graph-cypher"))]
+        let covered_through = absorbed_through;
         let wal_path = self.directory.join(WAL_FILE);
         match self.vfs.open(&wal_path) {
             Ok(length) if length > 0 => {}
@@ -418,7 +627,7 @@ impl Walk<'_> {
                 return Ok(());
             }
             Ok(_) | Err(_) => {
-                if absorbed_through > 0 {
+                if covered_through > 0 {
                     self.record(
                         FindingKind::WalMissing,
                         WAL_FILE,
@@ -433,6 +642,12 @@ impl Walk<'_> {
                         "segment files exist but neither a manifest nor a WAL holds their rows"
                             .to_owned(),
                     );
+                }
+                #[cfg(feature = "graph-cypher")]
+                if covered_through == 0
+                    && let Some(manifest) = decoded
+                {
+                    self.graph_replay(manifest, &[]);
                 }
                 return Ok(());
             }
@@ -480,14 +695,25 @@ impl Walk<'_> {
             .records()
             .first()
             .map_or(durable_end.saturating_add(1), |record| record.seq.get());
+        #[cfg(feature = "graph-cypher")]
+        let graph_objects = decoded
+            .filter(|manifest| manifest.graph.is_some())
+            .map(|manifest| {
+                crate::lifecycle::native_graph::recovery::snapshot_graph_objects(
+                    self.vfs,
+                    self.directory,
+                    manifest,
+                    reader.records(),
+                )
+            });
         drop(reader);
-        if durable_end < absorbed_through {
+        if durable_end < covered_through {
             self.record(
                 FindingKind::ManifestAheadOfWal,
                 MANIFEST_FILE,
                 None,
                 format!(
-                    "the manifest covers WAL sequences through {absorbed_through}, \
+                    "the manifest covers WAL sequences through {covered_through}, \
                      the WAL ends at {durable_end}"
                 ),
             );
@@ -509,13 +735,37 @@ impl Walk<'_> {
             // Replay needs the manifest's schema and absorbed boundary.
             return Ok(());
         }
+        #[cfg(feature = "graph-cypher")]
+        if let Some(census) = graph_objects {
+            match census {
+                Ok(mut objects) => {
+                    if let Some(graph) = decoded.and_then(|manifest| manifest.graph.as_ref()) {
+                        let known: std::collections::BTreeSet<_> =
+                            graph.objects.iter().map(|object| object.artifact).collect();
+                        objects.retain(|object| !known.contains(&object.artifact));
+                        if let Ok(state) = graph.state() {
+                            self.graph_objects(&objects, state.store);
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.record(
+                        FindingKind::WalRecordInvalid,
+                        WAL_FILE,
+                        None,
+                        error.to_string(),
+                    );
+                    return Ok(());
+                }
+            }
+        }
         let schema =
             decoded.map_or_else(Schema::timestamp_only, |manifest| manifest.schema.clone());
         let analyzer = Analyzer::new(TokenizerConfig::text_default())
             .map_err(|error| VerifyError::Tokenizer(error.to_string()))?;
         let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
         let generation = decoded.map_or(0, |manifest| manifest.generation);
-        if let Err(error) = crate::ingest::ActiveState::recover(
+        let recovered = crate::ingest::ActiveState::recover(
             self.vfs,
             &wal_path,
             generation,
@@ -540,21 +790,33 @@ impl Walk<'_> {
             &schema,
             &analyzer,
             None,
-        ) {
-            if absent && has_segment_files {
-                self.record(
-                    FindingKind::ManifestMissing,
-                    MANIFEST_FILE,
-                    None,
-                    format!("the WAL cannot be replayed without the manifest's schema: {error}"),
-                );
-            } else {
-                self.record(
-                    FindingKind::WalRecordInvalid,
-                    WAL_FILE,
-                    None,
-                    error.to_string(),
-                );
+        );
+        match recovered {
+            Ok(_recovered) =>
+            {
+                #[cfg(feature = "graph-cypher")]
+                if let Some(manifest) = decoded {
+                    self.graph_replay(manifest, &_recovered.graph);
+                }
+            }
+            Err(error) => {
+                if absent && has_segment_files {
+                    self.record(
+                        FindingKind::ManifestMissing,
+                        MANIFEST_FILE,
+                        None,
+                        format!(
+                            "the WAL cannot be replayed without the manifest's schema: {error}"
+                        ),
+                    );
+                } else {
+                    self.record(
+                        FindingKind::WalRecordInvalid,
+                        WAL_FILE,
+                        None,
+                        error.to_string(),
+                    );
+                }
             }
         }
         Ok(())

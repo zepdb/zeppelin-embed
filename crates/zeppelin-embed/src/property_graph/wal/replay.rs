@@ -113,7 +113,6 @@ pub enum ReplayStep<'a> {
 /// Framing-only immutable capture evidence. This proves one complete encoded
 /// envelope boundary and exposes its typed changes for protected-root tracing;
 /// it is not semantic replay admission or cleanup authority.
-#[cfg(any(test, feature = "test-seams"))]
 pub(crate) struct FramedCaptureEnvelope<'a> {
     change_bytes: &'a [u8],
     change_count: u32,
@@ -127,7 +126,6 @@ pub(crate) struct FramedCaptureEnvelope<'a> {
     clippy::large_enum_variant,
     reason = "framed WAL capture preserves inline terminal evidence"
 )]
-#[cfg(any(test, feature = "test-seams"))]
 pub(crate) enum FramedCaptureStep<'a> {
     Envelope(FramedCaptureEnvelope<'a>),
     #[allow(
@@ -371,7 +369,6 @@ impl<'a> Replay<'a> {
         result
     }
 
-    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn next_framed_capture(
         &mut self,
         r: &mut WalResources<'_>,
@@ -814,7 +811,6 @@ impl<'a> ValidatedEnvelope<'a> {
         }
     }
 }
-#[cfg(any(test, feature = "test-seams"))]
 impl<'a> FramedCaptureEnvelope<'a> {
     pub(crate) const fn changes(&self) -> ChangeReader<'a> {
         ChangeReader {
