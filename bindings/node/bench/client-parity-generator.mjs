@@ -72,11 +72,16 @@ export function queryShapes() {
     return { name: `${['home', 'type-ahead', 'folder', 'chat', 'citation'][group]}-${i % 100}`, request };
   });
 }
+export function decodeFilter(filter) {
+  return { ...filter,
+    ...(filter.children ? { children: filter.children.map(decodeFilter) } : {}),
+    ...(filter.values ? { values: filter.values.map(value => ({ ...value, value: BigInt(value.value) })) } : {}),
+  };
+}
 export function decodeRequest(request) {
   return { ...request,
     ...(request.vector ? { vector: new Float32Array(request.vector) } : {}),
     ...(request.eligibleIds ? { eligibleIds: request.eligibleIds.map(BigInt) } : {}),
-    ...(request.filter ? { filter: { ...request.filter,
-      values: request.filter.values.map(value => ({ ...value, value: BigInt(value.value) })) } } : {}),
+    ...(request.filter ? { filter: decodeFilter(request.filter) } : {}),
   };
 }

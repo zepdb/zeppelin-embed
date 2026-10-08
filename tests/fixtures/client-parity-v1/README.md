@@ -1,4 +1,4 @@
-# Client parity v1 — ZE-386
+# Client parity v1 — ZE-386 / ZE-367
 
 synthetic corpus generated from ADR-017 assumptions, NOT the client's recorded queries: replace or extend with the client's real corpus when provided.
 
@@ -24,4 +24,24 @@ node bindings/node/bench/client-parity.mjs compare tests/fixtures/client-parity-
 node --test bindings/node/test/client-parity.test.mjs
 ```
 
-The package must export the existing `openNamespace(root, name, spec, options)` API. `replayQueries(store, queries)` also accepts any already-built Store exposing `query(request)`; ZE-367 can build the identical corpus, enable graph and write its relationships, then replay without changing expectations. `documentBatches()` and `SPEC` are exported for that setup. The default runner builds with autoSealRows=30200 (100 meetings per sealed segment), closes and reopens a temporary graph-free store; it deletes that store after replay. Commit only generator, query list and expected results, never the generated store. This slice does not enable graph or change legacy namespace readers.
+The package must export the existing `openNamespace(root, name, spec, options)` API. `replayQueries(store, queries)` also accepts any already-built Store exposing `query(request)`. The default graph-free runner builds with autoSealRows=30200 (100 meetings per sealed segment), closes and reopens a temporary store, and deletes it after replay. Keep `expected.json` as the ZE-386 baseline; never overwrite it to hide a difference.
+
+ZE-367's unified runner builds the same 151,000 documents, enables graph, and makes 500 relationship-only writes. Note `n` has keyed `PARITY_NOTE` edge `parity-note-n` from document `302*n+301` to `302*n+302`. It creates no helper documents and changes no text, attributes, vectors or revisions. The runner checks every edge, document/relationship counts, and filename/SHA-256 maps of all five `.zseg` files. All 500 queries must agree before attachment, after attachment, and after closing/reopening the same root. The test also compares the preserved ZE-386 baseline.
+
+Released 0.6.0 has no `eligibleIds`. `release-reference` translates only the 50 complete-note eligible sets: it validates all 302 ascending contiguous IDs in the seeded corpus, removes `eligibleIds`, and ANDs the original filter with the note's attribute-1 equality predicate. All other 450 requests stay unchanged. This is an explicit benchmark input translation before search; malformed sets are refused. The translation test checks the entire note-ID set and query equivalence on the graph-free Store.
+
+Capture the published npm reference on the host, from the repository root:
+
+```sh
+npm install --prefix /private/tmp/ze367-release --ignore-scripts --no-audit --no-fund @zepdb/zeppelin-embed@0.6.0
+node bindings/node/bench/client-parity.mjs release-reference /private/tmp/ze367-release/node_modules/@zepdb/zeppelin-embed tests/fixtures/client-parity-v1/expected-v0.6.0.json
+node bindings/node/bench/client-parity.mjs unified ./bindings/node tests/fixtures/client-parity-v1/expected-v0.6.0.json
+node --test bindings/node/test/client-parity.test.mjs
+```
+
+`expected-v0.6.0.json` is a separate release reference. Its adjacent `expected-v0.6.0.json.provenance.json` records loaded-addon, wrapper, query, generator, translated-query and output SHA-256 hashes plus host settings. The expected source tag is `v0.6.0`, commit `f39087d7b20016138d9a1946055bc229cdffdd23`; this identifies the intended source reference, not a reproducible-build claim about the npm addon. Release addon/output hashes are pending the host capture. The CLI refuses a package whose declarations expose `eligibleIds`, preventing this checkout (also versioned 0.6.0) from becoming the release oracle. No reference is downloaded or silently generated during tests. When the saved reference is absent, only its comparison test skips with the capture command; all three named unified-store/translation tests still run.
+
+Cypher folder eligibility preserves the shipped 65,536-row cap. It queries each distinct requested folder separately with `IN $folders`, `ORDER BY id`, and `maxRows:65536`; each seeded folder contains 15,100 documents. The shipped profile exposes `ze.node_id(d)`, not `id(d)`: its fixed-width 32-digit hexadecimal string preserves all u128 identity bits and sorts in numeric ID order. The collector validates this representation and converts it to `bigint`. It checks each page against the Store's exact folder count and one admitted generation, then merges and sorts IDs, rejecting overlap. Each document has one scalar folder, so these disjoint partitions cover exactly the same set as one large `IN` query; global ascending sort restores that query's order. The test checks each complete folder-ID set against the seeded note/folder assignment, the full 151,000-ID union, multi-folder merging, all 100 fixture folder queries, and intersections with existing eligible sets, including empty, duplicate, unknown and cross-folder IDs. It reuses the verified singleton results for repeated fixture folders. Additional hybrid/snippet requests exercise exact BM25, vector L2, snippet bytes/highlights/ranges/flags and fused tolerance. Row/budget failures propagate; incomplete results never become eligibility filters.
+
+Current query-file SHA-256: `4ae461854f48fb1614050851b15c6cbc4f3213749f68e1255db762d0b7078b5c`.
+Current generator SHA-256: `709a671f8da35e244095604a28aa985b54b092bdeddaaaaab8ac8f7ade92f3dc`.
