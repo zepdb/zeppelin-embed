@@ -117,7 +117,9 @@ jobs:
           toolchain: 1.93.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p zeppelin-embed-ffi --release
-      - run: cd bindings/swift && ZE_USE_LOCAL_FFI=1 swift test
+      - run: ZE_USE_LOCAL_FFI=1 swift test --jobs 4
+      - run: cargo build -p zeppelin-embed-ffi --release --features graph-bindings-test-support
+      - run: ZE_USE_LOCAL_FFI=1 ZE_ENABLE_GRAPH=1 swift test --jobs 4 -Xswiftc -DZE72_TEST_BRIDGE
 
   deny:
     name: deny (macos-14)

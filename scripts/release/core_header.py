@@ -100,7 +100,7 @@ def write_artifact_headers(source: Path, destination: Path, artifact: str) -> No
         graph.write_bytes(source.with_name("zeppelin_graph_contracts.h").read_bytes())
         (destination / "zeppelin_embed_graph.h").write_text(
             '#include "zeppelin_embed.h"\n#include "zeppelin_graph_contracts.h"\n')
-        module = 'module CZeppelinEmbedGraph {\n    umbrella header "zeppelin_embed_graph.h"\n    export *\n}\n'
+        module = 'module CZeppelinEmbed {\n    umbrella header "zeppelin_embed_graph.h"\n    export *\n}\n'
     else:
         if graph.exists():
             raise RuntimeError("legacy staging contains graph declarations")

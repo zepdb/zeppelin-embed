@@ -1,4 +1,5 @@
-import CZeppelinEmbedGraph
+#if ZE_GRAPH
+import CZeppelinEmbed
 import Foundation
 
 public final class GraphCancellationToken: @unchecked Sendable {
@@ -65,8 +66,7 @@ public struct GraphControls: Sendable {
   }
 }
 
-// Borrow the persisted document interpretation only while open runs. This does
-// not load a model or introduce an embedding runtime dependency.
+// Borrow query interpretation for the duration of the synchronous native call.
 func withGraphTower<T>(
   _ tower: EmbeddingTower?, _ body: (UnsafePointer<ZeEmbeddingTower>?) throws -> T
 ) rethrows -> T {
@@ -166,3 +166,5 @@ func withLimits<T>(
     return try withUnsafePointer(to: &native, body)
   }
 }
+
+#endif

@@ -1,5 +1,5 @@
 import Foundation
-import ZeppelinEmbedGraph
+import ZeppelinEmbed
 
 @main
 struct InstalledConsumer {
@@ -12,7 +12,8 @@ struct InstalledConsumer {
       try await profile(); return
     }
     let path = URL(fileURLWithPath: CommandLine.arguments[1])
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await ZeppelinStore.open(at: path, options: OpenOptions(durabilityMode: .durable, commitTier: .durable, maxResidentBytes: 256 << 20))
+    _ = try await store.enableGraph()
     var batch = GraphBatch()
     let a = batch.node(key: GraphKey(namespace: "fixture", key: "a"), revision: 1,
       .create(GraphNodeImage(labels: ["Doc"], properties: ["title": .string("alpha")])))
@@ -20,7 +21,7 @@ struct InstalledConsumer {
       .create(GraphNodeImage(labels: ["Doc"])))
     batch.relationship(key: GraphKey(namespace: "fixture", key: "r"), revision: 1,
       .create(GraphRelationshipImage(type: "LINK"), .local(a), .local(b)))
-    let written = try await store.apply(batch)
+    let written = try await store.graphApply(batch)
     // One store counter: enable_graph commits 1; the first graph write and its reads use 2.
     guard written.metadata.changedGeneration == 2, written.metadata.receipts.count == 3 else {
       throw Failure.invalidResult
@@ -31,7 +32,7 @@ struct InstalledConsumer {
     guard result.rows == [[.string("alpha"), .integer(42)]],
       result.metadata.admittedGeneration == 2 else { throw Failure.invalidResult }
     try await store.close()
-    let reopened = try await ZeppelinGraphStore.open(at: path, mode: .readWrite)
+    let reopened = try await ZeppelinStore.open(at: path, options: OpenOptions(durabilityMode: .durable, commitTier: .durable, maxResidentBytes: 256 << 20))
     let durable = try await reopened.cypher(query,
       parameters: ["title": .string("alpha"), "number": .integer(42)])
     guard durable.rows == result.rows, durable.metadata.admittedGeneration == 2 else {
@@ -46,7 +47,7 @@ struct InstalledConsumer {
     guard bag.rows == [[.null], [.null]] else { throw Failure.invalidResult }
     let empty = try await reopened.cypher("MATCH (n:Missing) RETURN n")
     guard empty.rows.isEmpty else { throw Failure.invalidResult }
-    let structured = try await reopened.query(GraphPlan(
+    let structured = try await reopened.graphQuery(GraphPlan(
       root: GraphOperatorID(0),
       operators: [.scanNodes(output: GraphSlotID(7), label: nil)]))
     guard structured.rows.count == 2,
@@ -55,7 +56,7 @@ struct InstalledConsumer {
     let fetched = try await reopened.getNodes([node.id, node.id])
     guard fetched.nodes.count == 2, fetched.nodes[0]?.id == node.id,
       fetched.nodes[1]?.id == node.id else { throw Failure.invalidResult }
-    let resources = try await reopened.resources()
+    let resources = try await reopened.graphResources()
     guard resources.enginePeakBytes >= resources.engineBytes else { throw Failure.invalidResult }
     try await reopened.close()
     guard values.rows[0][3] == .list(.query, [.integer(1), .null, .list(.query, [.string("nested")])]) else { throw Failure.invalidResult }
@@ -83,7 +84,8 @@ struct InstalledConsumer {
       URL(fileURLWithPath: CommandLine.arguments[2]))) as! [String: Any]
     let base = URL(fileURLWithPath: CommandLine.arguments[3])
     for (index, scenario) in (manifest["cases"] as! [[String: Any]]).enumerated() {
-      let store = try await ZeppelinGraphStore.open(at: base.appendingPathComponent("case-\(index)"), mode: .create)
+      let store = try await ZeppelinStore.open(at: base.appendingPathComponent("case-\(index)"), options: OpenOptions(durabilityMode: .durable, commitTier: .durable, maxResidentBytes: 256 << 20))
+    _ = try await store.enableGraph()
       for setup in scenario["setup"] as! [String] {
         _ = try await store.cypher(setup, controls: GraphControls(rowLimit: 1024))
       }

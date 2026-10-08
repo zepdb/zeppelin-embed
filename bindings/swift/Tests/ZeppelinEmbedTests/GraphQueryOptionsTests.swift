@@ -1,15 +1,16 @@
+#if ZE_GRAPH
 import XCTest
 
-@testable import ZeppelinEmbedGraph
+@testable import ZeppelinEmbed
 
 final class GraphQueryOptionsTests: XCTestCase {
   func testStructuredAndCypherShareMemoryAndWorkRefusals() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     var batch = GraphBatch()
     batch.node(key: GraphKey(namespace: "", key: "a"), revision: 1, .create(GraphNodeImage()))
-    _ = try await store.apply(batch)
+    _ = try await store.graphApply(batch)
     let plan = GraphPlan(
       root: GraphOperatorID(0), operators: [.scanNodes(output: GraphSlotID(0), label: nil)])
     for limits in [GraphQueryLimits(queryBytes: 0), GraphQueryLimits(work: [.completedRows: 0])] {
@@ -17,7 +18,7 @@ final class GraphQueryOptionsTests: XCTestCase {
       for structured in [true, false] {
         do {
           if structured {
-            _ = try await store.query(plan, options: options)
+            _ = try await store.graphQuery(plan, options: options)
           } else {
             _ = try await store.cypher("MATCH (n) RETURN n", options: options)
           }
@@ -29,7 +30,7 @@ final class GraphQueryOptionsTests: XCTestCase {
         }
       }
     }
-    let rows = try await store.query(plan)
+    let rows = try await store.graphQuery(plan)
     XCTAssertEqual(rows.rows.count, 1)
     try await store.close()
   }
@@ -39,11 +40,11 @@ final class GraphQueryOptionsTests: XCTestCase {
     let tower = EmbeddingTower(
       modelID: "fixture", modelVersion: "1", weightsDigest: Data([1]),
       dimensions: 2, maxTokens: 10, runtime: .cpuReference, computeUnits: .cpu)
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create, documentTower: tower)
+    let store = try await openGraphTestStore(at: path, mode: .create, documentTower: tower)
     var batch = GraphBatch()
     batch.node(
       key: GraphKey(namespace: "", key: "v"), revision: 1, .create(GraphNodeImage(vector: [1, 0])))
-    _ = try await store.apply(batch)
+    _ = try await store.graphApply(batch)
     let plan = GraphPlan(
       root: GraphOperatorID(0), operators: [.search(GraphSearchID(0), eligibility: nil)],
       expressions: [.literal(.list([.double(1), .double(0)])), .literal(.integer(1))],
@@ -63,7 +64,7 @@ final class GraphQueryOptionsTests: XCTestCase {
       ] {
         let result: GraphResult
         if structured {
-          result = try await store.query(plan, options: options)
+          result = try await store.graphQuery(plan, options: options)
         } else {
           result = try await store.cypher(
             "CALL ze.vector_search($vector, 1, 'exact') YIELD node, distance RETURN distance",
@@ -78,7 +79,7 @@ final class GraphQueryOptionsTests: XCTestCase {
       ] {
         do {
           if structured {
-            _ = try await store.query(plan, options: options)
+            _ = try await store.graphQuery(plan, options: options)
           } else {
             _ = try await store.cypher("RETURN 1", options: options)
           }
@@ -88,7 +89,7 @@ final class GraphQueryOptionsTests: XCTestCase {
       do {
         let options = GraphQueryOptions(alignmentDigest: Data([9]))
         if structured {
-          _ = try await store.query(plan, options: options)
+          _ = try await store.graphQuery(plan, options: options)
         } else {
           _ = try await store.cypher("RETURN 1", options: options)
         }
@@ -98,3 +99,5 @@ final class GraphQueryOptionsTests: XCTestCase {
     try await store.close()
   }
 }
+
+#endif

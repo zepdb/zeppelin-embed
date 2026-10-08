@@ -219,7 +219,7 @@ def run_matrix(args):
                 receipt['manifest_sha256'] = m['manifest_sha256']
                 receipts.append(receipt)
     swift_receipts = args.output / 'swift-receipts.jsonl'
-    swift_env = dict(env, ZE_USE_LOCAL_FFI='1', ZE74_SWIFT_MANIFEST=str((args.output/'consumer-manifest.json').resolve()),
+    swift_env = dict(env, ZE_USE_LOCAL_FFI='1', ZE_ENABLE_GRAPH='1', ZE74_SWIFT_MANIFEST=str((args.output/'consumer-manifest.json').resolve()),
                      ZE74_SWIFT_RECEIPTS=str(swift_receipts.resolve()), CLANG_MODULE_CACHE_PATH=str(ROOT/'target/swift-ze74-clang'),
                      SWIFTPM_MODULECACHE_OVERRIDE=str(ROOT/'target/swift-ze74-module'))
     archive = subprocess.run(['cargo', 'build', '--locked', '--release', '-p', 'zeppelin-embed-ffi', '--features', 'graph-cypher'],
@@ -227,7 +227,7 @@ def run_matrix(args):
     (args.output/'swift-archive.log').write_text(archive.stdout+archive.stderr)
     build = archive
     if archive.returncode == 0:
-        build = subprocess.run(['swift', 'build', '--build-tests', '--disable-sandbox', '--package-path', 'bindings/swift/graph',
+        build = subprocess.run(['swift', 'build', '--build-tests', '--disable-sandbox', '--package-path', '.',
                                 '--scratch-path', str(ROOT/'target/swift-ze74'), '--cache-path', str(ROOT/'target/swift-ze74-cache'),
                                 '--jobs', '3'], cwd=ROOT, env=swift_env, capture_output=True, text=True)
         (args.output/'swift-build.log').write_text(build.stdout+build.stderr)
@@ -244,7 +244,7 @@ def run_matrix(args):
                 method = 'testSharedPublic' if case['error'] else 'testSharedPositive'
                 method += 'Structured' if path.endswith('structured') else 'Cypher'
                 method += 'Rejections' if case['error'] else 'Profile'
-                result = subprocess.run(['swift', 'test', '--skip-build', '--disable-sandbox', '--package-path', 'bindings/swift/graph',
+                result = subprocess.run(['swift', 'test', '--skip-build', '--disable-sandbox', '--package-path', '.',
                                          '--scratch-path', str(ROOT/'target/swift-ze74'), '--cache-path', str(ROOT/'target/swift-ze74-cache'),
                                          '--jobs', '3', '--filter', 'GraphProfileParityTests.' + method], cwd=ROOT,
                                         env=dict(swift_env, ZE74_SWIFT_CASE=case['id']), capture_output=True, text=True)

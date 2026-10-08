@@ -1,7 +1,8 @@
-import CZeppelinEmbedGraph
+#if ZE_GRAPH
+import CZeppelinEmbed
 import Foundation
 import XCTest
-@testable import ZeppelinEmbedGraph
+@testable import ZeppelinEmbed
 
 // These adapters read the same versioned TSV as Rust/C; no native outcome is fabricated.
 final class GraphBindingsParityTests: XCTestCase {
@@ -30,8 +31,8 @@ final class GraphBindingsParityTests: XCTestCase {
     let lines = try String(contentsOf: fixture, encoding: .utf8).split(separator: "\n")
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
-    let noop = try await store.apply(GraphBatch())
+    let store = try await openGraphTestStore(at: path, mode: .create)
+    let noop = try await store.graphApply(GraphBatch())
     XCTAssertEqual(noop.metadata.disposition, .noOp)
     XCTAssertNil(noop.metadata.changedGeneration)
     _ = try await store.cypher("CREATE (:Fixture), (:Fixture)")
@@ -45,7 +46,7 @@ final class GraphBindingsParityTests: XCTestCase {
       retained.append((expected, result))
     }
     try await store.close()
-    let reopened = try await ZeppelinGraphStore.open(at: path, mode: .readWrite)
+    let reopened = try await openGraphTestStore(at: path, mode: .readWrite)
     for (expected, result) in retained { XCTAssertEqual(observe(result), expected) }
     try await reopened.close()
   }
@@ -58,7 +59,7 @@ final class GraphBindingsParityTests: XCTestCase {
       modelID: "ze41-document", modelVersion: "1", weightsDigest: Data([0x41, 0xa5]),
       dimensions: 2, normalization: .none, promptPrefix: "doc: ", maxTokens: 32,
       runtime: .cpuReference, computeUnits: .cpu)
-    let store = try await ZeppelinGraphStore.open(
+    let store = try await openGraphTestStore(
       at: URL(fileURLWithPath: path), mode: .readWrite, documentTower: tower)
     for line in try String(contentsOfFile: observations, encoding: .utf8).split(separator: "\n") {
       let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
@@ -83,7 +84,7 @@ final class GraphBindingsParityTests: XCTestCase {
     }
     let path = try String(contentsOfFile: output + ".twins.path", encoding: .utf8)
     let expected = try String(contentsOfFile: output + ".twins", encoding: .utf8)
-    let store = try await ZeppelinGraphStore.open(at: URL(fileURLWithPath: path), mode: .readWrite)
+    let store = try await openGraphTestStore(at: URL(fileURLWithPath: path), mode: .readWrite)
     let result = try await store.cypher("MATCH (n:Twin) RETURN n ORDER BY n")
     print("ZE72 observed\ttwins\t\(observe(result).replacingOccurrences(of: "\n", with: "\\n"))")
     XCTAssertEqual(observe(result), expected)
@@ -103,7 +104,7 @@ final class GraphBindingsParityTests: XCTestCase {
   func testStoredPropertiesAndReplay() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     var batch = GraphBatch()
     let fixture = root.appendingPathComponent("tests/fixtures/graph-bindings-v1/stored-properties.tsv")
     let cases = try String(contentsOf: fixture, encoding: .utf8).split(separator: "\n")
@@ -121,8 +122,8 @@ final class GraphBindingsParityTests: XCTestCase {
     }
     let image = GraphNodeImage(labels: ["Payload"], properties: properties, text: "")
     batch.node(key: GraphKey(namespace: "ze72", key: "payload"), revision: 1, .create(image))
-    let written = try await store.apply(batch)
-    let replay = try await store.apply(batch)
+    let written = try await store.graphApply(batch)
+    let replay = try await store.graphApply(batch)
     // One store counter: enable_graph commits 1; the first graph write commits 2.
     // Replays and entity metadata retain that exact committed generation.
     XCTAssertEqual(written.metadata.changedGeneration, 2)
@@ -144,13 +145,13 @@ final class GraphBindingsParityTests: XCTestCase {
   func testStructuredQueryHandoff() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     let key = GraphKey(namespace: "handoff", key: "first")
     var batch = GraphBatch()
     batch.node(
       key: key, revision: 1,
       .create(GraphNodeImage(labels: ["Handoff"], properties: ["title": .string("hello")], text: "")))
-    let written = try await store.apply(batch)
+    let written = try await store.graphApply(batch)
     XCTAssertEqual(written.metadata.disposition, .committed)
     guard let receipt = written.metadata.receipts.first, case .node(let id) = receipt.identity else {
       return XCTFail("node receipt missing")
@@ -164,7 +165,7 @@ final class GraphBindingsParityTests: XCTestCase {
           bindings: [GraphProjection(GraphSlotID(7), GraphExpressionID(1))]),
       ],
       expressions: [.slot(GraphSlotID(0)), .property(GraphExpressionID(0), "title")])
-    let result = try await store.query(plan)
+    let result = try await store.graphQuery(plan)
     let fetched = try await store.getNodes([id], fields: GraphNodeFields(text: true))
     try await store.close()
     XCTAssertEqual(result.columns.map(\.name), ["slot_7"])
@@ -298,25 +299,25 @@ extension GraphBindingsParityTests {
         barrier.closeEntered.signal()
         return ze_close(token)
       })
-    let store = ZeppelinGraphStore(token: handle, calls: calls)
+    let store = makeGraphTestStore(handle: handle, calls: calls)
     var first = GraphBatch()
     first.node(key: GraphKey(namespace: "ze72", key: "first"), revision: 1,
       .create(GraphNodeImage(labels: ["First"])))
-    let writer = Task { try await store.apply(first) }
+    let writer = Task { try await store.graphApply(first) }
     XCTAssertEqual(barrier.entered.wait(timeout: .now() + 5), .success, "ZE-72 actual append reached")
     var second = GraphBatch()
     second.node(key: GraphKey(namespace: "ze72", key: "second"), revision: 1,
       .create(GraphNodeImage(labels: ["Second"])))
     // Native Busy is returned immediately; graphResponse's matching free
     // serializes behind the admitted response, so await it after release.
-    let contender = Task { try await store.apply(second) }
+    let contender = Task { try await store.graphApply(second) }
     XCTAssertEqual(barrier.busyReturned.wait(timeout: .now() + 5), .success, "ZE-72 actual Busy returned")
     let closer = Task { try await store.close() }
     XCTAssertEqual(barrier.closeEntered.wait(timeout: .now() + 5), .success, "ZE-72 actual close reached")
     do {
-      _ = try await store.apply(second)
+      _ = try await store.graphApply(second)
       XCTFail("actor admitted a write while close was active")
-    } catch let error as GraphError { XCTAssertEqual(error.code, .closing) }
+    } catch let error as ZeppelinError { XCTAssertEqual(error, .closed) }
     barrier.release.signal()
     do {
       _ = try await contender.value
@@ -331,10 +332,12 @@ extension GraphBindingsParityTests {
     // One store counter: enable_graph commits 1; this first graph write commits 2.
     XCTAssertEqual(written.metadata.changedGeneration, 2)
     XCTAssertEqual(written.metadata.receipts.count, 1)
-    let reopened = try await ZeppelinGraphStore.open(at: path, mode: .readWrite)
+    let reopened = try await openGraphTestStore(at: path, mode: .readWrite)
     let actual = try await reopened.cypher("MATCH (n) RETURN count(n)")
     XCTAssertEqual(actual.rows, [[.integer(1)]])
     try await reopened.close()
   }
 }
+#endif
+
 #endif

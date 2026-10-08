@@ -1,4 +1,5 @@
-import CZeppelinEmbedGraph
+#if ZE_GRAPH
+import CZeppelinEmbed
 import Foundation
 
 // One synchronous borrow scope owns every request array. No pointer crosses await.
@@ -246,6 +247,66 @@ final class GraphEncoder {
       return b
     }
   }
+  func withDocuments<T>(
+    _ batch: GraphBatch, _ body: (UnsafeBufferPointer<ZeStoreGraphDocument>) throws -> T
+  ) throws -> T {
+    var images: [(UInt32, GraphNodeImage)] = []
+    for (index, item) in batch.items.enumerated() {
+      guard case .node(_, _, let mutation) = item else { continue }
+      let image: GraphNodeImage
+      let create: Bool
+      switch mutation {
+      case .create(let value): image = value; create = true
+      case .put(_, let value): image = value; create = false
+      case .recreate(_, let value):
+        guard value.id == nil, value.timestamp == nil, value.attributes == nil, value.metadata == nil else {
+          throw GraphError(.invalidRequest("document fields require create or put"))
+        }
+        continue
+      case .delete: continue
+      }
+      guard image.id != nil || image.timestamp != nil || image.attributes != nil || image.metadata != nil else { continue }
+      guard create ? image.id != nil : image.id == nil else {
+        throw GraphError(.invalidRequest("document create requires an id; put uses its existing id"))
+      }
+      images.append((UInt32(index), image))
+    }
+    var strings: [UInt8] = [], metadata: [UInt8] = []
+    var attributes: [CAttributeValueRecord] = []
+    var attributeOffsets: [Int] = [], metadataOffsets: [Int] = []
+    for (_, image) in images {
+      attributeOffsets.append(attributes.count)
+      for (id, value) in (image.attributes ?? [:]).sorted(by: { $0.key < $1.key }) {
+        attributes.append(CAttributeValueRecord(attributeID: id, value: value, strings: &strings))
+      }
+      metadataOffsets.append(metadata.count)
+      metadata.append(contentsOf: image.metadata ?? Data())
+    }
+    return try strings.withUnsafeBufferPointer { strings in
+      let raw = attributes.map { $0.rawValue(stringBase: strings.baseAddress) }
+      return try raw.withUnsafeBufferPointer { attributes in
+        try metadata.withUnsafeBufferPointer { metadata in
+          let documents = images.enumerated().map { index, entry in
+            let (item, image) = entry
+            var document = ZeStoreGraphDocument()
+            document.abi_size = graphSize(ZeStoreGraphDocument.self)
+            document.item_index = item
+            if let id = image.id {
+              document.has_id = 1
+              document.id = ZeDocId(high: id.high, low: id.low)
+            }
+            document.timestamp = image.timestamp ?? 0
+            document.attribute_count = image.attributes?.count ?? 0
+            document.attributes = ZeppelinStore.pointer(attributes.baseAddress, offset: attributeOffsets[index], count: document.attribute_count)
+            document.metadata_len = image.metadata?.count ?? 0
+            document.metadata = ZeppelinStore.pointer(metadata.baseAddress, offset: metadataOffsets[index], count: document.metadata_len)
+            return document
+          }
+          return try documents.withUnsafeBufferPointer(body)
+        }
+      }
+    }
+  }
   func withPool<T>(_ body: (ZeGraphValuePool) throws -> T) rethrows -> T {
     try values.withUnsafeBufferPointer { v in
       try children.withUnsafeBufferPointer { c in
@@ -284,3 +345,5 @@ final class GraphEncoder {
     }
   }
 }
+
+#endif

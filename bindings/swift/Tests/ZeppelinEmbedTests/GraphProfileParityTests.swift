@@ -1,7 +1,8 @@
+#if ZE_GRAPH
 import Foundation
 import CoreFoundation
 import XCTest
-import ZeppelinEmbedGraph
+import ZeppelinEmbed
 
 final class GraphProfileParityTests: XCTestCase {
   private var ignoreListOrder = false
@@ -23,7 +24,7 @@ final class GraphProfileParityTests: XCTestCase {
       print("ZE74 Swift case: \(scenario["id"]!)")
       let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       defer { try? FileManager.default.removeItem(at: directory) }
-      let store = try await ZeppelinGraphStore.open(at: directory, mode: .create)
+      let store = try await openGraphTestStore(at: directory, mode: .create)
       for setup in scenario["setup"] as! [String] { do { _ = try await store.cypher(setup, controls: GraphControls(rowLimit: 1024)) } catch { print("SETUP FAILURE \(error)"); throw error } }
       let before: State
       do { before = try await snapshot(store) } catch { print("SNAPSHOT FAILURE \(error)"); throw error }
@@ -33,13 +34,13 @@ final class GraphProfileParityTests: XCTestCase {
       }
       let result: GraphResult
       if structured {
-        result = try await store.query(plan(scenario["structured"] as! [String: Any]), parameters: parameters)
+        result = try await store.graphQuery(plan(scenario["structured"] as! [String: Any]), parameters: parameters)
       } else {
         result = try await store.cypher(scenario["query"] as! String, parameters: parameters, controls: GraphControls(rowLimit: 1024))
       }
       let after = try await snapshot(store)
       try await store.close()
-      let reopened = try await ZeppelinGraphStore.open(at: directory, mode: .readWrite)
+      let reopened = try await openGraphTestStore(at: directory, mode: .readWrite)
       let durable = try await snapshot(reopened)
       try await reopened.close()
       XCTAssertEqual(after, durable, "reopen: \(scenario["id"]!)")
@@ -88,12 +89,12 @@ final class GraphProfileParityTests: XCTestCase {
       if structured && scenario["structured"] is NSNull { continue }
       let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       defer { try? FileManager.default.removeItem(at: directory) }
-      let store = try await ZeppelinGraphStore.open(at: directory, mode: .create)
+      let store = try await openGraphTestStore(at: directory, mode: .create)
       for setup in scenario["setup"] as! [String] { _ = try await store.cypher(setup, controls: GraphControls(rowLimit: 1024)) }
       let before = try await snapshot(store)
       var observedCode: Int32?
       do {
-        if structured { _ = try await store.query(plan(scenario["structured"] as! [String: Any])) }
+        if structured { _ = try await store.graphQuery(plan(scenario["structured"] as! [String: Any])) }
         else { _ = try await store.cypher(scenario["query"] as! String, controls: GraphControls(rowLimit: 1024)) }
         XCTFail("expected public rejection for \(scenario["id"]!)")
       } catch let error as GraphError {
@@ -104,7 +105,7 @@ final class GraphProfileParityTests: XCTestCase {
       let after = try await snapshot(store)
       XCTAssertEqual(before, after)
       try await store.close()
-      let reopened = try await ZeppelinGraphStore.open(at: directory, mode: .readWrite)
+      let reopened = try await openGraphTestStore(at: directory, mode: .readWrite)
       let durable = try await snapshot(reopened)
       try await reopened.close()
       XCTAssertEqual(after, durable)
@@ -214,7 +215,7 @@ final class GraphProfileParityTests: XCTestCase {
     var nodes = Set<String>(); var relationships = Set<String>(); var labels = Set<String>()
     var properties = Set<String>()
   }
-  private func snapshot(_ store: ZeppelinGraphStore) async throws -> State {
+  private func snapshot(_ store: ZeppelinStore) async throws -> State {
     var state = State(); var bytes = 0
     for (relationship, query) in [(false, "MATCH (n) RETURN ze.node_id(n), n"),
       (true, "MATCH ()-[r]->() RETURN ze.relationship_id(r), r")] {
@@ -225,7 +226,7 @@ final class GraphProfileParityTests: XCTestCase {
         let slot = GraphExpression.slot(GraphSlotID(relationship ? 1 : 0))
         let expressions: [GraphExpression] = [slot, .unary(relationship ? .relationshipIDText : .nodeIDText, GraphExpressionID(0))]
         operators.append(.project(input: GraphOperatorID(UInt32(operators.count - 1)), bindings: [GraphProjection(GraphSlotID(42), GraphExpressionID(1)), GraphProjection(GraphSlotID(43), GraphExpressionID(0))]))
-        result = try await store.query(GraphPlan(root: GraphOperatorID(UInt32(operators.count - 1)), operators: operators, expressions: expressions))
+        result = try await store.graphQuery(GraphPlan(root: GraphOperatorID(UInt32(operators.count - 1)), operators: operators, expressions: expressions))
       } else { result = try await store.cypher(query, controls: GraphControls(rowLimit: 1024)) }
       guard result.metadata.disposition == .notApplicable, let generation = result.metadata.admittedGeneration else { throw Failure.identity }
       if let previous = state.generation, previous != generation { throw Failure.identity }
@@ -277,3 +278,5 @@ final class GraphProfileParityTests: XCTestCase {
   private enum Failure: Error { case snapshotCap, identity, missingManifest, missingListParameter }
 
 }
+
+#endif

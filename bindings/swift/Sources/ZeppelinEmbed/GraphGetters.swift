@@ -1,3 +1,4 @@
+#if ZE_GRAPH
 import Foundation
 
 public struct GraphNodeFields: Sendable {
@@ -49,3 +50,5 @@ public struct GraphRelationshipsResult: Sendable {
     metadata = result.metadata
   }
 }
+
+#endif

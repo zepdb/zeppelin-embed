@@ -9,6 +9,8 @@ let ffiArchive = environment["ZE_LOCAL_FFI_ARCHIVE"] ?? repositoryRoot
     .appendingPathComponent("target/release/libzeppelin_embed_ffi.a")
     .standardizedFileURL.path
 let useLocalFFI = environment["ZE_USE_LOCAL_FFI"] == "1"
+let graph = environment["ZE_ENABLE_GRAPH"] == "1"
+precondition(!graph || useLocalFFI, "Graph builds currently require ZE_USE_LOCAL_FFI=1 and one full graph archive; XCFramework architecture decision remains open.")
 let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // The checksum has to be a literal. When a consumer depends on this package by
 // URL, SwiftPM compiles the manifest in a sandbox where `#filePath` is
@@ -20,6 +22,8 @@ let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // and prints the value to pin. `scripts/xcframework/build.sh` only reports a
 // local mismatch.
 let binaryChecksum = "7865789ac582c1ebc8697c2dcf3b1d05613ec668b79d5bf42521743f38d4b1f8" // ze:xcframework-checksum
+
+let graphBinaryChecksum = "18ac55807bb42d092edbb9a603e2906a164a7fbd2846ccdfb648ab5fd0fa4328" // ze:graph-xcframework-checksum
 
 let cTarget: Target
 if useLocalFFI {
@@ -61,12 +65,18 @@ let package = Package(
             name: "ZeppelinEmbed",
             dependencies: ["CZeppelinEmbed"],
             path: "bindings/swift/Sources/ZeppelinEmbed",
+            swiftSettings: graph ? [.define("ZE_GRAPH"), .unsafeFlags(["-Xcc", "-DZE_GRAPH"])] : nil,
             linkerSettings: localLinkerSettings
         ),
         .testTarget(
             name: "ZeppelinEmbedTests",
             dependencies: ["ZeppelinEmbed"],
-            path: "bindings/swift/Tests/ZeppelinEmbedTests"
+            path: "bindings/swift/Tests/ZeppelinEmbedTests",
+            swiftSettings: graph ? [.define("ZE_GRAPH"), .unsafeFlags(["-Xcc", "-DZE_GRAPH"])] : nil
         ),
-    ]
+    ] + (graph ? [
+        .executableTarget(name: "GraphWorkload", dependencies: ["ZeppelinEmbed"],
+            path: "bindings/swift/Examples", exclude: ["InstalledGraphConsumer", "FiveVectorsSearch", "RecordStore"],
+            sources: ["GraphWorkload.swift"]),
+    ] : [])
 )

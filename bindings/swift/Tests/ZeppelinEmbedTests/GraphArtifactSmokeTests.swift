@@ -1,6 +1,7 @@
-import CZeppelinEmbedGraph
+#if ZE_GRAPH
+import CZeppelinEmbed
 import XCTest
-@testable import ZeppelinEmbedGraph
+@testable import ZeppelinEmbed
 
 final class GraphArtifactSmokeTests: XCTestCase {
   func testGraphArtifactImportsCoreAndRunsCypher() {
@@ -40,3 +41,5 @@ final class GraphArtifactSmokeTests: XCTestCase {
     }
   }
 }
+
+#endif

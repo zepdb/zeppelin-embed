@@ -1,6 +1,7 @@
+#if ZE_GRAPH
 import XCTest
 
-@testable import ZeppelinEmbedGraph
+@testable import ZeppelinEmbed
 
 final class GraphGetterTests: XCTestCase {
   func testGettersPreserveOrderPresenceAndOwnershipAfterReopen() async throws {
@@ -9,7 +10,7 @@ final class GraphGetterTests: XCTestCase {
     let tower = EmbeddingTower(
       modelID: "fixture", modelVersion: "1", weightsDigest: Data([1]),
       dimensions: 2, maxTokens: 10, runtime: .cpuReference, computeUnits: .cpu)
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create, documentTower: tower)
+    let store = try await openGraphTestStore(at: path, mode: .create, documentTower: tower)
     var batch = GraphBatch()
     let a = batch.node(
       key: GraphKey(namespace: "app", key: "a"), revision: 7,
@@ -27,7 +28,7 @@ final class GraphGetterTests: XCTestCase {
       .create(
         GraphRelationshipImage(type: "LINK", properties: ["empty": .integers([])]), .local(a),
         .local(b)))
-    let written = try await store.apply(batch)
+    let written = try await store.graphApply(batch)
     guard case .node(let aID) = written.metadata.receipts[0].identity,
       case .node(let bID) = written.metadata.receipts[1].identity,
       case .relationship(let rID) = written.metadata.receipts[2].identity
@@ -50,7 +51,7 @@ final class GraphGetterTests: XCTestCase {
     XCTAssertTrue(emptyRelationships.relationships.isEmpty)
     XCTAssertEqual(emptyNodes.metadata.admittedGeneration, written.metadata.changedGeneration)
     try await store.close()
-    let reopened = try await ZeppelinGraphStore.open(at: path, documentTower: tower)
+    let reopened = try await openGraphTestStore(at: path, documentTower: tower)
     let again = try await reopened.getNodes(
       [aID], fields: GraphNodeFields(text: true, vector: true))
     try await reopened.close()
@@ -79,7 +80,7 @@ final class GraphGetterTests: XCTestCase {
   func testEmptyGetterRequestsStillValidateLimitsAndCancellation() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     let token = try GraphCancellationToken()
     try token.cancel()
     for nodes in [true, false] {
@@ -104,3 +105,5 @@ final class GraphGetterTests: XCTestCase {
     try await store.close()
   }
 }
+
+#endif

@@ -1,13 +1,7 @@
+#if ZE_GRAPH
 import Foundation
 
-public struct GraphNodeID: Sendable, Equatable, Hashable {
-  public let high: UInt64
-  public let low: UInt64
-  public init(high: UInt64, low: UInt64) {
-    self.high = high
-    self.low = low
-  }
-}
+public typealias GraphNodeID = DocumentID
 public struct GraphRelationshipID: Sendable, Equatable, Hashable {
   public let high: UInt64
   public let low: UInt64
@@ -59,14 +53,23 @@ public struct GraphNodeImage: Sendable {
   public var properties: [String: GraphProperty]
   public var text: String?
   public var vector: [Float]?
+  public var id: DocumentID?
+  public var timestamp: Int64?
+  public var attributes: [UInt32: AttributeValue]?
+  public var metadata: Data?
   public init(
     labels: [String] = [], properties: [String: GraphProperty] = [:], text: String? = nil,
-    vector: [Float]? = nil
+    vector: [Float]? = nil, id: DocumentID? = nil, timestamp: Int64? = nil,
+    attributes: [UInt32: AttributeValue]? = nil, metadata: Data? = nil
   ) {
     self.labels = labels
     self.properties = properties
     self.text = text
     self.vector = vector
+    self.id = id
+    self.timestamp = timestamp
+    self.attributes = attributes
+    self.metadata = metadata
   }
 }
 public struct GraphRelationshipImage: Sendable {
@@ -232,61 +235,6 @@ public struct GraphSearchReport: Sendable {
   public let work: [GraphWork]
 }
 
-// Document interpretation uses the existing Swift embedding value contract.
-public enum VectorNormalization: Int32, Sendable {
-  case none = 0
-  case unitL2 = 1
-}
-
-public enum EmbeddingRuntime: Int32, Sendable {
-  case coreML = 1
-  case mlx = 2
-  case cpuReference = 3
-}
-
-public enum ComputeUnits: Int32, Sendable {
-  case cpu = 1
-  case cpuAndGPU = 2
-  case cpuAndNeuralEngine = 3
-  case all = 4
-}
-
-public struct EmbeddingTower: Sendable {
-  public var modelID: String
-  public var modelVersion: String
-  public var weightsDigest: Data
-  public var dimensions: UInt32
-  public var normalization: VectorNormalization
-  public var promptPrefix: String
-  public var maxTokens: UInt32
-  public var runtime: EmbeddingRuntime
-  public var computeUnits: ComputeUnits
-  public var operatingSystemBuild: String?
-
-  public init(
-    modelID: String,
-    modelVersion: String,
-    weightsDigest: Data,
-    dimensions: UInt32,
-    normalization: VectorNormalization = .none,
-    promptPrefix: String = "",
-    maxTokens: UInt32,
-    runtime: EmbeddingRuntime,
-    computeUnits: ComputeUnits,
-    operatingSystemBuild: String? = nil
-  ) {
-    self.modelID = modelID
-    self.modelVersion = modelVersion
-    self.weightsDigest = weightsDigest
-    self.dimensions = dimensions
-    self.normalization = normalization
-    self.promptPrefix = promptPrefix
-    self.maxTokens = maxTokens
-    self.runtime = runtime
-    self.computeUnits = computeUnits
-    self.operatingSystemBuild = operatingSystemBuild
-  }
-}
 
 /// Native capacities only; Swift decoded copies are caller buffers.
 public struct GraphResources: Sendable {
@@ -295,3 +243,4 @@ public struct GraphResources: Sendable {
   public let applicationBytes: UInt64
   public let applicationPeakBytes: UInt64
 }
+#endif

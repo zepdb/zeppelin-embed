@@ -1,3 +1,4 @@
+#if ZE_GRAPH
 import Foundation
 
 // Arena indices and logical IDs remain distinct. Native admission validates
@@ -155,7 +156,6 @@ public enum GraphSearchKind: Sendable {
   case text(GraphExpressionID)
   case hybrid(vector: GraphExpressionID, text: GraphExpressionID)
 }
-public enum GraphProfile: UInt32, Sendable { case sift, angular }
 public enum GraphRescore: UInt32, Sendable { case none, originalFloat32 }
 public struct GraphSearchOptions: Sendable {
   public var profile: GraphProfile = .sift
@@ -219,3 +219,5 @@ public struct GraphPlan: Sendable {
     self.eagerSearches = eagerSearches
   }
 }
+
+#endif

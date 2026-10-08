@@ -67,7 +67,9 @@ jobs:
           if actual != expected:
               raise SystemExit(f"release tag {actual!r} must be {expected!r}")
           graph = "${{ matrix.artifact }}" == "graph-cypher"
-          manifest_path = "bindings/swift/graph/Package.swift" if graph else "Package.swift"
+          if graph:
+              raise SystemExit("ZE-362: unified graph SwiftPM publication awaits the Intel XCFramework decision and ZE-369 pins")
+          manifest_path = "Package.swift"
           manifest = pathlib.Path(manifest_path).read_text()
           name = "ZeppelinEmbedGraph" if graph else "ZeppelinEmbed"
           expected_url = f"/releases/download/{expected}/{name}.xcframework.zip"

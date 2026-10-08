@@ -30,17 +30,12 @@ def pin(manifest, graph=False):
 
 def check_release_contract(root=ROOT, archive=None, enforce_checksum=False):
     manifest = (root / 'Package.swift').read_text()
-    nested = (root / 'bindings/swift/graph/Package.swift').read_text()
-    if 'ZeppelinEmbedGraph' in manifest:
-        raise ValueError('legacy root package must not resolve graph bytes')
     if '.library(name: "ZeppelinEmbed", targets: ["ZeppelinEmbed"])' not in manifest:
-        raise ValueError('missing legacy root product')
-    pin(manifest)  # Preserve the independently pinned legacy binary.
-    if '.library(name: "ZeppelinEmbedGraph", targets: ["ZeppelinEmbedGraph"])' not in nested:
-        raise ValueError('missing separate graph product')
-    checksum = pin(nested)
-    if not re.search(r'https://[^"\s]+/ZeppelinEmbedGraph.xcframework.zip', nested):
-        raise ValueError('missing separate graph release URL')
+        raise ValueError('missing unified Swift product')
+    if (root / 'bindings/swift/graph/Package.swift').exists():
+        raise ValueError('retired graph subpackage is still present')
+    pin(manifest)
+    checksum = pin(manifest, graph=True)
     if archive:
         actual = hashlib.sha256(archive.read_bytes()).hexdigest()
         if enforce_checksum and actual != checksum:
@@ -180,27 +175,26 @@ def run_rust_consumer(sdk, work, output):
 def run_swift_consumer(xcframework, work, output, disable_swift_sandbox=False):
     package = work / 'package'
     package.mkdir()
-    shutil.copytree(ROOT / 'bindings/swift/graph/Sources', package / 'Sources')
-    shutil.copytree(ROOT / 'bindings/swift/graph/Examples', package / 'Examples')
-    shutil.copytree(ROOT / 'bindings/swift/graph/Tests', package / 'Tests')
-    # Exercise the separate shipping manifest with only its binary URL replaced.
-    manifest = (ROOT / 'bindings/swift/graph/Package.swift').read_text()
-    manifest, replaced = re.subn(
-        r'url:\s*"https://[^"\n]+/ZeppelinEmbedGraph.xcframework.zip",\s*checksum: binaryChecksum',
-        'path: "Artifacts/ZeppelinEmbedGraph.xcframework"', manifest)
-    if replaced != 1:
-        raise ValueError('expected one separate graph binary target')
+    shutil.copytree(ROOT / 'bindings/swift/Sources/ZeppelinEmbed', package / 'Sources/ZeppelinEmbed')
+    # One full graph archive, exported through the unified C module.
     shutil.copytree(xcframework, package / 'Artifacts/ZeppelinEmbedGraph.xcframework')
+    manifest = '''// swift-tools-version: 5.10
+import PackageDescription
+let package = Package(name: "ZeppelinEmbed", platforms: [.macOS(.v14)],
+ products: [.library(name: "ZeppelinEmbed", targets: ["ZeppelinEmbed"])], targets: [
+ .binaryTarget(name: "CZeppelinEmbed", path: "Artifacts/ZeppelinEmbedGraph.xcframework"),
+ .target(name: "ZeppelinEmbed", dependencies: ["CZeppelinEmbed"], swiftSettings: [.define("ZE_GRAPH")])])
+'''
     (package / 'Package.swift').write_text(manifest)
     consumer = work / 'swift-consumer'
     (consumer / 'Sources/Consumer').mkdir(parents=True)
-    shutil.copy(ROOT / 'bindings/swift/graph/Examples/InstalledConsumer/main.swift',
+    shutil.copy(ROOT / 'bindings/swift/Examples/InstalledGraphConsumer/main.swift',
                 consumer / 'Sources/Consumer/main.swift')
     (consumer / 'Package.swift').write_text('''// swift-tools-version: 5.10
 import PackageDescription
 let package = Package(name: "InstalledConsumer", platforms: [.macOS(.v14)],
  dependencies: [.package(path: "../package")], targets: [.executableTarget(name: "Consumer",
- dependencies: [.product(name: "ZeppelinEmbedGraph", package: "package")])])
+ dependencies: [.product(name: "ZeppelinEmbed", package: "package")])])
 ''')
     env = {k: v for k, v in os.environ.items() if not k.startswith('ZE_')}
     env['CLANG_MODULE_CACHE_PATH'] = str(work / 'clang-cache')
@@ -210,11 +204,11 @@ let package = Package(name: "InstalledConsumer", platforms: [.macOS(.v14)],
         command.append('--disable-sandbox')
     manifest_path = package / 'Package.swift'
     manifest_path.write_text(manifest.replace(
-        '.library(name: "ZeppelinEmbedGraph", targets: ["ZeppelinEmbedGraph"]),', ''))
+        '.library(name: "ZeppelinEmbed", targets: ["ZeppelinEmbed"]),', ''))
     try:
         negative = subprocess.run(list(map(str, command)), env=env, cwd=work, capture_output=True, text=True)
         (output / 'graph-product-red.log').write_text(negative.stdout + negative.stderr)
-        if negative.returncode == 0 or "product 'ZeppelinEmbedGraph'" not in negative.stderr:
+        if negative.returncode == 0 or "product 'ZeppelinEmbed'" not in negative.stderr:
             raise ValueError('graph package product negative control did not reject the missing product')
     finally:
         manifest_path.write_text(manifest)
@@ -259,21 +253,21 @@ class ContractTests(unittest.TestCase):
         report['reachability']['rust'] = receipt
         require_structured_execution(report)
 
-    def test_graph_package_is_the_only_graph_product(self):
+    def test_root_package_is_the_only_swift_product(self):
         check_release_contract()
         self.assertNotIn('ZeppelinEmbedGraph', (ROOT / 'Package.swift').read_text())
         self.assertEqual(len(pin((ROOT / 'Package.swift').read_text())), 64)
 
     def test_graph_checksum_pin_is_readable(self):
-        text = (ROOT / 'bindings/swift/graph/Package.swift').read_text()
+        text = (ROOT / 'Package.swift').read_text()
         # This is the producer/release extraction, accepting marker whitespace.
         script = (ROOT / 'scripts/xcframework/build.sh').read_text()
         expression = re.search(r'grep -o "(.*?)" "\$MANIFEST"', script)
         self.assertIsNotNone(expression)
-        pattern = expression.group(1).replace('\\"', '"').replace('$PIN_MARKER', 'xcframework-checksum')
+        pattern = expression.group(1).replace('\\"', '"').replace('$PIN_MARKER', 'graph-xcframework-checksum')
         result = subprocess.run(['grep', '-o', pattern], input=text, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(pin(text)), 64)
+        self.assertEqual(len(pin(text, graph=True)), 64)
 
     def test_xcframework_failure_stops_packaging(self):
         script = (ROOT / 'scripts/xcframework/build.sh').read_text()
@@ -448,57 +442,7 @@ def qualify(args):
 
 def remote_qualify(args):
     """Read-only post-publication proof; never tag, upload, or change pins."""
-    if not re.fullmatch(r'v\d+\.\d+\.\d+', args.remote_tag):
-        raise ValueError('remote tag must be an exact vMAJOR.MINOR.PATCH release')
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    base = 'https://github.com/zepdb/zeppelin-embed/releases/download/' + args.remote_tag + '/'
-    with tempfile.TemporaryDirectory(prefix='ze71-remote-') as directory:
-        work = Path(directory).resolve()
-        def download(url, destination):
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            with urllib.request.urlopen(url) as response, destination.open('wb') as handle:
-                shutil.copyfileobj(response, handle)
-        checkout = work / 'release'
-        run(['git', 'clone', '--depth', '1', '--branch', args.remote_tag,
-             'https://github.com/zepdb/zeppelin-embed.git', checkout], cwd=work)
-        archive = work / 'ZeppelinEmbedGraph.xcframework.zip'
-        download(base + archive.name, archive)
-        contract = check_release_contract(checkout, archive, True)
-        sdk_archive = work / 'zeppelin-embed-graph-cypher-macos-arm64.tar.gz'
-        download(base + sdk_archive.name, sdk_archive)
-        with tarfile.open(sdk_archive) as tar:
-            tar.extractall(work, filter='data')
-        shutil.copy(ROOT / 'crates/zeppelin-embed-ffi/tests/c/graph_artifact_consumer.c', work / 'consumer.c')
-        sdk = work / 'zeppelin-embed-graph-cypher-macos-arm64'
-        report = dict(contract=contract, c=run_c_consumer(sdk, work, output),
-                      rust=run_rust_consumer(sdk, work, output))
-        consumer = work / 'consumer'
-        (consumer / 'Sources/Consumer').mkdir(parents=True)
-        shutil.copy(ROOT / 'bindings/swift/graph/Examples/InstalledConsumer/main.swift',
-                    consumer / 'Sources/Consumer/main.swift')
-        (consumer / 'Package.swift').write_text(
-            '// swift-tools-version: 5.10\nimport PackageDescription\n'
-            'let package = Package(name: "RemoteConsumer", platforms: [.macOS(.v14)],'
-            'dependencies: [.package(path: "../release/bindings/swift/graph")],'
-            'targets: [.executableTarget(name: "Consumer", dependencies: '
-            '[.product(name: "ZeppelinEmbedGraph", package: "graph")])])\n')
-        env = {k: v for k, v in os.environ.items() if not k.startswith('ZE_')}
-        env['CLANG_MODULE_CACHE_PATH'] = str(work / 'clang-cache')
-        run(['swift', 'build', '--package-path', consumer, '--scratch-path', work / 'build',
-             '--cache-path', work / 'cache', '--jobs', '3'], env=env, cwd=work)
-        result = run([work / 'build/debug/Consumer', work / 'fixture'], env=env, cwd=work,
-                     capture_output=True, text=True)
-        (output / 'swift.log').write_text(result.stdout + result.stderr)
-        report['swift'] = dict(artifact_tools().measure(work / 'build/debug/Consumer', output),
-                               reachability=consumer_receipt(result.stdout))
-        report['reachability'] = {
-            **{'c-' + kind: report['c'][key]['reachability']
-               for kind, key in [('static', 'a'), ('dylib', 'dylib')]},
-            'swift': report['swift']['reachability'], 'rust': report['rust']['reachability']}
-        report['scope'] = 'remote installed batch/structured/get/resources/Cypher'
-        (output / 'remote-report.json').write_text(json.dumps(report, indent=2) + '\n')
-        require_structured_execution(report)
+    raise ValueError('ZE-362: remote unified graph SwiftPM qualification awaits the Intel XCFramework decision and ZE-369 publication')
 
 
 if __name__ == '__main__':
@@ -512,7 +456,7 @@ if __name__ == '__main__':
     parser.add_argument('--legacy-xcframework', type=Path, help='explicit legacy zip for local qualification, still size-gated')
     parser.add_argument('--python-wheel', type=Path)
     parser.add_argument('--node-package', type=Path)
-    parser.add_argument('--enforce-checksum', action='store_true', help='CI graph release bytes must match the separate graph pin')
+    parser.add_argument('--enforce-checksum', action='store_true', help='CI graph release bytes must match the retained graph artifact pin')
     args = parser.parse_args()
     if args.self_test:
         unittest.main(argv=[__file__])

@@ -1,4 +1,5 @@
-import CZeppelinEmbedGraph
+#if ZE_GRAPH
+import CZeppelinEmbed
 
 private func optional(_ value: UInt32?) -> ZeGraphOptionalIndex {
   ZeGraphOptionalIndex(present: value == nil ? 0 : 1, index: value ?? 0)
@@ -260,7 +261,7 @@ final class GraphPlanEncoder {
     var s = ZeGraphSearchOptions()
     s.abi_size = graphSize(ZeGraphSearchOptions.self)
     if let options {
-      s.graph_profile = options.profile.rawValue
+      s.graph_profile = UInt32(options.profile.rawValue)
       s.graph_ef = options.ef
       s.graph_seed = options.seed
       s.lexical_flags = options.lastAsPrefix ? 1 : 0
@@ -376,3 +377,5 @@ final class GraphPlanEncoder {
     }
   }
 }
+
+#endif

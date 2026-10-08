@@ -1,17 +1,18 @@
+#if ZE_GRAPH
 import XCTest
 
-@testable import ZeppelinEmbedGraph
+@testable import ZeppelinEmbed
 
 final class GraphStructuredQueryTests: XCTestCase {
   func testStructuredQueryReturnsOwnedRows() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     var batch = GraphBatch()
     batch.node(
       key: GraphKey(namespace: "", key: "a"), revision: 1,
       .create(GraphNodeImage(labels: ["Doc"], properties: ["title": .string("hello")])))
-    let written = try await store.apply(batch)
+    let written = try await store.graphApply(batch)
     let plan = GraphPlan(
       root: GraphOperatorID(2),
       operators: [
@@ -27,7 +28,7 @@ final class GraphStructuredQueryTests: XCTestCase {
         .binary(.equal, GraphExpressionID(1), GraphExpressionID(2)),
       ], parameters: [GraphParameterDeclaration("title", kinds: .string)])
     let result: GraphResult
-    do { result = try await store.query(plan, parameters: ["title": .string("hello")]) } catch let
+    do { result = try await store.graphQuery(plan, parameters: ["title": .string("hello")]) } catch let
       error as GraphError
     {
       XCTFail(
@@ -47,7 +48,7 @@ extension GraphStructuredQueryTests {
   func testRelationalPathsAndAggregates() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     var batch = GraphBatch()
     let a = batch.node(
       key: GraphKey(namespace: "app", key: "a"), revision: 1,
@@ -58,7 +59,7 @@ extension GraphStructuredQueryTests {
     batch.relationship(
       key: GraphKey(namespace: "app", key: "r"), revision: 1,
       .create(GraphRelationshipImage(type: "LINK"), .local(a), .local(b)))
-    let written = try await store.apply(batch)
+    let written = try await store.graphApply(batch)
     guard case .node(let aID) = written.metadata.receipts[0].identity,
       case .node(let bID) = written.metadata.receipts[1].identity,
       case .relationship(let rID) = written.metadata.receipts[2].identity
@@ -81,7 +82,7 @@ extension GraphStructuredQueryTests {
       expressions: [
         .slot(GraphSlotID(0)), .property(GraphExpressionID(0), "value"), .slot(GraphSlotID(1)),
       ])
-    let rows = try await store.query(relational)
+    let rows = try await store.graphQuery(relational)
     XCTAssertEqual(rows.rows, [[.integer(2)]])
     let aggregate = GraphPlan(
       root: GraphOperatorID(1),
@@ -98,7 +99,7 @@ extension GraphStructuredQueryTests {
         .aggregate(.count, operand: nil, distinct: false), .slot(GraphSlotID(0)),
         .aggregate(.collect, operand: GraphExpressionID(1), distinct: true),
       ])
-    let totals = try await store.query(aggregate)
+    let totals = try await store.graphQuery(aggregate)
     XCTAssertEqual(totals.rows[0][0], .integer(2))
     guard case .list(.query, let collected) = totals.rows[0][1] else { return XCTFail("collect") }
     XCTAssertEqual(collected.count, 2)
@@ -111,7 +112,7 @@ extension GraphStructuredQueryTests {
           input: GraphOperatorID(0), spec, min: 1, max: 1,
           edgePredicate: GraphEdgePredicate(slot: GraphSlotID(9), expression: GraphExpressionID(1)))
         : .expand(input: GraphOperatorID(0), spec)
-      let expanded = try await store.query(
+      let expanded = try await store.graphQuery(
         GraphPlan(
           root: GraphOperatorID(1),
           operators: [
@@ -123,7 +124,7 @@ extension GraphStructuredQueryTests {
       guard case .node(let node) = expanded.rows[0][1] else { return XCTFail("target") }
       XCTAssertEqual(node.id, bID)
     }
-    let keyed = try await store.query(
+    let keyed = try await store.graphQuery(
       GraphPlan(
         root: GraphOperatorID(0),
         operators: [
@@ -132,7 +133,7 @@ extension GraphStructuredQueryTests {
         ], expressions: [.literal(.string("a"))]))
     guard case .node(let keyedNode) = keyed.rows[0][0] else { return XCTFail("keyed") }
     XCTAssertEqual(keyedNode.id, aID)
-    let relationship = try await store.query(
+    let relationship = try await store.graphQuery(
       GraphPlan(
         root: GraphOperatorID(0),
         operators: [
@@ -149,7 +150,7 @@ extension GraphStructuredQueryTests {
           left: GraphOperatorID(0), right: GraphOperatorID(1), predicate: GraphExpressionID(0))
         : .join(
           left: GraphOperatorID(0), right: GraphOperatorID(1), predicate: GraphExpressionID(0))
-      let joined = try await store.query(
+      let joined = try await store.graphQuery(
         GraphPlan(
           root: GraphOperatorID(2),
           operators: [
@@ -164,7 +165,7 @@ extension GraphStructuredQueryTests {
   func testStructuredMutationsAndMalformedReferencesHaveNoEffects() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     let plan = GraphPlan(
       root: GraphOperatorID(3),
       operators: [
@@ -195,7 +196,7 @@ extension GraphStructuredQueryTests {
     invalid.operators[3] = .project(
       input: GraphOperatorID(2), bindings: [GraphProjection(GraphSlotID(0), GraphExpressionID(99))])
     do {
-      _ = try await store.query(invalid)
+      _ = try await store.graphQuery(invalid)
       XCTFail("malformed expression must reject before mutation")
     } catch let error as GraphError {
       XCTAssertEqual(error.code, .invalidArgument)
@@ -203,7 +204,7 @@ extension GraphStructuredQueryTests {
     }
     let before = try await store.cypher("MATCH (n) RETURN n")
     XCTAssertEqual(before.rows.count, 0)
-    let result = try await store.query(plan)
+    let result = try await store.graphQuery(plan)
     XCTAssertEqual(result.metadata.disposition, .committed)
     // One store counter: enable_graph commits 1; this first graph write commits 2.
     XCTAssertEqual(result.metadata.changedGeneration, 2)
@@ -213,7 +214,7 @@ extension GraphStructuredQueryTests {
     XCTAssertEqual(node.labels, ["Added"])
     let noRelationships = try await store.cypher("MATCH ()-[r]->() RETURN r")
     XCTAssertTrue(noRelationships.rows.isEmpty)
-    let deletion = try await store.query(
+    let deletion = try await store.graphQuery(
       GraphPlan(
         root: GraphOperatorID(2),
         operators: [
@@ -231,7 +232,7 @@ extension GraphStructuredQueryTests {
   func testRecursiveListParametersUseSharedCypherEncoding() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     let result = try await store.cypher(
       "RETURN $values",
       parameters: [
@@ -264,7 +265,7 @@ extension GraphStructuredQueryTests {
     let tower = EmbeddingTower(
       modelID: "fixture", modelVersion: "1", weightsDigest: Data([1]),
       dimensions: 2, maxTokens: 10, runtime: .cpuReference, computeUnits: .cpu)
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create, documentTower: tower)
+    let store = try await openGraphTestStore(at: path, mode: .create, documentTower: tower)
     var batch = GraphBatch()
     batch.node(
       key: GraphKey(namespace: "", key: "near"), revision: 1,
@@ -272,7 +273,7 @@ extension GraphStructuredQueryTests {
     batch.node(
       key: GraphKey(namespace: "", key: "far"), revision: 1,
       .create(GraphNodeImage(text: "amber amber", vector: [3, 4])))
-    let written = try await store.apply(batch)
+    let written = try await store.graphApply(batch)
     guard case .node(let near) = written.metadata.receipts[0].identity else {
       return XCTFail("identity")
     }
@@ -317,7 +318,7 @@ extension GraphStructuredQueryTests {
               input: GraphOperatorID(2),
               bindings: [GraphProjection(GraphSlotID(4), GraphExpressionID(1))]),
           ], expressions: expressions, searches: [search], eagerSearches: [GraphOperatorID(2)])
-        let result = try await store.query(plan)
+        let result = try await store.graphQuery(plan)
         XCTAssertEqual(result.rows.count, 1)
         guard case .node(let node) = result.rows[0][0] else { return XCTFail("search node") }
         XCTAssertEqual(node.id, near)
@@ -344,7 +345,7 @@ extension GraphStructuredQueryTests {
           node: GraphSlotID(0), score: GraphSlotID(1))
       ], eagerSearches: [GraphOperatorID(0)])
     do {
-      _ = try await store.query(invalid)
+      _ = try await store.graphQuery(invalid)
       XCTFail("eager search with invalid k must execute under LIMIT 0")
     } catch let error as GraphError {
       XCTAssertNotNil(error.code)
@@ -358,13 +359,13 @@ extension GraphStructuredQueryTests {
   func testStructuredReadRowsRemainOwnedWithoutNativeParameterInput() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     var batch = GraphBatch()
     batch.node(
       key: GraphKey(namespace: "", key: "a"), revision: 1,
       .create(GraphNodeImage(labels: ["Doc"], properties: ["title": .string("hello")])))
-    let written = try await store.apply(batch)
-    let result = try await store.query(
+    let written = try await store.graphApply(batch)
+    let result = try await store.graphQuery(
       GraphPlan(
         root: GraphOperatorID(2),
         operators: [
@@ -389,3 +390,5 @@ extension GraphStructuredQueryTests {
     XCTAssertEqual(result.metadata.admittedGeneration, written.metadata.changedGeneration)
   }
 }
+
+#endif

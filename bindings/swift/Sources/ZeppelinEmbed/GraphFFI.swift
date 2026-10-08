@@ -1,4 +1,5 @@
-import CZeppelinEmbedGraph
+#if ZE_GRAPH
+import CZeppelinEmbed
 import Foundation
 
 func graphSize<T>(_ type: T.Type) -> UInt32 { UInt32(MemoryLayout<T>.size) }
@@ -112,14 +113,14 @@ struct GraphDecoder {
 // Copy metadata before checking status or decoding rows; the defer always frees
 // the original native descriptor, never a modified decoder view.
 func graphResponse(
-  call: (inout ZeGraphResponse) -> Int32,
+  call: (inout ZeGraphResponse) throws -> Int32,
   free: (inout ZeGraphResponse) -> Int32 = { ze_graph_response_free(&$0) },
   nativeMessage: () -> String? = { nil }
 ) throws -> GraphResult {
   var response = ZeGraphResponse()
   response.abi_size = graphSize(ZeGraphResponse.self)
   defer { _ = free(&response) }
-  let status = call(&response)
+  let status = try call(&response)
   let message = status == 0 ? nil : nativeMessage()
   var metadata: GraphMetadata?
   do {
@@ -219,3 +220,5 @@ func graphLastError(_ handle: UInt64) -> String? {
   return String(bytes: bytes.prefix(written).map { UInt8(bitPattern: $0) }, encoding: .utf8)
     ?? "native diagnostic is not UTF-8"
 }
+
+#endif

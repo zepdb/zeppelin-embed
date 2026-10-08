@@ -165,12 +165,12 @@ def build_workers(output, release=False):
          '-framework', 'Security', '-framework', 'CoreFoundation', '-lpthread', '-ldl',
          '-o', output / 'graph-workload-c'])
     # Link the public typed Swift wrapper against this build.
-    env.update(ZE_USE_LOCAL_FFI='1', ZE_LOCAL_FFI_ARCHIVE=str(archive), SWIFT_MODULECACHE_PATH=str(output / 'swift-cache'), CLANG_MODULE_CACHE_PATH=str(output / 'swift-cache'))
-    run(['swift', 'package', '--package-path', ROOT / 'bindings/swift/graph', 'clean'], env=env)
-    run(['swift', 'build', '--package-path', ROOT / 'bindings/swift/graph',
+    env.update(ZE_USE_LOCAL_FFI='1', ZE_ENABLE_GRAPH='1', ZE_LOCAL_FFI_ARCHIVE=str(archive), SWIFT_MODULECACHE_PATH=str(output / 'swift-cache'), CLANG_MODULE_CACHE_PATH=str(output / 'swift-cache'))
+    run(['swift', 'package', '--package-path', ROOT, 'clean'], env=env)
+    run(['swift', 'build', '--package-path', ROOT,
          '--product', 'GraphWorkload', '--disable-sandbox', '-j', '3'] +
         (['-c', 'release'] if release else []), env=env)
-    bindir = run(['swift', 'build', '--package-path', ROOT / 'bindings/swift/graph',
+    bindir = run(['swift', 'build', '--package-path', ROOT,
                   '--show-bin-path'] + (['-c', 'release'] if release else []),
                  env=env, capture_output=True, text=True).stdout.strip()
     shutil.copy2(Path(bindir) / 'GraphWorkload', output / 'graph-workload-swift')

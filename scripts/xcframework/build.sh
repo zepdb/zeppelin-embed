@@ -25,7 +25,7 @@ case "$SELECTOR" in
     graph-cypher)
         SUFFIX=-graph-cypher; NAME=ZeppelinEmbedGraph; SIZE_BUDGET_KB=12288
         MACOS_DEPLOYMENT_TARGET=14.0; features=(--features graph-cypher)
-        MANIFEST="$ROOT_DIR/bindings/swift/graph/Package.swift" ;;
+        PIN_MARKER=graph-xcframework-checksum ;;
     *) echo "unknown artifact: $SELECTOR" >&2; exit 2 ;;
 esac
 BUILD_DIR="$ROOT_DIR/target/xcframework$SUFFIX"

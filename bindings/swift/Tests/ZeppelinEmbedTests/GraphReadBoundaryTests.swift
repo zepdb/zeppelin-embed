@@ -1,16 +1,17 @@
-import CZeppelinEmbedGraph
+#if ZE_GRAPH
+import CZeppelinEmbed
 import XCTest
 
-@testable import ZeppelinEmbedGraph
+@testable import ZeppelinEmbed
 
 private enum ReadEntry: CaseIterable, Sendable {
   case query, nodes, relationships
-  func invoke(_ store: ZeppelinGraphStore, interruption: GraphInterruption = .none) async throws
+  func invoke(_ store: ZeppelinStore, interruption: GraphInterruption = .none) async throws
     -> GraphMetadata
   {
     switch self {
     case .query:
-      return try await store.query(
+      return try await store.graphQuery(
         GraphPlan(root: GraphOperatorID(0), operators: [.unit]), interruption: interruption
       ).metadata
     case .nodes: return try await store.getNodes([], interruption: interruption).metadata
@@ -81,7 +82,7 @@ final class GraphReadBoundaryTests: XCTestCase {
             probe.freed()
             return 0
           })
-        let store = ZeppelinGraphStore(token: 1, calls: calls)
+        let store = makeGraphTestStore(handle: 1, calls: calls)
         do {
           let metadata = try await entry.invoke(store)
           XCTAssertEqual(mode, 0)
@@ -109,8 +110,8 @@ final class GraphReadBoundaryTests: XCTestCase {
         probe.response(response, getter: false)  // zero columns violates getter contract
         return 0
       }
-      let store = ZeppelinGraphStore(
-        token: 1,
+      let store = makeGraphTestStore(
+        handle: 1,
         calls: GraphNativeCalls(
           getNodes: { _, _, r in complete(r) }, getRelationships: { _, _, r in complete(r) },
           close: { _ in 0 },
@@ -183,7 +184,7 @@ final class GraphReadBoundaryTests: XCTestCase {
         probe.freed()
         return 0
       })
-    let store = ZeppelinGraphStore(token: 1, calls: calls)
+    let store = makeGraphTestStore(handle: 1, calls: calls)
     let plan = GraphPlan(
       root: GraphOperatorID(2),
       operators: [
@@ -193,7 +194,7 @@ final class GraphReadBoundaryTests: XCTestCase {
       ])
     let limits = GraphQueryLimits(queryBytes: 1024, work: [.lookups: 3, .expressions: 0])
     do {
-      _ = try await store.query(
+      _ = try await store.graphQuery(
         plan, options: GraphQueryOptions(limits: limits), interruption: .deadlineNanoseconds(55))
       XCTFail("busy")
     } catch let e as GraphError { XCTAssertEqual(e.code, .busy) }
@@ -212,7 +213,7 @@ final class GraphReadBoundaryTests: XCTestCase {
     XCTAssertEqual(probe.frees, 3)
     try await store.close()
   }
-  func testCancellationAndConcurrentClosePreserveEveryNativeReadOutcome() async throws {
+  func testDocumentAndGraphOperationsShareCloseState() async throws {
     for entry in ReadEntry.allCases {
       for status: Int32 in [0, 9] {
         let read = ReadProbe()
@@ -226,8 +227,8 @@ final class GraphReadBoundaryTests: XCTestCase {
               read.response(response, getter: entry != .query)
               return status
             }
-        let store = ZeppelinGraphStore(
-          token: 1,
+        let store = makeGraphTestStore(
+          handle: 1,
           calls: GraphNativeCalls(
             query: { _, request, r in complete(request.pointee.control, r) },
             getNodes: { _, request, r in complete(request.pointee.control, r) },
@@ -248,10 +249,12 @@ final class GraphReadBoundaryTests: XCTestCase {
         let closing = Task { try await store.close() }
         let closeEntered = await close.wait()
         XCTAssertTrue(closeEntered)
+        do { _ = try await store.state(); XCTFail("document admission after close") }
+        catch let error as ZeppelinError { XCTAssertEqual(error, .closed) }
         do {
           _ = try await entry.invoke(store)
           XCTFail("closing admission")
-        } catch let e as GraphError { XCTAssertEqual(e.code, .closing) }
+        } catch let e as ZeppelinError { XCTAssertEqual(e, .closed) }
         read.finish.signal()
         do {
           let metadata = try await task.value
@@ -268,9 +271,7 @@ final class GraphReadBoundaryTests: XCTestCase {
         do {
           _ = try await entry.invoke(store)
           XCTFail("closed admission")
-        } catch let e as GraphError {
-          guard case .closed = e.reason else { return XCTFail("closed") }
-        }
+        } catch let e as ZeppelinError { XCTAssertEqual(e, .closed) }
       }
     }
   }
@@ -322,7 +323,7 @@ extension GraphReadBoundaryTests {
         probe.freed()
         return 0
       })
-    let store = ZeppelinGraphStore(token: 1, calls: calls)
+    let store = makeGraphTestStore(handle: 1, calls: calls)
     var options = GraphSearchOptions()
     options.profile = .angular
     options.ef = 12
@@ -348,9 +349,11 @@ extension GraphReadBoundaryTests {
           score: GraphSlotID(1), tier: .auto,
           vectorDistance: GraphSlotID(2), lexicalScore: GraphSlotID(3), options: options)
       ], eagerSearches: [GraphOperatorID(0)])
-    _ = try await store.query(
+    _ = try await store.graphQuery(
       plan, parameters: ["vector": .list([.double(1), .double(0)]), "text": .string("amber")])
     XCTAssertEqual(probe.frees, 1)
     try await store.close()
   }
 }
+
+#endif

@@ -1,7 +1,8 @@
-import CZeppelinEmbedGraph
+#if ZE_GRAPH
+import CZeppelinEmbed
 import XCTest
 
-@testable import ZeppelinEmbedGraph
+@testable import ZeppelinEmbed
 
 final class GraphStoreTests: XCTestCase {
   func testPresenceAndListKindsRoundTrip() throws {
@@ -32,7 +33,7 @@ extension GraphStoreTests {
   func testInstalledConsumerCypherCompletesAndOwnsResult() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     var batch = GraphBatch()
     let a = batch.node(
       key: GraphKey(namespace: "", key: "a"), revision: 1,
@@ -43,7 +44,7 @@ extension GraphStoreTests {
     batch.relationship(
       key: GraphKey(namespace: "", key: "r"), revision: 1,
       .create(GraphRelationshipImage(type: "LINK"), .local(a), .local(b)))
-    _ = try await store.apply(batch)
+    _ = try await store.graphApply(batch)
     let result = try await store.cypher(
       "MATCH (n:Doc)-[:LINK]->(m) WHERE n.title = $title RETURN n.title, $number",
       parameters: ["title": .string("alpha"), "number": .integer(42)])
@@ -60,7 +61,7 @@ extension GraphStoreTests {
         try? FileManager.default.removeItem(at: path)
       }
     }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     var batch = GraphBatch()
     let a = batch.node(
       key: GraphKey(namespace: "", key: "a"), revision: 1,
@@ -72,10 +73,10 @@ extension GraphStoreTests {
     batch.relationship(
       key: GraphKey(namespace: "", key: "r"), revision: 1,
       .create(GraphRelationshipImage(type: "LINK"), .local(a), .local(b)))
-    let written = try await store.apply(batch)
+    let written = try await store.graphApply(batch)
     XCTAssertEqual(written.metadata.disposition, .committed)
     XCTAssertEqual(written.metadata.receipts.map(\.item), [0, 1, 2])
-    let replay = try await store.apply(batch)
+    let replay = try await store.graphApply(batch)
     XCTAssertEqual(replay.metadata.disposition, .replayed)
     XCTAssertEqual(
       replay.metadata.receipts.map(\.generation), written.metadata.receipts.map(\.generation))
@@ -108,7 +109,7 @@ extension GraphStoreTests {
         try? FileManager.default.removeItem(at: path)
       }
     }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     _ = try await store.cypher("CREATE (:Doc), (:Doc)")
     do {
       _ = try await store.cypher("MATCH (n) RETURN n", controls: GraphControls(rowLimit: 1))
@@ -263,11 +264,11 @@ extension GraphStoreTests {
           response.pointee.changed_generation = 99
           return status
         }, close: { _ in 0 }, free: { _ in 0 })
-      let store = ZeppelinGraphStore(token: 1, calls: calls)
+      let store = makeGraphTestStore(handle: 1, calls: calls)
       var batch = GraphBatch()
       batch.node(key: GraphKey(namespace: "", key: "x"), revision: 1, .create(GraphNodeImage()))
       let request = batch
-      let task = Task { try await store.apply(request, interruption: .cancellation(token)) }
+      let task = Task { try await store.graphApply(request, interruption: .cancellation(token)) }
       let entered = await barrier.waitForEntry()
       XCTAssertTrue(entered)
       task.cancel()
@@ -303,15 +304,15 @@ extension GraphStoreTests {
         close.pause()
         return 0
       }, free: { _ in 0 })
-    let store = ZeppelinGraphStore(token: 1, calls: calls)
+    let store = makeGraphTestStore(handle: 1, calls: calls)
     var batch = GraphBatch()
     batch.node(key: GraphKey(namespace: "", key: "x"), revision: 1, .create(GraphNodeImage()))
     let request = batch
-    let first = Task { try await store.apply(request) }
+    let first = Task { try await store.graphApply(request) }
     let entered = await write.waitForEntry()
     XCTAssertTrue(entered)
     do {
-      _ = try await store.apply(request)
+      _ = try await store.graphApply(request)
       XCTFail("Busy")
     } catch let error as GraphError {
       XCTAssertEqual(error.code, .busy)
@@ -321,19 +322,17 @@ extension GraphStoreTests {
     let closeEntered = await close.waitForEntry()
     XCTAssertTrue(closeEntered)
     do {
-      _ = try await store.apply(request)
+      _ = try await store.graphApply(request)
       XCTFail("closing admission")
-    } catch let error as GraphError { XCTAssertEqual(error.code, .closing) }
+    } catch let error as ZeppelinError { XCTAssertEqual(error, .closed) }
     write.finish.signal()
     _ = try await first.value
     close.finish.signal()
     try await closing.value
     do {
-      _ = try await store.apply(request)
+      _ = try await store.graphApply(request)
       XCTFail("closed admission")
-    } catch let error as GraphError {
-      guard case .closed = error.reason else { return XCTFail("closed") }
-    }
+    } catch let error as ZeppelinError { XCTAssertEqual(error, .closed) }
   }
 }
 
@@ -371,7 +370,7 @@ extension GraphStoreTests {
         try? FileManager.default.removeItem(at: path)
       }
     }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     let nodeKey = GraphKey(namespace: "", key: "")
     let relKey = GraphKey(namespace: "", key: "rel")
     var create = GraphBatch()
@@ -381,7 +380,7 @@ extension GraphStoreTests {
     create.relationship(
       key: relKey, revision: 1,
       .create(GraphRelationshipImage(type: "LINK"), .local(local), .local(local)))
-    let created = try await store.apply(create)
+    let created = try await store.graphApply(create)
     guard case .node(let nodeID) = created.metadata.receipts[0].identity,
       case .relationship(let relID) = created.metadata.receipts[1].identity
     else { return XCTFail("receipt kinds") }
@@ -394,7 +393,7 @@ extension GraphStoreTests {
       .put(
         relID, GraphRelationshipImage(type: "LINK", properties: ["value": .string("updated")]),
         .node(nodeID), .node(nodeID)))
-    _ = try await store.apply(put)
+    _ = try await store.graphApply(put)
     let rows = try await store.cypher("MATCH (n:Doc)-[r:LINK]->(m) RETURN n, r")
     guard case .node(let node) = rows.rows[0][0], case .relationship(let rel) = rows.rows[0][1]
     else { return XCTFail("entity rows") }
@@ -411,7 +410,7 @@ extension GraphStoreTests {
     var deletion = GraphBatch()
     deletion.relationship(key: relKey, revision: 3, .delete(relID))
     deletion.node(key: nodeKey, revision: 4, .delete(nodeID, detach: false))
-    let deleted = try await store.apply(deletion)
+    let deleted = try await store.graphApply(deletion)
     XCTAssertTrue(deleted.metadata.receipts.allSatisfy(\.deleted))
     var recreate = GraphBatch()
     let newLocal = recreate.node(
@@ -421,7 +420,7 @@ extension GraphStoreTests {
       .recreate(
         deletionRevision: 3, GraphRelationshipImage(type: "LINK"), .local(newLocal),
         .local(newLocal)))
-    let recreated = try await store.apply(recreate)
+    let recreated = try await store.graphApply(recreate)
     XCTAssertNotEqual(recreated.metadata.receipts[0].identity, .node(nodeID))
     XCTAssertNotEqual(recreated.metadata.receipts[1].identity, .relationship(relID))
     try await store.close()
@@ -437,13 +436,13 @@ extension GraphStoreTests {
         try? FileManager.default.removeItem(at: path)
       }
     }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let store = try await openGraphTestStore(at: path, mode: .create)
     let token = try GraphCancellationToken()
     try token.cancel()
     var batch = GraphBatch()
     batch.node(key: GraphKey(namespace: "", key: "x"), revision: 1, .create(GraphNodeImage()))
     do {
-      _ = try await store.apply(batch, interruption: .cancellation(token))
+      _ = try await store.graphApply(batch, interruption: .cancellation(token))
       XCTFail("cancellation")
     } catch let error as GraphError {
       XCTAssertEqual(error.code, .cancelled)
@@ -476,20 +475,20 @@ extension GraphStoreTests {
     let tower = EmbeddingTower(
       modelID: "fixture", modelVersion: "1", weightsDigest: Data([1]), dimensions: 2, maxTokens: 10,
       runtime: .cpuReference, computeUnits: .cpu, operatingSystemBuild: "")
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create, documentTower: tower)
+    let store = try await openGraphTestStore(at: path, mode: .create, documentTower: tower)
     var valid = GraphBatch()
     valid.node(
       key: GraphKey(namespace: "", key: "v"), revision: 1,
       .create(GraphNodeImage(text: "", vector: [1, 0])))
-    let result = try await store.apply(valid)
+    let result = try await store.graphApply(valid)
     XCTAssertEqual(result.metadata.disposition, .committed)
-    let replay = try await store.apply(valid)
+    let replay = try await store.graphApply(valid)
     XCTAssertEqual(replay.metadata.disposition, .replayed)
     var empty = GraphBatch()
     empty.node(
       key: GraphKey(namespace: "", key: "empty"), revision: 1, .create(GraphNodeImage(vector: [])))
     do {
-      _ = try await store.apply(empty)
+      _ = try await store.graphApply(empty)
       XCTFail("present empty vector is not absence")
     } catch let error as GraphError {
       XCTAssertEqual(error.code, .dimensionMismatch)
@@ -503,8 +502,8 @@ extension GraphStoreTests {
   func testZE76ResourceParity() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
-    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
-    let observed = try await store.resources()
+    let store = try await openGraphTestStore(at: path, mode: .create)
+    let observed = try await store.graphResources()
     XCTAssertGreaterThan(observed.engineBytes, 0)
     XCTAssertGreaterThanOrEqual(observed.enginePeakBytes, observed.engineBytes)
     XCTAssertEqual(observed.applicationBytes, 0)
@@ -512,3 +511,5 @@ extension GraphStoreTests {
     try await store.close()
   }
 }
+
+#endif

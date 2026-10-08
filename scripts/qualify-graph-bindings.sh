@@ -70,11 +70,11 @@ run() {
 run rust cargo test -p zeppelin-embed-workspace-tests --features graph-result-test-support --test graph_bindings ze72_ -- --test-threads=1
 run c cargo test -p zeppelin-embed-ffi --features graph-bindings-test-support --test ffi_graph_full ze72_ -- --test-threads=1
 run archive cargo build -p zeppelin-embed-ffi --release --features graph-bindings-test-support
-run swift env ZE_USE_LOCAL_FFI=1 CLANG_MODULE_CACHE_PATH="$output/clang-cache" SWIFTPM_MODULECACHE_OVERRIDE="$output/swift-cache" swift test --disable-sandbox --jobs 3 --scratch-path "$output/swift-build" --package-path bindings/swift/graph --filter GraphBindingsParityTests -Xswiftc -DZE72_TEST_BRIDGE
+run swift env ZE_USE_LOCAL_FFI=1 ZE_ENABLE_GRAPH=1 CLANG_MODULE_CACHE_PATH="$output/clang-cache" SWIFTPM_MODULECACHE_OVERRIDE="$output/swift-cache" swift test --disable-sandbox --jobs 3 --scratch-path "$output/swift-build" --package-path . --filter GraphBindingsParityTests -Xswiftc -DZE72_TEST_BRIDGE
 run swift-summary python3 scripts/check_swift_qualification.py "$output/swift.log" GraphBindingsParityTests
 if [ "$final" -eq 1 ]; then
   # Execute the landed ZE-76 resources and ZE-278 structured public surfaces.
-  run surfaces env ZE_USE_LOCAL_FFI=1 CLANG_MODULE_CACHE_PATH="$output/clang-cache" SWIFTPM_MODULECACHE_OVERRIDE="$output/swift-cache" swift test --disable-sandbox --jobs 3 --scratch-path "$output/swift-build" --package-path bindings/swift/graph --filter 'GraphStoreTests.testZE76ResourceParity|GraphStructuredQueryTests' -Xswiftc -DZE72_TEST_BRIDGE
+  run surfaces env ZE_USE_LOCAL_FFI=1 ZE_ENABLE_GRAPH=1 CLANG_MODULE_CACHE_PATH="$output/clang-cache" SWIFTPM_MODULECACHE_OVERRIDE="$output/swift-cache" swift test --disable-sandbox --jobs 3 --scratch-path "$output/swift-build" --package-path . --filter 'GraphStoreTests.testZE76ResourceParity|GraphStructuredQueryTests' -Xswiftc -DZE72_TEST_BRIDGE
   run resources-summary python3 scripts/check_swift_qualification.py "$output/surfaces.log" GraphStoreTests
   run structured-summary python3 scripts/check_swift_qualification.py "$output/surfaces.log" GraphStructuredQueryTests
   if [ -z "$manifest" ]; then

@@ -11,16 +11,34 @@ struct ReopenConfiguration: Sendable {
 @available(macOS 14.0, iOS 17.0, *)
 public actor ZeppelinStore {
     private var handle: UInt64?
+    #if ZE_GRAPH
+    let graphCalls: GraphNativeCalls
+    #endif
     private let configuration: ReopenConfiguration
 
     init(handle: UInt64, configuration: ReopenConfiguration) {
         self.handle = handle
         self.configuration = configuration
+        #if ZE_GRAPH
+        self.graphCalls = GraphNativeCalls()
+        #endif
     }
+
+    #if ZE_GRAPH
+    init(handle: UInt64, configuration: ReopenConfiguration, graphCalls: GraphNativeCalls) {
+        self.handle = handle
+        self.configuration = configuration
+        self.graphCalls = graphCalls
+    }
+    #endif
 
     deinit {
         if let handle {
+            #if ZE_GRAPH
+            _ = graphCalls.close(handle)
+            #else
             _ = ze_close(handle)
+            #endif
         }
     }
 
@@ -62,8 +80,13 @@ public actor ZeppelinStore {
             return
         }
         handle = nil
+        #if ZE_GRAPH
+        let close = graphCalls.close
+        #else
+        let close: @Sendable (UInt64) -> Int32 = { ze_close($0) }
+        #endif
         try await Self.runBlocking {
-            try checkZeppelin(ze_close(current))
+            try checkZeppelin(close(current))
         }
     }
 
