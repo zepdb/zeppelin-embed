@@ -36,6 +36,208 @@ pub(super) fn take_verified_faults() -> u64 {
     VERIFIED_FAULTS.with(|count| count.replace(0))
 }
 
+#[cfg(test)]
+mod durability {
+    use super::*;
+
+    #[test]
+    fn derived_graph_writes_issue_no_sync() {
+        for tier in [CommitTier::None, CommitTier::Ordered, CommitTier::Durable] {
+            let directory = tempfile::tempdir().unwrap();
+            let vfs = Arc::new(RecordingVfs::default());
+            let store = Store::open_with_test_dependencies(
+                directory.path(),
+                OpenOptions::new().with_durability(DurabilityMode::Derived, tier),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::SystemMonotonicClock),
+                ),
+            )
+            .unwrap();
+            // The one-time format barrier is outside the steady-state policy.
+            store.enable_graph().unwrap();
+            vfs.clear_events();
+            let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            let outcome = store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "durability", "node").unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&image)),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .unwrap();
+            assert!(outcome.changed_generation().is_some());
+            let writes = vfs.take();
+            assert!(
+                writes
+                    .iter()
+                    .any(|event| matches!(event, DurabilityEvent::Create(_)))
+            );
+            assert!(writes.iter().any(
+                |event| matches!(event, DurabilityEvent::Append(path) if path.ends_with("wal.ze"))
+            ));
+            assert!(
+                writes
+                    .iter()
+                    .all(|event| !matches!(event, DurabilityEvent::Sync(_, _))),
+                "{tier:?}: {writes:?}"
+            );
+
+            let admission = store.admit_native_graph_maintenance().unwrap();
+            let spill = super::super::super::maintenance::run_spill_probe(
+                &store,
+                &admission,
+                &[9, 2, 7, 2, 5],
+                2,
+            )
+            .unwrap();
+            assert_eq!(spill.ordered, vec![2, 5, 7, 9]);
+            assert!(spill.spill_runs >= 2 && spill.merges >= 1);
+            drop(admission);
+            super::super::consolidation::commit_maintenance(&store).unwrap();
+            // The first relocation can have no reclaim candidates. Folding
+            // releases its superseded objects for a subsequent reclaim intent.
+            for _ in 0..8 {
+                store
+                    .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                    .unwrap();
+                super::super::consolidation::commit_maintenance(&store).unwrap();
+                if store.native_graph.has_pending_reclaim().unwrap() {
+                    break;
+                }
+            }
+            assert!(store.native_graph.has_pending_reclaim().unwrap());
+            super::super::consolidation::commit_maintenance(&store).unwrap();
+            assert!(!store.native_graph.has_pending_reclaim().unwrap());
+            let maintenance = vfs.take();
+            assert!(maintenance.iter().any(|event| matches!(event, DurabilityEvent::Rename(_, path) if path.ends_with("manifest.ze"))));
+            assert!(
+                maintenance
+                    .iter()
+                    .all(|event| !matches!(event, DurabilityEvent::Sync(_, _))),
+                "{tier:?}: {maintenance:?}"
+            );
+            store.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn durable_durable_graph_writes_use_full_sync() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        vfs.clear_events();
+        let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let before = store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation;
+        let (entered, release) = vfs.arm_wal_full_sync();
+        let outcome = std::thread::scope(|scope| {
+            let commit = scope.spawn(|| {
+                store.apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "durability", "node").unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&image)),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+            });
+            entered.wait();
+            let held = store
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .base()
+                .generation;
+            release.wait();
+            assert_eq!(
+                held, before,
+                "publication must wait for the WAL sync to return"
+            );
+            commit.join().unwrap().unwrap()
+        });
+        let generation = outcome.changed_generation().unwrap().get();
+        assert_eq!(store.snapshot().unwrap().generation(), generation);
+        vfs.record(DurabilityEvent::Published(generation));
+        let events = vfs.take();
+        let append = events
+            .iter()
+            .position(
+                |event| matches!(event, DurabilityEvent::Append(path) if path.ends_with("wal.ze")),
+            )
+            .unwrap();
+        let directory_sync = events
+            .iter()
+            .position(|event| {
+                *event == DurabilityEvent::Sync(directory.path().to_path_buf(), SyncKind::Full)
+            })
+            .unwrap();
+        let wal_syncs: Vec<_> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| match event {
+                DurabilityEvent::Sync(path, kind) if path.ends_with("wal.ze") => {
+                    assert_eq!(*kind, SyncKind::Full);
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            wal_syncs.len(),
+            1,
+            "one isolated WAL group sync: {events:?}"
+        );
+        let publication = events
+            .iter()
+            .position(|event| *event == DurabilityEvent::Published(generation))
+            .unwrap();
+        assert!(directory_sync < append && append < wal_syncs[0] && wal_syncs[0] < publication);
+        let objects: Vec<_> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| match event {
+                DurabilityEvent::Create(path) => Some((index, path)),
+                _ => None,
+            })
+            .collect();
+        assert!(!objects.is_empty());
+        for (create, path) in objects {
+            let sync = events
+                .iter()
+                .position(|event| *event == DurabilityEvent::Sync(path.clone(), SyncKind::Full))
+                .unwrap();
+            assert!(
+                create < sync && sync < directory_sync,
+                "{path:?}: {events:?}"
+            );
+        }
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, DurabilityEvent::Sync(_, SyncKind::Barrier)))
+        );
+        store.close().unwrap();
+    }
+}
+
 /// Count one fired refusal that no VFS fault point produced (a budget, a
 /// cancellation, a planted omission), after its assertions passed.
 pub(super) fn record_verified_fault() {
