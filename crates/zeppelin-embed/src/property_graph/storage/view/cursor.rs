@@ -1,6 +1,6 @@
 //! Opaque resumable high-level native read cursors.
 
-use super::{NativeCatalog, NativeQuerySource, scan_live_nodes_after};
+use super::{NativeCatalog, NativeQuerySource, lookup_node_state, scan_live_nodes_after};
 use crate::lifecycle::native_graph::NativeReadLease;
 use crate::property_graph::catalog::{LabelId, RelTypeId};
 use crate::property_graph::query::resources::{QueryArena, QueryMemory, QueryReservation};
@@ -57,6 +57,8 @@ pub(crate) struct NodeCursor<'view, 'm, 'g> {
     runtime: RuntimeInstanceId,
     memory: &'m QueryMemory<'g>,
     labels: QueryArena<'m, 'g, LabelId>,
+    documents: Option<crate::lifecycle::native_graph::documents::DocumentCursor>,
+    graph_exhausted: bool,
     after: Option<NodeId>,
     exhausted: bool,
     failed: bool,
@@ -105,7 +107,14 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
             view_token: lease.token(),
             runtime: runtime.identity(),
             memory,
+            documents: (labels.is_empty()
+                || labels
+                    .as_slice()
+                    .iter()
+                    .all(|label| label.get() == u64::MAX))
+            .then(crate::lifecycle::native_graph::documents::DocumentCursor::default),
             labels,
+            graph_exhausted: false,
             after: None,
             exhausted: false,
             failed: false,
@@ -162,18 +171,51 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
             .map_err(RuntimeError::Memory)
             .map_err(TreeError::Runtime)?;
         let mut resources = TreeResources::for_query(runtime)?;
-        let count = scan_live_nodes_after(
-            source,
-            lease.bundle().roots(),
-            self.after,
-            self.labels.as_slice(),
-            catalog,
-            lease.bundle().document(),
-            &mut private,
-            &mut resources,
-        )?;
+        if !self.graph_exhausted {
+            let count = scan_live_nodes_after(
+                source,
+                lease.bundle().roots(),
+                self.after,
+                self.labels.as_slice(),
+                catalog,
+                lease.bundle().document(),
+                &mut private,
+                &mut resources,
+            )?;
+            self.graph_exhausted = count < output.len();
+            if let Some(last) = private.as_slice().last() {
+                self.after = Some(*last);
+            }
+        }
+        // Graph records come first. The physical document cursor then supplies
+        // only implicit nodes; adopted records and tombstones were handled above.
+        if self.graph_exhausted {
+            while private.len() < private.capacity() {
+                let Some(cursor) = &mut self.documents else {
+                    break;
+                };
+                let Some(version) = lease.next_document(cursor, &mut resources)? else {
+                    self.documents = None;
+                    break;
+                };
+                let node = NodeId::from(version.doc_id());
+                if lookup_node_state(
+                    source,
+                    lease.bundle().roots(),
+                    node,
+                    catalog,
+                    lease.bundle().document(),
+                    &mut resources,
+                )?
+                .is_none()
+                {
+                    private.push(node).map_err(|_| TreeError::Memory)?;
+                }
+            }
+        }
         drop(resources);
-        let state = if count < output.len() {
+        let count = private.len();
+        let state = if self.graph_exhausted && self.documents.is_none() {
             self.exhausted = true;
             CursorState::Done
         } else {
@@ -189,9 +231,6 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
             .get_mut(..count)
             .ok_or(TreeError::Memory)?
             .copy_from_slice(private.as_slice());
-        if let Some(last) = private.as_slice().last() {
-            self.after = Some(*last);
-        }
         Ok((count, state))
     }
 }

@@ -3021,6 +3021,7 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                         .schema
                         .slots(),
                     keys,
+                    plan.plan().description().expressions,
                     capacity,
                     context,
                 )?,

@@ -401,3 +401,146 @@ fn ze400_hybrid_max_rounds_is_bounded_by_corpus_and_work_limit() {
         );
     }
 }
+
+// The scan seam must consume each document a bounded number of times even
+// though the Cypher pull operator requests one node at a time.
+#[test]
+fn document_folder_label_scan_has_linear_work() {
+    let small = document_folder_scan_work(5_000);
+    let doubled = document_folder_scan_work(10_000);
+    assert!(
+        doubled <= 2 * small + 2,
+        "doubling documents must double visits, plus at most one extra two-endpoint note"
+    );
+    document_folder_scan_work(151_000);
+}
+
+fn document_folder_scan_work(n: u128) -> u64 {
+    use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, PredicateValue, Schema};
+    use zeppelin_embed::property_graph::query::plan::ParameterBinding;
+    use zeppelin_embed::property_graph::query::runtime::{RuntimeLimits, WorkKind};
+    use zeppelin_embed::property_graph::query::{QueryList, QueryValue, QueryView, ValueContext};
+    use zeppelin_embed::property_graph::staging::{
+        StructuredOperation, StructuredWrite, WriteImage,
+    };
+    use zeppelin_embed::property_graph::{
+        ApplicationKey, EntityKind, GraphGeneration, GraphName, GraphRevision, NodeId, NodeRef,
+        StoreInstanceId,
+    };
+    let directory = Directory::new();
+    let schema = Schema::new(vec![ColumnDefinition::new(
+        ColumnId::new(2),
+        "folder",
+        ColumnType::U64,
+        false,
+    )])
+    .unwrap();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new()
+            .with_schema(schema)
+            .with_max_resident_bytes(128 * 1024 * 1024),
+    )
+    .unwrap();
+    for start in (1..=n).step_by(1_000) {
+        store
+            .ingest(IngestBatch::new(
+                (start..=(start + 999).min(n))
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                            vec![1.0],
+                        )
+                        .with_timestamp(-(id as i64)) // Physical row order differs from identity order.
+                        .with_columns(vec![(
+                            ColumnId::new(2),
+                            PredicateValue::U64(((id - 1) / 302) as u64 % 10),
+                        )])
+                    })
+                    .collect(),
+            ))
+            .unwrap();
+        if start % 30_000 == 1 && start > 1 {
+            store.seal().unwrap();
+        }
+    }
+    store.seal().unwrap();
+    store.enable_graph().unwrap();
+    let keys: Vec<_> = (0..n / 302).map(|note| format!("note-{note}")).collect();
+    let writes: Vec<_> = keys
+        .iter()
+        .enumerate()
+        .map(|(note, key)| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Relationship, "ze401", key).unwrap(),
+            revision: GraphRevision::new(1).unwrap(),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Relationship {
+                relationship_type: GraphName::new("NOTE").unwrap(),
+                properties: &[],
+                source: NodeRef::Existing(NodeId::new(note as u128 * 302 + 301).unwrap()),
+                target: NodeRef::Existing(NodeId::new(note as u128 * 302 + 302).unwrap()),
+            }),
+        })
+        .collect();
+    for batch in writes.chunks(50) {
+        store.graph_apply(batch, &control()).unwrap();
+    }
+    store.close().unwrap();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::read_only().with_max_resident_bytes(128 * 1024 * 1024),
+    )
+    .unwrap();
+    let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
+    let query_control = control();
+    let mut values = ValueContext::new(&view, &query_control, 1_000_000).unwrap();
+    let folders = [QueryValue::I64(0)];
+    let parameters = [ParameterBinding {
+        name: "folders",
+        value: QueryValue::List(QueryList::new(&folders, &mut values).unwrap()),
+    }];
+    let options = GraphQueryOptions::default()
+        .with_result_row_limit(65_536)
+        .unwrap()
+        .with_limits(
+            24 * 1024 * 1024,
+            RuntimeLimits::default()
+                .with_limit(WorkKind::Scans, 4 * n as u64)
+                .unwrap(),
+        )
+        .unwrap();
+    let start = std::time::Instant::now();
+    let result = execute(
+        &store,
+        &query_control,
+        &options,
+        "MATCH (d:Document) WHERE d.folder IN $folders RETURN ze.node_id(d) AS id ORDER BY id",
+        &parameters,
+        CompileLimits::default(),
+    )
+    .unwrap();
+    let work = result.metadata().counters;
+    eprintln!(
+        "ZE401 n={n} rows={} elapsed={:?} scans={} lookups={} pages={}",
+        result.metadata().rows,
+        start.elapsed(),
+        work.get(WorkKind::Scans),
+        work.get(WorkKind::Lookups),
+        work.get(WorkKind::DirectoryPagesDecoded)
+    );
+    let expected: Vec<_> = (1..=n).filter(|id| ((id - 1) / 302) % 10 == 0).collect();
+    let actual: Vec<_> = (0..result.metadata().rows as usize)
+        .map(|row| {
+            let Some(Value::String(span)) = result.cell(row, 0) else {
+                panic!("document id string");
+            };
+            u128::from_str_radix(result.string(*span).unwrap(), 16).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "complete ordered IDs, including adopted relationship endpoints"
+    );
+    assert!(work.get(WorkKind::Scans) <= 4 * n as u64);
+    work.get(WorkKind::Scans)
+}

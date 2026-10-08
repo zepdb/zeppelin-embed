@@ -42,6 +42,14 @@ impl NativeReadLease {
     }
 }
 
+/// Physical document position in one immutable admission, independent of the
+/// numeric graph-directory resume key.
+#[derive(Default)]
+pub(crate) struct DocumentCursor {
+    source: usize,
+    row: usize,
+}
+
 impl NativeReadLease {
     pub(crate) fn document(
         &self,
@@ -73,40 +81,59 @@ impl NativeReadLease {
         Ok(result)
     }
 
-    pub(crate) fn visit_documents(
+    pub(crate) fn next_document(
         &self,
+        cursor: &mut DocumentCursor,
         resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
-        mut visit: impl FnMut(
-            DocumentVersion,
-            &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
-        )
-            -> Result<(), crate::property_graph::storage::tree::directory::TreeError>,
-    ) -> Result<(), crate::property_graph::storage::tree::directory::TreeError> {
+    ) -> Result<Option<DocumentVersion>, crate::property_graph::storage::tree::directory::TreeError>
+    {
+        use crate::property_graph::storage::tree::directory::NativeReadEvent;
         let Some(documents) = &self.documents else {
-            return Ok(());
+            return Ok(None);
         };
-        for row in 0..documents.active.row_count() {
-            resources.step(1)?;
-            if !documents.active.is_tombstoned(row)
-                && let Some(version) = documents.active.document(row)
-            {
-                visit(version, resources)?;
+        loop {
+            if cursor.source == 0 {
+                while cursor.row < documents.active.row_count() {
+                    resources.step(1)?;
+                    resources.read_event(NativeReadEvent::Scan)?;
+                    let row = cursor.row;
+                    cursor.row += 1;
+                    if !documents.active.is_tombstoned(row) {
+                        return documents
+                            .active
+                            .document(row)
+                            .map(Some)
+                            .ok_or(StoreError::ActiveRowOverflow)
+                            .map_err(tree_error);
+                    }
+                }
+            } else if let Some(segment) = documents.snapshot.segments().get(cursor.source - 1) {
+                let alive = segment.query_alive().map_err(tree_error)?;
+                while cursor.row < segment.meta().row_count as usize {
+                    resources.step(1)?;
+                    resources.read_event(NativeReadEvent::Scan)?;
+                    let row = cursor.row;
+                    cursor.row += 1;
+                    if alive.is_alive(row as u32) {
+                        return segment
+                            .document_version(row)
+                            .map_err(StoreError::Segment)
+                            .map_err(tree_error)?
+                            .map(Some)
+                            .ok_or(StoreError::ActiveRowOverflow)
+                            .map_err(tree_error);
+                    }
+                }
+            } else {
+                return Ok(None);
             }
+            cursor.source = cursor
+                .source
+                .checked_add(1)
+                .ok_or(StoreError::ActiveRowOverflow)
+                .map_err(tree_error)?;
+            cursor.row = 0;
         }
-        for segment in documents.snapshot.segments() {
-            let alive = segment.query_alive().map_err(tree_error)?;
-            for row in alive.alive_bitmap().iter() {
-                resources.step(1)?;
-                let version = segment
-                    .document_version(row as usize)
-                    .map_err(StoreError::Segment)
-                    .map_err(tree_error)?
-                    .ok_or(StoreError::ActiveRowOverflow)
-                    .map_err(tree_error)?;
-                visit(version, resources)?;
-            }
-        }
-        Ok(())
     }
 
     pub(crate) fn visit_document_properties(

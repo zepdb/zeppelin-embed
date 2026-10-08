@@ -492,34 +492,6 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
             }
         }
     }
-    if labels.is_empty() || labels.iter().all(|label| label.get() == u64::MAX) {
-        source.lease().visit_documents(r, |version, r| {
-            let node = NodeId::from(version.doc_id());
-            if after.is_some_and(|after| node.get().to_le_bytes() <= after.get().to_le_bytes()) {
-                return Ok(());
-            }
-            if matches!(
-                lookup_node_state(source, roots, node, catalog, document, r)?,
-                Some(NodeRecordState::Tombstone(_))
-            ) {
-                return Ok(());
-            }
-            if output.as_slice().contains(&node) {
-                return Ok(());
-            }
-            if output.len() < output.capacity() {
-                output.push(node).map_err(|_| TreeError::Memory)?;
-            } else if let Some(last) = output.as_mut_slice().last_mut()
-                && node.get().to_le_bytes() < last.get().to_le_bytes()
-            {
-                *last = node;
-            }
-            output
-                .as_mut_slice()
-                .sort_unstable_by_key(|node| node.get().to_le_bytes());
-            Ok(())
-        })?;
-    }
     Ok(output.len())
 }
 

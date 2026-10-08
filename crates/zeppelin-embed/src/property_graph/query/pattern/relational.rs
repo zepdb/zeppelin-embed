@@ -78,6 +78,7 @@ pub(super) struct SortState<'v, 'm, 'g> {
     top: Option<TopRows<'v, 'm, 'g>>,
     descriptors: QueryArena<'m, 'g, SortKey>,
     order: QueryArena<'m, 'g, OrderKey>,
+    shared_order: Option<QueryArena<'m, 'g, OrderKey>>,
     visible_slots: QueryArena<'m, 'g, SlotId>,
     key_slots: QueryArena<'m, 'g, SlotId>,
     evaluated: QueryArena<'m, 'g, RowBatch<'v, 'm, 'g>>,
@@ -338,12 +339,14 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
     ) -> Result<(), RuntimeError> {
         self.visible.take();
         self.key_rows.take();
+        self.shared_order = None;
         self.top = Some(TopRows::new(limit, context)?);
         Ok(())
     }
     pub(super) fn new(
         visible_slots: &[SlotId],
         keys: &[SortKey],
+        expressions: &[Expression<'_>],
         capacity: PatternCapacity,
         context: &RuntimeContext<'v, 'm, 'g>,
     ) -> Result<QueryArena<'m, 'g, Self>, NativeExecutionError> {
@@ -391,18 +394,50 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
                 )?)
                 .map_err(RuntimeError::Memory)?;
         }
+        // ORDER BY projected slots can sort the retained rows directly. Keeping
+        // a second row bag for those same values wastes the query allowance.
+        let shared = keys.iter().all(|key| {
+            matches!(
+                expressions.get(key.expression.0 as usize),
+                Some(Expression::Slot(slot)) if visible_slots.contains(slot)
+            )
+        });
+        let shared_order = if shared {
+            let mut direct =
+                QueryArena::new(context.memory(), keys.len()).map_err(RuntimeError::Memory)?;
+            for key in keys {
+                let Some(Expression::Slot(slot)) = expressions.get(key.expression.0 as usize)
+                else {
+                    return Err(PlanError::Reference.into());
+                };
+                direct
+                    .push(OrderKey {
+                        slot: *slot,
+                        descending: key.descending,
+                    })
+                    .map_err(RuntimeError::Memory)?;
+            }
+            Some(direct)
+        } else {
+            None
+        };
         let visible = Rows::new(context, visible_slots, capacity.rows)?;
-        let key_rows = Rows::new(context, key_slots.as_slice(), capacity.rows)?;
+        let key_rows = if shared {
+            None
+        } else {
+            Some(Rows::new(context, key_slots.as_slice(), capacity.rows)?)
+        };
         owner
             .push(Self {
                 top: None,
                 descriptors,
                 order,
+                shared_order,
                 visible_slots: owned_visible_slots,
                 key_slots,
                 evaluated,
                 visible: Some(visible),
-                key_rows: Some(key_rows),
+                key_rows,
                 uses: RowUses::new(capacity.rows, context)?,
                 capacity,
                 started: false,
@@ -426,11 +461,13 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
                 self.visible_slots.as_slice(),
                 self.capacity.rows,
             )?);
-            self.key_rows = Some(Rows::new(
-                context,
-                self.key_slots.as_slice(),
-                self.capacity.rows,
-            )?);
+            if self.shared_order.is_none() {
+                self.key_rows = Some(Rows::new(
+                    context,
+                    self.key_slots.as_slice(),
+                    self.capacity.rows,
+                )?);
+            }
         }
         for value in self.evaluated.as_mut_slice() {
             context.checkpoint()?;
@@ -501,7 +538,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             while self.next_occurrence(child, context)? {
                 context.charge(WorkKind::OperatorRows, 1)?;
                 context.charge(WorkKind::RowsIn, 1)?;
-                for position in 0..state.descriptors.len() {
+                for position in 0..if state.shared_order.is_some() {
+                    0
+                } else {
+                    state.descriptors.len()
+                } {
                     let descriptor = *state
                         .descriptors
                         .as_slice()
@@ -550,7 +591,17 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
 
                 let mut key_values = QueryArena::new(context.memory(), state.evaluated.len())
                     .map_err(RuntimeError::Memory)?;
-                for value in state.evaluated.as_slice() {
+                for value in
+                    state
+                        .evaluated
+                        .as_slice()
+                        .iter()
+                        .take(if state.shared_order.is_some() {
+                            0
+                        } else {
+                            state.evaluated.len()
+                        })
+                {
                     key_values
                         .push(value.value(0, 0).ok_or(RuntimeError::Batch)?)
                         .map_err(RuntimeError::Memory)?;
@@ -568,10 +619,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                         .as_mut()
                         .ok_or(RuntimeError::Batch)?
                         .push(values.as_slice(), context)?;
-                    key_rows
-                        .as_mut()
-                        .ok_or(RuntimeError::Batch)?
-                        .push(key_values.as_slice(), context)?;
+                    if let Some(keys) = &mut key_rows {
+                        keys.push(key_values.as_slice(), context)?;
+                    }
                     state
                         .uses
                         .push(self.occurrence(child)?.uses.as_slice(), context)?;
@@ -579,6 +629,12 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             }
             if let Some(top) = &mut state.top {
                 top.sort(state.order.as_slice(), context)?;
+            } else if let Some(order) = &state.shared_order {
+                visible = Some(
+                    visible
+                        .ok_or(RuntimeError::Batch)?
+                        .sort(order.as_slice(), context)?,
+                );
             } else {
                 state.key_rows = Some(
                     key_rows
@@ -597,15 +653,24 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             state.next += 1;
             return Ok(true);
         }
-        let key_rows = state.key_rows.as_ref().ok_or(RuntimeError::Batch)?;
-        if state.next == key_rows.len() {
+        let visible = state.visible.as_ref().ok_or(RuntimeError::Batch)?;
+        let ordered = if state.shared_order.is_some() {
+            visible
+        } else {
+            state.key_rows.as_ref().ok_or(RuntimeError::Batch)?
+        };
+        if state.next == ordered.len() {
             return Ok(false);
         }
-        let source = key_rows.selected_source_row(state.next)?;
-        let visible = state.visible.as_ref().ok_or(RuntimeError::Batch)?;
+        let source = ordered.selected_source_row(state.next)?;
+        let position = if state.shared_order.is_some() {
+            state.next
+        } else {
+            source
+        };
         let parent = self.occurrence_mut(index)?;
         parent.output.push_from(
-            |column| visible.value(source, column).ok_or(RuntimeError::Batch),
+            |column| visible.value(position, column).ok_or(RuntimeError::Batch),
             context,
         )?;
         let uses = state.uses.get(source)?;

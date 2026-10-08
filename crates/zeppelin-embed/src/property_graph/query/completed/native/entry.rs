@@ -120,8 +120,9 @@ impl GraphQueryOptions {
         self
     }
 
-    /// Sets the returned-row capacity (1..=65,536). Other operator, payload
-    /// and work budgets remain independent; exceeding any budget fails.
+    /// Sets the returned-row capacity (1..=65,536), provisioning the same
+    /// string bytes per row as the default, within the 4 MiB payload ceiling.
+    /// Other operator and work budgets remain independent.
     pub fn with_result_row_limit(
         mut self,
         rows: usize,
@@ -130,6 +131,8 @@ impl GraphQueryOptions {
             return Err(crate::property_graph::query::runtime::RuntimeError::BatchCapacity);
         }
         self.execution.result_rows = rows;
+        self.execution.result.string_bytes = 64 * rows.max(1024);
+        self.execution.result_payload_bytes = self.execution.result.string_bytes.max(256 * 1024);
         Ok(self)
     }
 }
