@@ -544,3 +544,193 @@ fn document_folder_scan_work(n: u128) -> u64 {
     assert!(work.get(WorkKind::Scans) <= 4 * n as u64);
     work.get(WorkKind::Scans)
 }
+
+#[test]
+fn ze402_text_eligible_collect_scales_and_matches_store() {
+    eligible_collect_parity(false);
+}
+
+#[test]
+fn ze402_hybrid_eligible_collect_scales_and_matches_store() {
+    eligible_collect_parity(true);
+}
+
+fn eligible_collect_parity(hybrid: bool) {
+    use zeppelin_embed::property_graph::query::QueryValue;
+    use zeppelin_embed::property_graph::query::plan::ParameterBinding;
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    let mut previous = None;
+    for n in [1_024_u128, 1_025, 10_000, 100_000] {
+        let (_directory, store) = fixture();
+        for start in (1..=n + 1).step_by(1_000) {
+            store
+                .ingest(
+                    IngestBatch::new(
+                        (start..=(start + 999).min(n + 1))
+                            .map(|id| {
+                                IngestDocument::new(
+                                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                                    vec![1.0, id as f32 / n as f32],
+                                )
+                                .with_text(if id == n + 1 {
+                                    "amber amber"
+                                } else {
+                                    "amber birch"
+                                })
+                            })
+                            .collect(),
+                    )
+                    .with_epoch(store.epoch_identity().unwrap()),
+                )
+                .unwrap();
+        }
+        store.seal().unwrap();
+        store.enable_graph().unwrap();
+        let eligible: Vec<_> = (1..=n).map(DocId::new).collect();
+        let term = zeppelin_embed::fts::search::TermQuery::flat(
+            vec![b"amber".to_vec()],
+            &[zeppelin_embed::fts::index::DEFAULT_FIELD],
+        );
+        let expected: Vec<_> = if hybrid {
+            store
+                .search_hybrid(
+                    zeppelin_embed::ingest::SearchRequest::new(&[1.0, 0.0])
+                        .with_eligible(&eligible),
+                    &term,
+                    &zeppelin_embed::fusion::HybridQuery::new(10),
+                    zeppelin_embed::lifecycle::SearchOptions::default()
+                        .with_tier(zeppelin_embed::lifecycle::SearchTier::Exact),
+                    control(),
+                )
+                .unwrap()
+                .hits
+                .iter()
+                .map(|hit| (hit.key.get(), hit.fused_score.to_bits()))
+                .collect()
+        } else {
+            store
+                .search_lexical_filtered(
+                    &term,
+                    10,
+                    control(),
+                    Some(&zeppelin_embed::lifecycle::QueryFilter::eligible(
+                        &zeppelin_embed::meta::Schema::timestamp_only(),
+                        &eligible,
+                    )),
+                )
+                .unwrap()
+                .candidates
+                .iter()
+                .map(|hit| (hit.document.doc_id().get(), hit.score.to_bits()))
+                .collect()
+        };
+        let call = if hybrid {
+            "ze.hybrid_search([1,0], $text, 10, 'exact', eligible)"
+        } else {
+            "ze.text_search($text, 10, eligible)"
+        };
+        let source = format!(
+            "MATCH (d:Document) WHERE ze.node_id(d) <= $lastId WITH collect(DISTINCT d) AS eligible CALL {call} YIELD node, score RETURN ze.node_id(node) AS id, score"
+        );
+        let last_id = format!("{n:032x}");
+        let parameters = [
+            ParameterBinding {
+                name: "lastId",
+                value: QueryValue::String(&last_id),
+            },
+            ParameterBinding {
+                name: "text",
+                value: QueryValue::String("amber"),
+            },
+        ];
+        // Warm retrieval so cache construction does not affect work comparisons.
+        run(
+            &store,
+            if hybrid {
+                "CALL ze.hybrid_search([1,0],'amber',10,'exact') YIELD node RETURN node"
+            } else {
+                "CALL ze.text_search('amber',10) YIELD node RETURN node"
+            },
+        );
+        let result = execute(
+            &store,
+            &control(),
+            &GraphQueryOptions::default(),
+            &source,
+            &parameters,
+            CompileLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("ZE402 hybrid={hybrid} n={n}: {error}"));
+        let actual: Vec<_> = (0..result.metadata().rows as usize)
+            .map(|row| {
+                let Some(Value::String(span)) = result.cell(row, 0) else {
+                    panic!("id string")
+                };
+                let Some(Value::F64(score)) = result.cell(row, 1) else {
+                    panic!("score")
+                };
+                (
+                    u128::from_str_radix(result.string(*span).unwrap(), 16).unwrap(),
+                    *score,
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected, "Cypher/Store eligible parity");
+        let work = result.metadata().counters;
+        assert_eq!(work.get(WorkKind::EligibilityUniqueEntries), n as u64);
+        assert!(result.metadata().peak_query_bytes <= 24 * 1024 * 1024);
+        if n == 10_000 {
+            use zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind;
+            use zeppelin_embed::property_graph::query::runtime::RuntimeLimits;
+            for options in [
+                GraphQueryOptions::default()
+                    .with_limits(1024 * 1024, RuntimeLimits::default())
+                    .unwrap(),
+                GraphQueryOptions::default()
+                    .with_limits(
+                        24 * 1024 * 1024,
+                        RuntimeLimits::default()
+                            .with_limit(WorkKind::CopiedBytes, work.get(WorkKind::CopiedBytes) - 1)
+                            .unwrap(),
+                    )
+                    .unwrap(),
+            ] {
+                let Err(zeppelin_embed_cypher::StatementError::Query(error)) = execute(
+                    &store,
+                    &control(),
+                    &options,
+                    &source,
+                    &parameters,
+                    CompileLimits::default(),
+                ) else {
+                    panic!("tightened query budgets must refuse the complete result")
+                };
+                assert_eq!(error.kind(), GraphQueryErrorKind::Limit);
+                assert!(error.nothing_committed());
+            }
+        }
+        for kind in [
+            WorkKind::Scans,
+            WorkKind::OperatorRows,
+            WorkKind::HashProbes,
+            WorkKind::CopiedBytes,
+            WorkKind::EligibilityEntries,
+        ] {
+            let current = work.get(kind);
+            if let Some((old_n, old_work)) = previous {
+                let old_work: zeppelin_embed::property_graph::query::runtime::WorkCounters =
+                    old_work;
+                assert!(
+                    current <= old_work.get(kind) * (n as u64).div_ceil(old_n) + 1024,
+                    "linear {kind:?}: {current}"
+                );
+            }
+        }
+        eprintln!(
+            "ZE402 hybrid={hybrid} n={n} rows={} peak_query_bytes={} work={work:?}",
+            result.metadata().rows,
+            result.metadata().peak_query_bytes
+        );
+        previous = Some((n as u64, work));
+    }
+}

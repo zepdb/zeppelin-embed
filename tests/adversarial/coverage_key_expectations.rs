@@ -336,6 +336,7 @@ const GRAPH_KEYS: &[&str] = &[
     "property-graph.native-relational.row-cap.fire",
     "property-graph.native-relational.same-seed-control",
     "property-graph.native-relational.streaming-retention",
+    "property-graph.native-relational.variable-reservation.fire",
     "property-graph.native-result.control.fire",
     "property-graph.native-result.copy",
     "property-graph.native-result.identity",

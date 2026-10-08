@@ -2484,7 +2484,7 @@ fn evaluate_at<'a, 'r, 'plan, 'v, 'm, 'g>(
     mutation: Option<&mut MutationScope<'_, '_>>,
     expression: ExprId,
     schema: &Schema<'_, '_>,
-    input: &RowBatch<'v, 'm, 'g>,
+    input: &'a RowBatch<'v, 'm, 'g>,
     row: usize,
     view: &GraphReadView<'_, 'v, 'm, 'g>,
     context: &mut RuntimeContext<'v, 'm, 'g>,

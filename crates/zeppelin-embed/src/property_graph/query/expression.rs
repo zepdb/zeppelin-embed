@@ -631,7 +631,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         &'a mut self,
         expression: ExprId,
         schema: &Schema<'_, '_>,
-        input: &RowBatch<'v, 'm, 'g>,
+        input: &'a RowBatch<'v, 'm, 'g>,
         row: usize,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
@@ -654,7 +654,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         &'a mut self,
         expression: ExprId,
         schema: &Schema<'_, '_>,
-        input: &RowBatch<'v, 'm, 'g>,
+        input: &'a RowBatch<'v, 'm, 'g>,
         row: usize,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
         overlay: &mut ClauseOverlay<'_, '_, '_, '_>,
@@ -675,13 +675,14 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         &'a mut self,
         expression: ExprId,
         schema: &Schema<'_, '_>,
-        input: &RowBatch<'v, 'm, 'g>,
+        input: &'a RowBatch<'v, 'm, 'g>,
         row: usize,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
         overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<QueryValue<'a>, ExpressionError> {
         self.reset();
+        let mut borrowed = None;
         let result: Result<ScratchCell, ExpressionFailure> = (|| {
             view.validate_expression_owner(context)?;
             if !std::ptr::eq(self.memory, context.memory())
@@ -692,10 +693,29 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             {
                 return Err(RuntimeError::Batch.into());
             }
+            // A packed node list already has charged, immutable same-view backing.
+            // Forward a root slot without expanding it into scratch descriptors.
+            if let Some(Expression::Slot(slot)) =
+                self.description.expressions.get(expression.0 as usize)
+            {
+                let value = input
+                    .value(row, schema.column(*slot)?)
+                    .ok_or(RuntimeError::Batch)?;
+                if matches!(value, QueryValue::List(list) if list.node_ids().is_some()) {
+                    context.charge(WorkKind::Expressions, 1)?;
+                    context.values().step()?;
+                    value.validate(context.values())?;
+                    borrowed = Some(value);
+                    return Ok(ScratchCell::Null);
+                }
+            }
             self.evaluate_inner(expression, schema, input, row, view, overlay, context, 0)
         })();
         match result {
             Ok(value) => {
+                if let Some(value) = borrowed {
+                    return Ok(value);
+                }
                 self.output = Some(value);
                 self.scratch.value(value).ok_or(ExpressionError {
                     expression,

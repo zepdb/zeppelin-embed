@@ -139,6 +139,7 @@ impl GraphQueryOptions {
 
 impl Default for GraphQueryOptions {
     /// Blocking storage grows in 1,024-row chunks up to the query budget.
+    /// Packed collect members use the independent list and query-memory limits.
     /// Results and staged write entities retain their separate 1,024 caps.
     fn default() -> Self {
         let variable = ArenaCapacity {
@@ -157,8 +158,14 @@ impl Default for GraphQueryOptions {
                 rows: StorageCapacity {
                     rows: 1024,
                     max_rows: 65_536,
-                    payload_bytes: 256 * 1024,
-                    variable,
+                    payload_bytes: crate::property_graph::query::MAX_QUERY_BYTES,
+                    variable: ArenaCapacity {
+                        node_ids: crate::property_graph::query::MAX_LIST_ELEMENTS.min(
+                            crate::property_graph::query::MAX_QUERY_BYTES
+                                / std::mem::size_of::<crate::property_graph::NodeId>(),
+                        ),
+                        ..variable
+                    },
                 },
                 expression: ExpressionCapacity {
                     cells: 1024,

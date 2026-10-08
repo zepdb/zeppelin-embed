@@ -97,6 +97,7 @@ impl Cell {
 }
 struct VariableArena<'v, 'm, 'g> {
     view: &'v QueryView,
+    capacity: ArenaCapacity,
     children: QueryArena<'m, 'g, Cell>,
     bytes: QueryArena<'m, 'g, u8>,
     nodes: QueryArena<'m, 'g, NodeId>,
@@ -152,17 +153,15 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
         }
         match value {
             QueryValue::String(text) => {
-                if self
-                    .bytes
-                    .len()
-                    .checked_add(text.len())
-                    .is_none_or(|n| n > self.bytes.capacity())
-                {
-                    return Err(RuntimeError::BatchCapacity);
-                }
                 if payload.checked_add(text.len()).is_none_or(|n| n > limit) {
                     return Err(RuntimeError::BatchCapacity);
                 }
+                grow(
+                    &mut self.bytes,
+                    text.len(),
+                    self.capacity.string_bytes,
+                    context,
+                )?;
                 let start = self.bytes.len();
                 for chunk in text.as_bytes().chunks(65536) {
                     context.checkpoint()?;
@@ -179,14 +178,7 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                     return Err(RuntimeError::Batch);
                 }
                 if let Some(ids) = list.node_ids() {
-                    if self
-                        .nodes
-                        .len()
-                        .checked_add(ids.len())
-                        .is_none_or(|n| n > self.nodes.capacity())
-                    {
-                        return Err(RuntimeError::BatchCapacity);
-                    }
+                    grow(&mut self.nodes, ids.len(), self.capacity.node_ids, context)?;
                     let start = self.nodes.len();
                     for id in ids {
                         context.values().step()?;
@@ -199,14 +191,12 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                     });
                 }
                 if let Some(ids) = list.relationship_ids() {
-                    if self
-                        .relationships
-                        .len()
-                        .checked_add(ids.len())
-                        .is_none_or(|n| n > self.relationships.capacity())
-                    {
-                        return Err(RuntimeError::BatchCapacity);
-                    }
+                    grow(
+                        &mut self.relationships,
+                        ids.len(),
+                        self.capacity.relationship_ids,
+                        context,
+                    )?;
                     let start = self.relationships.len();
                     for id in ids {
                         context.values().step()?;
@@ -218,14 +208,12 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                         len: ids.len(),
                     });
                 }
-                if self
-                    .children
-                    .len()
-                    .checked_add(list.len())
-                    .is_none_or(|n| n > self.children.capacity())
-                {
-                    return Err(RuntimeError::BatchCapacity);
-                }
+                grow(
+                    &mut self.children,
+                    list.len(),
+                    self.capacity.list_cells,
+                    context,
+                )?;
                 let before = self.usage();
                 let start = self.children.len();
                 for _ in 0..list.len() {
@@ -267,6 +255,35 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
             _ => Err(RuntimeError::Batch),
         }
     }
+}
+
+// Internal storage provisions variable backing on demand, within its configured
+// maxima. Every replacement is charged before allocation; geometric growth
+// keeps repeated small appends linear and leaves QueryArena fixed-capacity.
+fn grow<'v, 'm, 'g, T: Copy>(
+    arena: &mut QueryArena<'m, 'g, T>,
+    additional: usize,
+    limit: usize,
+    context: &mut RuntimeContext<'v, 'm, 'g>,
+) -> Result<(), RuntimeError> {
+    let needed = arena
+        .len()
+        .checked_add(additional)
+        .ok_or(RuntimeError::BatchCapacity)?;
+    if needed > limit {
+        return Err(RuntimeError::BatchCapacity);
+    }
+    if needed > arena.capacity() {
+        let capacity = needed.max(arena.capacity().saturating_mul(2)).min(limit);
+        let mut replacement = QueryArena::new(context.memory(), capacity)?;
+        for chunk in arena.as_slice().chunks(1024) {
+            context.checkpoint()?;
+            context.charge(WorkKind::CopiedBytes, std::mem::size_of_val(chunk) as u64)?;
+            replacement.extend_copy(chunk)?;
+        }
+        *arena = replacement;
+    }
+    Ok(())
 }
 fn copied(
     context: &mut RuntimeContext<'_, '_, '_>,
@@ -332,7 +349,14 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
         if max_rows == 0 || max_rows > 256 {
             return Err(RuntimeError::Batch);
         }
-        Self::storage(context, columns, max_rows, payload_limit, capacity)
+        let mut batch = Self::storage(context, columns, max_rows, payload_limit, capacity)?;
+        // Explicit kernel callers retain their upfront fixed provisioning.
+        batch.variable.children = QueryArena::new(context.memory(), capacity.list_cells)?;
+        batch.variable.bytes = QueryArena::new(context.memory(), capacity.string_bytes)?;
+        batch.variable.nodes = QueryArena::new(context.memory(), capacity.node_ids)?;
+        batch.variable.relationships =
+            QueryArena::new(context.memory(), capacity.relationship_ids)?;
+        Ok(batch)
     }
     pub(crate) fn storage(
         context: &RuntimeContext<'v, 'm, 'g>,
@@ -356,10 +380,11 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
             view: context.view(),
             variable: VariableArena {
                 view: context.view(),
-                children: QueryArena::new(context.memory(), capacity.list_cells)?,
-                bytes: QueryArena::new(context.memory(), capacity.string_bytes)?,
-                nodes: QueryArena::new(context.memory(), capacity.node_ids)?,
-                relationships: QueryArena::new(context.memory(), capacity.relationship_ids)?,
+                capacity,
+                children: QueryArena::new(context.memory(), 0)?,
+                bytes: QueryArena::new(context.memory(), 0)?,
+                nodes: QueryArena::new(context.memory(), 0)?,
+                relationships: QueryArena::new(context.memory(), 0)?,
             },
             cells: QueryArena::new(
                 context.memory(),

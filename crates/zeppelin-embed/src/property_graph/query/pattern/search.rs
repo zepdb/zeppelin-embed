@@ -359,13 +359,13 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         Ok((schema, row))
     }
 
-    fn evaluate_search_argument(
-        &mut self,
+    fn evaluate_search_argument<'a>(
+        &'a mut self,
         expression: ExprId,
         schema: &Schema<'m, 'g>,
-        row: &RowBatch<'v, 'm, 'g>,
+        row: &'a RowBatch<'v, 'm, 'g>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
-    ) -> Result<QueryValue<'_>, NativeExecutionError> {
+    ) -> Result<QueryValue<'a>, NativeExecutionError> {
         Ok(evaluate_at(
             &mut self.evaluator,
             self.mutation.as_mut(),

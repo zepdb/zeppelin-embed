@@ -310,11 +310,14 @@ impl<'v, 'm, 'g> StreamAggregate<'v, 'm, 'g> {
                 sum: QueryValue::I64(0),
                 extreme: None,
                 values: if retain {
-                    Some(Rows::new(
-                        context,
-                        &[SlotId(0)],
-                        self.representatives.capacity,
-                    )?)
+                    let mut capacity = self.representatives.capacity;
+                    if matches!(aggregate.operation, Aggregate::Collect { .. })
+                        && capacity.max_rows > capacity.rows
+                    {
+                        // A collect operand is a list member, not a returned row.
+                        capacity.max_rows = super::super::MAX_LIST_ELEMENTS;
+                    }
+                    Some(Rows::new(context, &[SlotId(0)], capacity)?)
                 } else {
                     None
                 },

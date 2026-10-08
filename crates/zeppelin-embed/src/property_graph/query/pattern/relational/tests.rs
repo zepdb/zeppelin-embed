@@ -2600,7 +2600,7 @@ fn relational_probe_receipts(
 }
 
 fn relational_receipt_oracle(receipts: &[(&'static str, u64)]) -> bool {
-    const EXPECTED: [&str; 13] = [
+    const EXPECTED: [&str; 14] = [
         "pipeline",
         "representative",
         "group",
@@ -2612,6 +2612,7 @@ fn relational_receipt_oracle(receipts: &[(&'static str, u64)]) -> bool {
         "same-seed",
         "oracle",
         "chunk-reservation",
+        "variable-reservation",
         "row-cap",
         "streaming-retention",
     ];
@@ -2662,7 +2663,7 @@ fn native_relational_limits_controls_errors_release() {
     let report = super::test_support::run_actual_probe(0x5e15_4c01)
         .expect("run actual native relational control probe");
     let receipts = relational_probe_receipts(&report);
-    assert_eq!(receipts.len(), 13);
+    assert_eq!(receipts.len(), 14);
     for name in ["limit", "cancel", "late-error", "release", "same-seed"] {
         assert!(
             receipts.get(name).copied().unwrap_or(0) > 0,
@@ -2705,7 +2706,7 @@ fn native_relational_directed_probe_can_fire() {
         );
     }
     assert!(relational_receipt_oracle(&report.receipts));
-    for name in ["chunk-reservation", "row-cap"] {
+    for name in ["chunk-reservation", "variable-reservation", "row-cap"] {
         let mut absent = report.receipts.clone();
         absent.iter_mut().find(|(key, _)| *key == name).unwrap().1 = 0;
         assert!(
@@ -2786,7 +2787,9 @@ fn ze51_default_memory_blocking_capacity_measurement() {
                 })();
                 match result {
                     Ok(()) => count += 1,
-                    Err(RuntimeError::Memory(MemoryError::Limit)) => break,
+                    Err(RuntimeError::Memory(MemoryError::Limit) | RuntimeError::BatchCapacity) => {
+                        break;
+                    }
                     other => panic!("unexpected capacity result: {other:?}"),
                 }
             }
@@ -2820,8 +2823,8 @@ fn ze51_default_memory_blocking_capacity_measurement() {
             )
             .unwrap();
         assert!(
-            count < 65_536,
-            "memory must fail before the existing row cap"
+            count <= 65_536,
+            "on-demand backing stops at query memory or the existing row cap"
         );
     }
     store.close().unwrap();

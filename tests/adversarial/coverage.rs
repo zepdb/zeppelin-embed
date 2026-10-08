@@ -208,6 +208,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.native-relational.same-seed-control",
     "property-graph.native-relational.oracle.can-fire",
     "property-graph.native-relational.chunk-reservation.fire",
+    "property-graph.native-relational.variable-reservation.fire",
     "property-graph.native-relational.row-cap.fire",
     "property-graph.native-relational.streaming-retention",
     "property-graph.read-view.admission-capture",

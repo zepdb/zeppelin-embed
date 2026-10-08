@@ -6,7 +6,7 @@ use zeppelin_embed::property_graph::query::native_relational_test_support::{
     NativeRelationalProbeReport, run_actual_probe,
 };
 
-const KEYS: [&str; 13] = [
+const KEYS: [&str; 14] = [
     "property-graph.native-relational.pipeline",
     "property-graph.native-relational.representative",
     "property-graph.native-relational.group",
@@ -18,6 +18,7 @@ const KEYS: [&str; 13] = [
     "property-graph.native-relational.same-seed-control",
     "property-graph.native-relational.oracle.can-fire",
     "property-graph.native-relational.chunk-reservation.fire",
+    "property-graph.native-relational.variable-reservation.fire",
     "property-graph.native-relational.row-cap.fire",
     "property-graph.native-relational.streaming-retention",
 ];
@@ -84,6 +85,7 @@ fn register(
         "same-seed",
         "oracle",
         "chunk-reservation",
+        "variable-reservation",
         "row-cap",
         "streaming-retention",
     ];
@@ -118,7 +120,12 @@ mod tests {
     fn native_relational_directed_probe_can_fire() {
         let seed = 0x5e15_4c01;
         let report = run_actual_probe(seed).expect("actual blocking faults and clean controls");
-        for name in ["chunk-reservation", "row-cap", "streaming-retention"] {
+        for name in [
+            "chunk-reservation",
+            "variable-reservation",
+            "row-cap",
+            "streaming-retention",
+        ] {
             let mut missed = report.clone();
             missed
                 .receipts

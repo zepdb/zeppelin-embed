@@ -45,7 +45,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Actual observations plus twelve independently checked directed receipts.
+/// Actual observations plus independently checked directed receipts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeRelationalProbeReport {
     /// Completed pipeline rows from the native operator tree.
@@ -1912,6 +1912,7 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
             ("same-seed", same_seed),
             ("oracle", oracle),
             ("chunk-reservation", 1),
+            ("variable-reservation", 1),
             ("row-cap", 1),
             ("streaming-retention", 1),
         ],
@@ -2232,8 +2233,114 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
     let baseline = resources
         .reserved_bytes()
         .map_err(|error| error.to_string())?;
+    // Exhaust real query memory after the first retained chunk. Unused string
+    // maxima no longer allocate backing, so they cannot stand in for pressure.
+    struct ChunkReservation;
+    impl NativeReadConsumer<()> for ChunkReservation {
+        fn consume<'s, 'v, 'm, 'g>(
+            &mut self,
+            _: &crate::property_graph::storage::GraphReadView<'s, 'v, 'm, 'g>,
+            runtime: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<(), crate::property_graph::storage::tree::directory::TreeError> {
+            use crate::property_graph::query::relational::Rows;
+            use crate::property_graph::query::resources::MemoryError;
+            let result: Result<(), RuntimeError> = (|| {
+                let capacity = StorageCapacity {
+                    rows: 1,
+                    max_rows: 2,
+                    payload_bytes: 16,
+                    variable: ArenaCapacity::default(),
+                };
+                let mut rows = Rows::new(runtime, &[SlotId(0)], capacity)?;
+                rows.push(&[QueryValue::I64(1)], runtime)?;
+                let pressure = runtime
+                    .memory()
+                    .reserve(6 * 1024 * 1024 - runtime.memory().reserved_bytes())
+                    .map_err(RuntimeError::Memory)?;
+                if !matches!(
+                    rows.push(&[QueryValue::I64(2)], runtime),
+                    Err(RuntimeError::Memory(MemoryError::Limit))
+                ) || rows.len() != 1
+                {
+                    return Err(RuntimeError::Batch);
+                }
+                drop(pressure);
+                rows.push(&[QueryValue::I64(2)], runtime)?;
+                if rows.len() != 2 {
+                    return Err(RuntimeError::Batch);
+                }
+                // Exercise replacement of initialized packed-node backing as
+                // well as allocation of a new row chunk.
+                let mut batch = crate::property_graph::query::runtime::RowBatch::storage(
+                    runtime,
+                    1,
+                    3,
+                    64,
+                    ArenaCapacity {
+                        node_ids: 3,
+                        ..ArenaCapacity::default()
+                    },
+                )?;
+                let id = NodeId::new(1).map_err(|_| RuntimeError::Batch)?;
+                let ids = [id];
+                let pair = [id, id];
+                let single = crate::property_graph::query::QueryList::nodes(
+                    runtime.view(),
+                    &ids,
+                    runtime.values(),
+                )?;
+                batch.push_row(&[QueryValue::List(single)], runtime)?;
+                let copied = runtime.counters().get(WorkKind::CopiedBytes);
+                let pressure = runtime
+                    .memory()
+                    .reserve(6 * 1024 * 1024 - runtime.memory().reserved_bytes())
+                    .map_err(RuntimeError::Memory)?;
+                let list = crate::property_graph::query::QueryList::nodes(
+                    runtime.view(),
+                    &pair,
+                    runtime.values(),
+                )?;
+                if !matches!(
+                    batch.push_row(&[QueryValue::List(list)], runtime),
+                    Err(RuntimeError::Memory(MemoryError::Limit))
+                ) || batch.rows() != 1
+                    || batch.arena_usage().node_ids != 1
+                    || runtime.counters().get(WorkKind::CopiedBytes) != copied
+                {
+                    return Err(RuntimeError::Batch);
+                }
+                drop(pressure);
+                batch.push_row(&[QueryValue::List(list)], runtime)?;
+                // Growth must still stop at the configured arena maximum.
+                if !matches!(
+                    batch.push_row(&[QueryValue::List(single)], runtime),
+                    Err(RuntimeError::BatchCapacity)
+                ) || batch.rows() != 2
+                {
+                    return Err(RuntimeError::Batch);
+                }
+                Ok(())
+            })();
+            result.map_err(crate::property_graph::storage::tree::directory::TreeError::Runtime)
+        }
+    }
+    store
+        .with_native_read(
+            &QueryControl::Cancel(CancelToken::new()),
+            RuntimeLimits::default(),
+            6 * 1024 * 1024,
+            64,
+            ChunkReservation,
+        )
+        .map_err(|error| error.to_string())?;
+    if resources
+        .reserved_bytes()
+        .map_err(|error| error.to_string())?
+        != baseline
+    {
+        return Err(String::from("chunk reservation leaked query backing"));
+    }
     for (memory_limit, max_rows, expected, streaming) in [
-        (6 * 1024 * 1024, 2, Some(GraphQueryErrorKind::Limit), false),
         (16 * 1024 * 1024, 1, Some(GraphQueryErrorKind::Limit), false),
         (16 * 1024 * 1024, 2, None, false),
         (16 * 1024 * 1024, 1, None, true),
