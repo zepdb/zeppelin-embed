@@ -124,31 +124,6 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn mixed_batch_append_member_faults_fire() {
-        let mut coverage = CoverageRegistry::default();
-        mixed_batch(256, &mut coverage).unwrap();
-        for key in &REQUIRED[6..] {
-            assert!(coverage.count(key) > 0, "missing {key}");
-        }
-    }
-
-    #[test]
-    fn unified_graph_fault_sites_are_registered_and_fire() {
-        let mut coverage = CoverageRegistry::default();
-        probe(256, &mut coverage).unwrap();
-        for key in REQUIRED {
-            assert!(
-                coverage.count(key) > 0,
-                "missing unified fault receipt: {key}"
-            );
-        }
-    }
-}
-
 fn mixed_batch(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     use super::fault_vfs::{FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, ScheduledVfs};
     use std::sync::Arc;
@@ -277,4 +252,29 @@ fn mixed_batch(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String>
     coverage.hit(REQUIRED[10]);
     coverage.hit("op.MixedBatch");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mixed_batch_append_member_faults_fire() {
+        let mut coverage = CoverageRegistry::default();
+        mixed_batch(256, &mut coverage).unwrap();
+        for key in &REQUIRED[6..] {
+            assert!(coverage.count(key) > 0, "missing {key}");
+        }
+    }
+
+    #[test]
+    fn unified_graph_fault_sites_are_registered_and_fire() {
+        let mut coverage = CoverageRegistry::default();
+        probe(256, &mut coverage).unwrap();
+        for key in REQUIRED {
+            assert!(
+                coverage.count(key) > 0,
+                "missing unified fault receipt: {key}"
+            );
+        }
+    }
 }
