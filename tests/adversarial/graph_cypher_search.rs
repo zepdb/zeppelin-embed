@@ -32,6 +32,7 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.cypher-search.cancel.admission-fire",
     "property-graph.cypher-search.close.retrieval-fire",
     "property-graph.cypher-search.resource.execution-fire",
+    "property-graph.cypher-search.eligible-memory-limit",
     "property-graph.cypher-search.release",
     "property-graph.cypher-search.oracle.can-fire",
     "property-graph.cypher-search.same-seed-control",
@@ -346,6 +347,58 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             return Err(format!("eager report mismatch {q}"));
         }
     }
+    // Exercise the eligible adapter path under a query-memory refusal, then
+    // repeat the clean query to prove temporary ownership was released.
+    let eligible_query = "MATCH (d:Document) WITH collect(DISTINCT d) AS e CALL ze.text_search('amber',1,e) YIELD node RETURN node LIMIT 0";
+    let clean = run(
+        &store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &Default::default(),
+        eligible_query,
+    )
+    .map_err(|e| e.to_string())?;
+    if clean.pools().reports.first().map(|r| r.candidate_count) != Some(64) {
+        return Err("eligible search did not cover the document set".into());
+    }
+    let peak = clean.metadata().peak_query_bytes;
+    drop(clean);
+    let options = GraphQueryOptions::default()
+        .with_limits(peak - 1, Default::default())
+        .map_err(|e| e.to_string())?;
+    match run(
+        &store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &options,
+        eligible_query,
+    ) {
+        Err(StatementError::Query(e))
+            if e.kind() == GraphQueryErrorKind::Limit
+                && e.nothing_committed()
+                && e.counters()
+                    .is_some_and(|c| c.get(WorkKind::SearchInvocations) == 1) => {}
+        Err(error) => {
+            return Err(format!(
+                "eligible query memory refusal did not fire: {error:?}"
+            ));
+        }
+        Ok(_) => return Err("eligible query memory refusal returned a result".into()),
+    }
+    if shared.reserved_bytes().map_err(|e| e.to_string())? != baseline {
+        return Err("eligible memory refusal retained temporary ownership".into());
+    }
+    let control = run(
+        &store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &Default::default(),
+        eligible_query,
+    )
+    .map_err(|e| e.to_string())?;
+    if control.metadata().rows != 0
+        || control.pools().reports.first().map(|r| r.candidate_count) != Some(64)
+    {
+        return Err("eligible memory refusal changed the clean control".into());
+    }
+    drop(control);
     let mut missing_report = observation.clone();
     missing_report.reports.clear();
     if check(&missing_report, expected).is_ok() {

@@ -1170,3 +1170,101 @@ fn ze64_seed_expand_and_copy_share_admitted_generation() {
 fn ze64_store_report_survives_projection_and_aggregation() {
     super::search_probe::store_report(64);
 }
+
+#[test]
+fn ze400_eligible_id_copy_cannot_exceed_query_memory() {
+    use crate::property_graph::query::eligibility::{Eligibility, EligibleNodeSet};
+    use crate::property_graph::query::pattern::{SearchArguments, SearchHit, SearchInvocation};
+    use crate::property_graph::query::resources::MemoryError;
+
+    const MEMORY_LIMIT: usize = 16 * 1024 * 1024;
+    struct CappedSearch<'a> {
+        store: &'a Store,
+        count: usize,
+        copy_space: u8,
+    }
+    impl NativeReadConsumer<()> for CappedSearch<'_> {
+        fn consume<'s, 'lease, 'm, 'g>(
+            &mut self,
+            view: &GraphReadView<'s, 'lease, 'm, 'g>,
+            runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+        ) -> Result<(), TreeError> {
+            let query_view = runtime.view();
+            let eligible = EligibleNodeSet::build(
+                runtime,
+                self.count,
+                (1..=self.count).map(|id| query_view.node(NodeId::new(id as u128).unwrap())),
+            )
+            .unwrap();
+            let mut hits = QueryArena::<SearchHit>::new(runtime.memory(), 1).unwrap();
+            view.retrieval_binding(runtime).unwrap();
+            view.search_documents().unwrap();
+            // Keep genuine participant backing alive. Leave either no space,
+            // space for the adapter copy and filter controls only, or space
+            // for those plus the numeric filter IDs (but not byte-ordered IDs).
+            let memory = runtime.memory();
+            let mut held = memory.reserve_external_capacity().unwrap();
+            let copy_bytes = if self.copy_space != 0 {
+                self.count * size_of::<crate::ingest::DocId>()
+                    + size_of::<QueryArena<'_, '_, crate::ingest::DocId>>()
+                    + size_of::<
+                        crate::property_graph::query::resources::QueryExternalReservation<'_, '_>,
+                    >()
+                    + size_of::<crate::lifecycle::QueryFilter>()
+                    + self.store.schema().resident_bytes().unwrap()
+                    + if self.copy_space == 2 {
+                        self.count * 16
+                    } else {
+                        0
+                    }
+            } else {
+                0
+            };
+            let remaining = MEMORY_LIMIT - memory.reserved_bytes() - copy_bytes;
+            held.reserve_additional(remaining).unwrap();
+            let backing = vec![0u8; remaining];
+            assert_eq!(memory.reserved_bytes() + copy_bytes, MEMORY_LIMIT);
+            let invocation = SearchInvocation {
+                call: SearchCallId(0),
+                generation: query_view.generation(),
+                arguments: SearchArguments::Text { query: "absent" },
+                k: 1,
+                window: 1,
+                options: Default::default(),
+                eligibility: Eligibility::Set(&eligible),
+            };
+            let result =
+                NativeSearchAdapter::new(self.store).search(view, &invocation, &mut hits, runtime);
+            assert!(
+                matches!(
+                    result,
+                    Err(NativeExecutionError::Runtime(RuntimeError::Memory(
+                        MemoryError::Limit
+                    )))
+                ),
+                "eligible IDs and their filter copies must fit the cap ({} ID bytes, {copy_bytes} available): {result:?}",
+                self.count * size_of::<crate::ingest::DocId>(),
+            );
+            assert!(hits.is_empty());
+            drop(backing);
+            drop(held);
+            Ok(())
+        }
+    }
+    let (store, _directory, _) = fixture();
+    for (count, copy_space) in [(150_000, 0), (150_000, 1), (150_000, 2), (1, 0), (1, 1)] {
+        store
+            .with_native_read(
+                &QueryControl::Cancel(CancelToken::new()),
+                RuntimeLimits::default(),
+                MEMORY_LIMIT,
+                64,
+                CappedSearch {
+                    store: &store,
+                    count,
+                    copy_space,
+                },
+            )
+            .unwrap();
+    }
+}

@@ -338,6 +338,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.cypher-search.cancel.admission-fire",
     "property-graph.cypher-search.close.retrieval-fire",
     "property-graph.cypher-search.resource.execution-fire",
+    "property-graph.cypher-search.eligible-memory-limit",
     "property-graph.cypher-search.release",
     "property-graph.cypher-search.oracle.can-fire",
     "property-graph.cypher-search.same-seed-control",

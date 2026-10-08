@@ -301,3 +301,103 @@ fn text_search_returns_the_same_hits_as_store_query() {
         }
     }
 }
+
+#[test]
+fn ze400_hybrid_max_rounds_is_bounded_by_corpus_and_work_limit() {
+    use zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind;
+    use zeppelin_embed::property_graph::query::plan::SearchOptions;
+    use zeppelin_embed::property_graph::query::runtime::{RuntimeLimits, WorkKind};
+    use zeppelin_embed_cypher::StatementError;
+
+    let (_directory, store) = fixture();
+    // Disjoint top vector/text windows require widening beyond the initial
+    // 50 candidates. A 400-row corpus fits after at most four rounds.
+    let documents = (0..400)
+        .map(|row| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(row + 1), Revision::new(1)),
+                vec![1.0, row as f32 * 0.0025],
+            )
+            .with_text(if row < 200 {
+                "copper".to_owned()
+            } else {
+                vec!["zeppelin"; 1 + (400 - row as usize) % 5].join(" ")
+            })
+        })
+        .collect();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(store.epoch_identity().unwrap()))
+        .unwrap();
+    store.enable_graph().unwrap();
+    let source =
+        "CALL ze.hybrid_search([1,0],'zeppelin',1,'exact') YIELD node,score RETURN node,score";
+    let options = |rounds| {
+        GraphQueryOptions::default()
+            .with_search_options(SearchOptions {
+                max_rounds: Some(rounds),
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    for sealed in [false, true] {
+        if sealed {
+            store.seal().unwrap();
+        }
+        // Warm both producers before comparing deterministic work receipts.
+        run(&store, source);
+        let finite = execute(
+            &store,
+            &control(),
+            &options(4),
+            source,
+            &[],
+            Default::default(),
+        )
+        .unwrap();
+        let huge = execute(
+            &store,
+            &control(),
+            &options(u64::MAX),
+            source,
+            &[],
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(ids(&finite), ids(&huge));
+        assert_eq!(finite.cell(0, 1), huge.cell(0, 1));
+        assert_eq!(finite.metadata().counters, huge.metadata().counters);
+        let work = huge.pools().reports[0].work;
+        let coordinates = work.get(WorkKind::VectorCoordinates);
+        assert!(
+            coordinates > 800,
+            "the fixture must require multiple scoring rounds"
+        );
+        assert!(
+            coordinates <= 6_402,
+            "at most four 400-row vector passes and four cross-fill passes: {coordinates}"
+        );
+        assert!(work.get(WorkKind::CandidateWindowPeak) <= 400);
+        assert!(work.get(WorkKind::CandidateWindowPeak) > 50);
+        for rounds in [4, u64::MAX] {
+            let capped = options(rounds)
+                .with_limits(
+                    24 * 1024 * 1024,
+                    RuntimeLimits::default()
+                        .with_limit(WorkKind::VectorCoordinates, coordinates - 1)
+                        .unwrap(),
+                )
+                .unwrap();
+            let Err(StatementError::Query(error)) =
+                execute(&store, &control(), &capped, source, &[], Default::default())
+            else {
+                panic!("hybrid work cap must refuse the complete result");
+            };
+            assert_eq!(error.kind(), GraphQueryErrorKind::Limit);
+            assert!(error.nothing_committed());
+        }
+        println!(
+            "ZE400 sealed={sealed} max_rounds=4/u64::MAX coordinates={coordinates} candidate_peak={}",
+            work.get(WorkKind::CandidateWindowPeak)
+        );
+    }
+}

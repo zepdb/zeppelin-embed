@@ -5815,6 +5815,8 @@ struct EligibleIds {
     byte_order: Vec<[u8; 16]>,
 }
 
+const ELIGIBLE_BYTE_ORDER_MIN_IDS: usize = 1_000;
+
 /// Validated scan-compatible query constraints. Ranking statistics remain corpus-wide.
 #[derive(Clone, Debug)]
 pub struct QueryFilter {
@@ -5824,6 +5826,25 @@ pub struct QueryFilter {
 }
 
 impl QueryFilter {
+    /// Upper bound for the owned backing of a fresh eligibility-only filter.
+    /// Reserve before construction; the schema clone cannot exceed its source.
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn eligible_capacity_bytes(
+        schema: &crate::meta::Schema,
+        count: usize,
+    ) -> Option<usize> {
+        let numeric = count.checked_mul(std::mem::size_of::<crate::ingest::DocId>())?;
+        let byte_order = if count >= ELIGIBLE_BYTE_ORDER_MIN_IDS {
+            count.checked_mul(std::mem::size_of::<[u8; 16]>())?
+        } else {
+            0
+        };
+        std::mem::size_of::<Self>()
+            .checked_add(schema.resident_bytes()?)?
+            .checked_add(numeric)?
+            .checked_add(byte_order)
+    }
+
     /// Validates attributes and a half-open timestamp range against this schema.
     pub fn new(
         schema: &crate::meta::Schema,
@@ -5888,7 +5909,7 @@ impl QueryFilter {
         if let Some(existing) = &self.eligible_ids {
             ids.retain(|id| existing.numeric.binary_search(id).is_ok());
         }
-        let mut byte_order = if ids.len() >= 1_000 {
+        let mut byte_order = if ids.len() >= ELIGIBLE_BYTE_ORDER_MIN_IDS {
             ids.iter()
                 .map(|id| id.get().to_le_bytes())
                 .collect::<Vec<_>>()

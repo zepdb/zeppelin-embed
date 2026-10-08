@@ -7,7 +7,7 @@ use crate::property_graph::query::pattern::{
     SearchAdapter, SearchArguments, SearchHit, SearchInvocation,
 };
 use crate::property_graph::query::plan::{SearchMode, SearchOptions};
-use crate::property_graph::query::resources::{QueryArena, QueryMemory};
+use crate::property_graph::query::resources::{MemoryError, QueryArena, QueryMemory};
 use crate::property_graph::query::runtime::{NativeExecutionError, RuntimeContext, RuntimeError};
 use crate::property_graph::query::{QueryError, QueryList, QueryValue};
 use crate::property_graph::retrieval::RetrievalError;
@@ -244,16 +244,41 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
             let pin = view.search_documents()?;
             let ids = match &invocation.eligibility {
                 Eligibility::AllIndexed => None,
-                Eligibility::Set(set) => Some(
-                    set.ids_for(context.view())
-                        .map_err(RetrievalError::Eligibility)?
-                        .iter()
-                        .map(|id| crate::ingest::DocId::new(id.get()))
-                        .collect::<Vec<_>>(),
-                ),
+                Eligibility::Set(set) => {
+                    let source = set
+                        .ids_for(context.view())
+                        .map_err(RetrievalError::Eligibility)?;
+                    let mut ids = QueryArena::new(context.memory(), source.len())
+                        .map_err(RuntimeError::Memory)?;
+                    for id in source {
+                        ids.push(crate::ingest::DocId::new(id.get()))
+                            .map_err(RuntimeError::Memory)?;
+                    }
+                    Some(ids)
+                }
+            };
+            // The filter owns a numeric ID copy and, for large sets, a second
+            // byte-ordered copy. Keep their reservation until the filter drops.
+            let _filter_charge = if let Some(ids) = ids.as_ref() {
+                let bytes = crate::lifecycle::QueryFilter::eligible_capacity_bytes(
+                    self.store.schema(),
+                    ids.len(),
+                )
+                .ok_or(RuntimeError::Memory(MemoryError::Limit))?;
+                let mut charge = context
+                    .memory()
+                    .reserve_external_capacity()
+                    .map_err(RuntimeError::Memory)?;
+                charge
+                    .reserve_additional(bytes)
+                    .map_err(RuntimeError::Memory)?;
+                Some(charge)
+            } else {
+                None
             };
             let filter = ids
-                .as_deref()
+                .as_ref()
+                .map(QueryArena::as_slice)
                 .map(|ids| crate::lifecycle::QueryFilter::eligible(self.store.schema(), ids));
             let control = context.values().control().clone();
             let (mut report, counters) = match invocation.arguments {
@@ -275,7 +300,7 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
                     }
                     let mut mapped = report(invocation, &outcome.diagnostics, SearchKind::Lexical);
                     mapped.candidate_count = matching;
-                    if ids.as_ref().is_some_and(Vec::is_empty) {
+                    if ids.as_ref().is_some_and(QueryArena::is_empty) {
                         mapped.lexical_leg = LegState::NoEligibleMembers;
                     }
                     (mapped, outcome.diagnostics.counters)
@@ -306,11 +331,8 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
                         vector_options(mode, invocation.options, invocation.window as usize)?;
                     let request = crate::ingest::SearchRequest::new(coordinates.as_slice())
                         .with_filter(filter.as_ref());
-                    let request = if let Some(ids) = ids.as_deref() {
-                        request.with_eligible(ids)
-                    } else {
-                        request
-                    };
+                    // Eligibility is already present in the shared filter;
+                    // adding it to the request again would copy it again.
                     let (mut mapped, counters) = if let SearchArguments::Hybrid { text, .. } =
                         invocation.arguments
                     {
