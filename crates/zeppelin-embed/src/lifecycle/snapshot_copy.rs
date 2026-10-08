@@ -210,7 +210,32 @@ impl Store {
         } else {
             absorbed_through
         };
-        let wal_records = writer.unabsorbed_records(absorbed_through)?;
+        let wal_first_seq = LogSeq::new(absorbed_through.checked_add(1).ok_or(
+            StoreError::SnapshotPin {
+                detail: "the absorbed WAL prefix has no successor sequence",
+            },
+        )?);
+        #[cfg(feature = "graph-cypher")]
+        let wal_first_seq = if published.graph_enabled {
+            let path = self.directory.join(WAL_FILE);
+            if self.vfs.open(&path).map_err(|source| io(&path, source))? == 0 {
+                wal_first_seq
+            } else {
+                // Physical purge retires the old prefix without sealing the
+                // survivors. Its replacement header is the tail's boundary;
+                // retain it even when the replacement has no records.
+                let bytes = self
+                    .vfs
+                    .read_range(&path, 0, crate::wal::header::WAL_HEADER_LEN)
+                    .map_err(|source| io(&path, source))?;
+                let header = crate::wal::header::decode_header(&bytes)
+                    .map_err(|error| StoreError::Wal(crate::wal::WalReadError::Header(error)))?;
+                wal_first_seq.max(header.first_seq)
+            }
+        } else {
+            wal_first_seq
+        };
+        let wal_records = writer.unabsorbed_records(wal_first_seq.get().saturating_sub(1))?;
         // Prepared namespace records bind to their original participant directory.
         // A standalone copy cannot carry the parent transaction authority.
         #[cfg(feature = "graph-cypher")]

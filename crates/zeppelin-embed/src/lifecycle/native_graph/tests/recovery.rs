@@ -23,6 +23,174 @@ use crate::property_graph::{
 use crate::vfs::{StdVfs, Vfs};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+#[cfg_attr(test, test)]
+pub(super) fn enable_graph_catalog_collision_is_a_definite_refusal() {
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    store.ingest(purge_documents(&[91], 1)).unwrap();
+    store.seal().unwrap();
+    let before = file_snapshot(directory.path());
+    vfs.arm_fault(FaultPoint::Create);
+    assert!(
+        matches!(store.enable_graph(), Err(crate::lifecycle::StoreError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists)
+    );
+    vfs.assert_fired_once();
+    assert_eq!(
+        std::fs::read(directory.path().join("manifest.ze")).unwrap(),
+        before[&directory.path().join("manifest.ze")]
+    );
+    store
+        .ingest(purge_documents(&[92], 1))
+        .expect("a create collision wrote no catalog and must not poison the writer");
+}
+
+#[cfg_attr(test, test)]
+pub(super) fn interrupted_enable_catalog_creation_fences_until_reopen() {
+    for point in [FaultPoint::PartialCreate, FaultPoint::ObjectSync] {
+        enable_graph_retry(Some(point));
+    }
+}
+
+#[cfg_attr(test, test)]
+pub(super) fn enable_graph_retry_after_manifest_temp_sync_failure_reopens_writable() {
+    enable_graph_retry(Some(FaultPoint::ManifestSync));
+}
+
+fn enable_graph_retry(point: Option<FaultPoint>) {
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    store.ingest(purge_documents(&[91], 1)).unwrap();
+    store.seal().unwrap();
+    let before = file_snapshot(directory.path());
+    if let Some(point) = point {
+        vfs.arm_fault(point);
+        let error = store.enable_graph().unwrap_err();
+        if point == FaultPoint::ManifestSync {
+            assert!(matches!(error, crate::lifecycle::StoreError::Manifest(_)));
+        }
+        vfs.assert_fired_once();
+        assert_eq!(
+            std::fs::read(directory.path().join("manifest.ze")).unwrap(),
+            before[&directory.path().join("manifest.ze")]
+        );
+        assert!(
+            store.ingest(purge_documents(&[92], 1)).is_err(),
+            "catalog mutation must fence the writer: {point:?}"
+        );
+        drop(store);
+    } else {
+        store.enable_graph().unwrap();
+        drop(store);
+    }
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    let generation = store.enable_graph().expect("retry publishes the graph");
+    drop(store);
+    let reopened = Store::open(directory.path(), native_options())
+        .expect("retry must leave no catalog from a different store identity");
+    assert_eq!(reopened.snapshot().unwrap().generation(), generation);
+    assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+    assert!(reopened.admit_native_read().is_ok());
+    assert_eq!(
+        std::fs::read(directory.path().join("wal.ze")).unwrap(),
+        before[&directory.path().join("wal.ze")]
+    );
+    reopened.ingest(purge_documents(&[92], 1)).unwrap();
+}
+
+pub(crate) fn run_enable_retry_probe() -> Vec<crate::graph_read_view_test_support::PathReceipt> {
+    [
+        (
+            "storage-durability.enable.catalog-partial-create",
+            FaultPoint::PartialCreate,
+        ),
+        (
+            "storage-durability.enable.catalog-sync",
+            FaultPoint::ObjectSync,
+        ),
+        (
+            "storage-durability.enable.manifest-temp-sync-retry",
+            FaultPoint::ManifestSync,
+        ),
+    ]
+    .into_iter()
+    .map(|(key, point)| {
+        super::publication::reset_verified_faults();
+        enable_graph_retry(Some(point));
+        let fires = super::publication::take_verified_faults();
+        assert_eq!(fires, 1);
+        enable_graph_retry(None);
+        crate::graph_read_view_test_support::PathReceipt {
+            key,
+            fires,
+            clean_controls: 1,
+        }
+    })
+    .collect()
+}
+
+#[cfg_attr(test, test)]
+pub(super) fn snapshot_after_completed_active_purge_reopens_without_sealing() {
+    for ids in [&[91, 92][..], &[91][..]] {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let copy = directory.path().join("copy");
+        let store = Store::open(&source, native_options()).unwrap();
+        store.enable_graph().unwrap();
+        store.ingest(purge_documents(ids, 1)).unwrap();
+        let token = store.purge(&[crate::ingest::DocId::new(91)]).unwrap();
+        let generation = store.await_physical_purge(token).unwrap().generation();
+        let before = file_snapshot(&source);
+        assert_eq!(
+            store
+                .write_snapshot(&copy)
+                .expect("completed active purge permits export"),
+            generation
+        );
+        assert_eq!(
+            file_snapshot(&source),
+            before,
+            "pinning must not seal or rewrite the source"
+        );
+        for access in [
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+        ] {
+            let reopened = Store::open(&copy, native_options().with_access_mode(access)).unwrap();
+            assert_eq!(reopened.snapshot().unwrap().generation(), generation);
+            assert_eq!(
+                reopened.count_documents(None, None).unwrap().count,
+                (ids.len() - 1) as u64
+            );
+            let rows = reopened
+                .get_documents(
+                    &[crate::ingest::DocId::new(91), crate::ingest::DocId::new(92)],
+                    crate::lifecycle::DocumentFields::NONE,
+                )
+                .unwrap();
+            assert!(rows[0].is_none());
+            assert_eq!(rows[1].is_some(), ids.len() == 2);
+        }
+    }
+}
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

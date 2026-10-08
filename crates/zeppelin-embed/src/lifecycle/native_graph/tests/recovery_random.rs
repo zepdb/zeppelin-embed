@@ -361,6 +361,10 @@ pub(super) fn run() {
             // must refuse all subsequent acknowledgements until reopen.
             crate::lifecycle::tests::enable_graph_retry_completes(FaultPoint::PostManifestRename);
             crate::lifecycle::tests::enable_graph_retry_completes(FaultPoint::SelectorSync);
+            enable_graph_retry_after_manifest_temp_sync_failure_reopens_writable();
+            interrupted_enable_catalog_creation_fences_until_reopen();
+            enable_graph_catalog_collision_is_a_definite_refusal();
+            snapshot_after_completed_active_purge_reopens_without_sealing();
             crate::lifecycle::tests::replacement_snapshot_backup_reopens_with_nonzero_watermarks();
             for fault_index in [
                 Some(sequence % 8),
@@ -720,7 +724,6 @@ pub(super) fn run() {
                                     matches!(
                                         detail,
                                         "seal namespace document writes before exporting a graph snapshot"
-                                            | "the retained WAL tail does not continue the absorbed prefix"
                                     ),
                                     "unexpected snapshot refusal: {detail}"
                                 );

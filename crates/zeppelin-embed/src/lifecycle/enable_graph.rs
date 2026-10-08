@@ -143,7 +143,8 @@ impl Store {
         manifest.generation = generation;
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         manifest.epoch_alias = self.epoch_identity();
-        manifest.graph = Some(self.empty_graph(generation, writer.durable_end())?);
+        let (graph, mut publication) = self.empty_graph(generation, writer)?;
+        manifest.graph = Some(graph);
         manifest
             .record_generation_bump(writer.durable_end())
             .map_err(StoreError::Manifest)?;
@@ -154,7 +155,6 @@ impl Store {
             super::durability::CommitTier::Durable,
         )
         .map_err(StoreError::Durability)?;
-        let mut publication = writer.manifest_publication()?;
         self.graph_enable_pending
             .store(true, std::sync::atomic::Ordering::Relaxed);
         publication
@@ -201,7 +201,11 @@ impl Store {
         Ok(())
     }
 
-    fn empty_graph(&self, generation: u64, log_seq: u64) -> Result<GraphManifest, StoreError> {
+    fn empty_graph(
+        &self,
+        generation: u64,
+        writer: &crate::ingest::StoreWal,
+    ) -> Result<(GraphManifest, crate::ingest::ManifestPublication), StoreError> {
         let mut entropy = OsEntropy;
         let store =
             fresh_store_identity(&mut entropy).map_err(|source| io(&self.directory, source))?;
@@ -307,7 +311,7 @@ impl Store {
                 },
                 prepared_inventories: ReferenceList::Values(&[]),
             },
-            log_seq,
+            writer.durable_end(),
             vec![GraphObject {
                 artifact,
                 length: bytes.len() as u64,
@@ -316,16 +320,43 @@ impl Store {
         )
         .map_err(StoreError::Manifest)?;
         let path = artifact_path(&self.directory, artifact);
-        self.vfs
-            .create_new(&path, &bytes)
-            .map_err(|source| io(&path, source))?;
+        let leftovers = self
+            .vfs
+            .list(&self.directory)
+            .map_err(|source| io(&self.directory, source))?;
+        // A v2 manifest reaches no graph object. Remove interrupted enable
+        // catalogs before publishing a fresh identity, including partial files.
+        // Keep this cleanup at the explicit upgrade so ordinary graph-free
+        // open and mutation paths retain their existing bytes.
+        let publication = writer.manifest_publication()?.arm();
+        let mut removed_leftover = false;
+        for leftover in leftovers {
+            if leftover
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("graph-") && name.ends_with(".zgraph"))
+            {
+                self.vfs
+                    .delete(&leftover)
+                    .map_err(|source| io(&leftover, source))?;
+                removed_leftover = true;
+            }
+        }
+        if let Err(source) = self.vfs.create_new(&path, &bytes) {
+            if source.kind() == std::io::ErrorKind::AlreadyExists && !removed_leftover {
+                // Exclusive create refused before writing; no earlier cleanup
+                // changed durable state, so the writer remains usable.
+                publication.complete();
+            }
+            return Err(io(&path, source));
+        }
         self.vfs
             .sync(&path, SyncKind::Full)
             .map_err(|source| io(&path, source))?;
         self.vfs
             .sync(&self.directory, SyncKind::Full)
             .map_err(|source| io(&self.directory, source))?;
-        Ok(graph)
+        Ok((graph, publication))
     }
 }
 

@@ -612,6 +612,11 @@ pub mod graph_recovery_test_support {
         crate::lifecycle::native_graph::tests::seal::run_rotation_probe()
     }
 
+    /// Exercises interrupted enable catalog creation and writable retry.
+    pub fn run_enable_retry_probe() -> Vec<PathReceipt> {
+        crate::lifecycle::native_graph::tests::recovery::run_enable_retry_probe()
+    }
+
     /// Runs the nine directed production recovery paths used by ZE-40 acceptance.
     pub fn run_actual_probe(seed: u64) -> RecoveryProbeReport {
         crate::lifecycle::native_graph::tests::run_recovery_probe(seed)

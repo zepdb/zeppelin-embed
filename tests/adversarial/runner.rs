@@ -2961,6 +2961,12 @@ fn run_program_for_with_clock(
             }
             coverage.hit(receipt.key);
         }
+        for receipt in zeppelin_embed::graph_recovery_test_support::run_enable_retry_probe() {
+            if receipt.fires != 1 || receipt.clean_controls != 1 {
+                return Err(format!("invalid graph enable receipt {}", receipt.key));
+            }
+            coverage.hit(receipt.key);
+        }
         super::graph_recovery::probe(seed, &mut coverage)?;
         super::graph_reclaim::probe(seed, &mut coverage)?;
         super::graph_identity::probe(seed, &mut coverage)?;
