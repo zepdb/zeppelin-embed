@@ -538,7 +538,8 @@ fn complete_malformed_change_is_never_hidden_by_incomplete_commit() {
     let mut bytes = mutation_log();
     let rows = frames(&bytes);
     let (at, n) = rows[1];
-    bytes[at + 64 + 20..at + 64 + 22].copy_from_slice(&2u16.to_le_bytes()); // Unsupported ZGOP version.
+    // ZE-350 uses ZGOP v2 for document-bound nodes; v3 is still unsupported.
+    bytes[at + 64 + 20..at + 64 + 22].copy_from_slice(&3u16.to_le_bytes());
     repair_record(&mut bytes, at, n);
     bytes.truncate(rows[2].0);
     let mut cancel = || false;

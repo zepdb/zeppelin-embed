@@ -3148,6 +3148,7 @@ fn collapse_root(
 
 /// Find the greatest key at or below the exact probe without scanning preceding
 /// leaves. The returned entry retains its actual containing leaf generation.
+/// A zero node probe is reserved; use exact lookup or a cursor for document ID zero.
 pub fn lookup_predecessor<'a>(
     source: &'a impl BlockSource,
     root: DirectoryRoot,
@@ -3155,6 +3156,9 @@ pub fn lookup_predecessor<'a>(
     resources: &mut TreeResources<'_>,
 ) -> Result<Option<DirectoryEntry<'a>>, TreeError> {
     resources.read_event(NativeReadEvent::Lookup)?;
+    if root.kind == TreeKind::Nodes && key == 0_u128.to_le_bytes() {
+        return Err(TreeError::Invalid("zero node predecessor probe"));
+    }
     let mut cursor = DirectoryCursor::seek(source, root, Some(key), resources)?;
     if cursor.exhausted {
         resources.step(0)?;

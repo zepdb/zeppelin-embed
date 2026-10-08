@@ -155,8 +155,13 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
         Outcome::Committed { .. }
     ));
     let generation = run(&graph, "RETURN 1").metadata().generation;
-    let assert_fence = |graph: &GraphStore| {
-        // Reopen and reads must preserve the generation before any refusal.
+    assert_eq!(generation, GraphGeneration::new(5));
+    let assert_fence = |graph: &GraphStore, generation: GraphGeneration| {
+        assert_eq!(
+            graph.statement_store().snapshot().unwrap().generation(),
+            generation.get()
+        );
+        // Reads and refused writes must preserve the admitted store generation.
         assert_eq!(run(graph, "RETURN 1").metadata().generation, generation);
         let error = graph.apply_batch(&[create], &control).unwrap_err();
         assert_eq!(error.kind(), GraphStoreErrorKind::Constraint);
@@ -189,10 +194,12 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
         assert!(error.nothing_committed());
         assert_eq!(run(graph, "RETURN 1").metadata().generation, generation);
     };
-    assert_fence(&graph);
+    assert_fence(&graph, generation);
     graph.close().unwrap();
     let reopened = GraphStore::open(&path, options(), None).unwrap();
-    assert_fence(&reopened);
+    // Close checkpoints the manifest once; coherent reads now expose that bump.
+    let generation = GraphGeneration::new(6);
+    assert_fence(&reopened, generation);
     assert_eq!(
         reopened.apply_batch(&[], &control).unwrap().outcome(),
         GraphWriteOutcome::NoOp

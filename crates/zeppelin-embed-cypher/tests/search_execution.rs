@@ -210,12 +210,28 @@ fn ze58_search_results_outlive_close_and_reopen() {
     let before = f.run(q);
     let bytes = before.pools().bytes.to_vec();
     let nodes = before.pools().nodes.to_vec();
-    let reports = before.pools().reports.to_vec();
+    let mut reports = before.pools().reports.to_vec();
+    assert_eq!(before.metadata().generation.get(), 7);
+    assert_eq!(
+        f.store().statement_store().snapshot().unwrap().generation(),
+        7
+    );
     f.reopen();
     let after = f.run(q);
     assert_eq!(before.pools().bytes, bytes);
     assert_eq!(before.pools().nodes, nodes);
     assert_eq!(before.pools().reports, reports);
+    // Close checkpoints the manifest once. The retained result stays at 7;
+    // a new coherent admission and its reports must use store generation 8.
+    assert_eq!(
+        f.store().statement_store().snapshot().unwrap().generation(),
+        8
+    );
+    assert_eq!(after.metadata().generation.get(), 8);
+    for report in &mut reports {
+        assert_eq!(report.generation.get(), 7);
+        report.generation = zeppelin_embed::property_graph::GraphGeneration::new(8);
+    }
     assert_eq!(after.pools().bytes, bytes);
     assert_eq!(after.pools().nodes, nodes);
     assert_eq!(after.pools().reports, reports);
@@ -283,8 +299,18 @@ fn ze58_search_compile_rejections_publish_nothing() {
         panic!("ninth accepted")
     };
     assert_eq!(e.kind, ErrorKind::SearchContext);
-    f.reopen();
     assert_eq!(f.run("RETURN 1").metadata().generation, generation);
+    assert_eq!(generation.get(), 7);
+    assert_eq!(
+        f.store().statement_store().snapshot().unwrap().generation(),
+        7
+    );
+    f.reopen();
+    assert_eq!(
+        f.store().statement_store().snapshot().unwrap().generation(),
+        8
+    );
+    assert_eq!(f.run("RETURN 1").metadata().generation.get(), 8);
 }
 #[test]
 fn ze58_search_write_mixing_publish_nothing() {
@@ -307,9 +333,22 @@ fn ze58_search_write_mixing_publish_nothing() {
             assert!(e.span.end <= q.len());
         }
     }
+    assert_eq!(
+        f.run("RETURN 1").metadata().generation,
+        before.metadata().generation
+    );
+    assert_eq!(before.metadata().generation.get(), 7);
+    assert_eq!(
+        f.store().statement_store().snapshot().unwrap().generation(),
+        7
+    );
     f.reopen();
     let after = f.run("MATCH (n) RETURN n ORDER BY ze.node_id(n)");
-    assert_eq!(before.metadata().generation, after.metadata().generation);
+    assert_eq!(
+        f.store().statement_store().snapshot().unwrap().generation(),
+        8
+    );
+    assert_eq!(after.metadata().generation.get(), 8);
     assert_eq!(before.pools().nodes, after.pools().nodes);
     assert_eq!(before.pools().bytes, after.pools().bytes);
     assert_eq!(before.pools().properties, after.pools().properties);
