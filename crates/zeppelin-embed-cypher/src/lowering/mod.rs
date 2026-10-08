@@ -81,6 +81,7 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
         memory,
         context,
         Route::Read,
+        Default::default(),
         |common, _, _, context| consume(common, context),
     )
 }
@@ -93,6 +94,7 @@ pub(crate) enum Route {
     Statement,
 }
 
+#[allow(clippy::too_many_arguments)] // Existing compilation seam plus statement search controls.
 pub(crate) fn compile_route_in<'v, T, C: ReadContext<'v>>(
     source: &str,
     parameters: &[ParameterBinding<'_>],
@@ -100,6 +102,7 @@ pub(crate) fn compile_route_in<'v, T, C: ReadContext<'v>>(
     memory: &QueryMemory<'_>,
     context: &mut C,
     route: Route,
+    search_options: zeppelin_embed::property_graph::query::plan::SearchOptions,
     consume: impl for<'plan, 'facts> FnOnce(
         LoweredRead<'plan, 'facts>,
         &'plan [Span],
@@ -130,6 +133,7 @@ pub(crate) fn compile_route_in<'v, T, C: ReadContext<'v>>(
                 )
                 .map_err(memory_error)?;
             let mut builder = Builder::new(memory, control)?;
+            builder.search_options = search_options;
             let source = builder.copy_text(bound.syntax().source())?;
             for _ in bound.expressions() {
                 builder.remap.push(None, memory, control)?;
@@ -377,6 +381,7 @@ struct DraftOperator {
     inputs: Range,
 }
 struct Builder<'m, 'g, 'c> {
+    search_options: zeppelin_embed::property_graph::query::plan::SearchOptions,
     memory: &'m QueryMemory<'g>,
     control: &'c dyn Fn() -> Result<(), ResourceError>,
     parameter_levels: [Option<Buffer<'m, 'g, ParameterValue>>; 17],
@@ -406,6 +411,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
         control: &'c dyn Fn() -> Result<(), ResourceError>,
     ) -> Result<Self, ParseError> {
         Ok(Self {
+            search_options: Default::default(),
             memory,
             control,
             parameter_levels: std::array::from_fn(|_| None),

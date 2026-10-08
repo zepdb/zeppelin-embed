@@ -142,6 +142,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
                             Some(BoundSearchMode::Auto) => 1,
                             Some(BoundSearchMode::Exact) => 2,
                             Some(BoundSearchMode::Scan) => 3,
+                            Some(BoundSearchMode::Graph) => 4,
                             None => 255,
                         });
                     }

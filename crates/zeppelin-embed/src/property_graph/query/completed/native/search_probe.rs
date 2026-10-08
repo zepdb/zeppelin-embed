@@ -6,7 +6,7 @@
     clippy::panic,
     reason = "cfg-only directed proof fixtures fail at the violated contract"
 )]
-use super::entry_probe::{Backing, control, options, run_plan};
+use super::entry_probe::{Backing, control, run_plan};
 use super::search_adapter::NativeSearchAdapter;
 use super::*;
 use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
@@ -43,6 +43,18 @@ impl Directory {
 impl Drop for Directory {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+fn store_epoch(tower: &EmbeddingTower) -> crate::epoch::StoreEpoch {
+    use crate::epoch::{EmbeddingEpoch, StoreEpoch};
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: tower.clone(),
+            document: tower.clone(),
+            alignment_digest: vec![],
+        },
+        tokenizer: crate::fts::tokenizer::TokenizerConfig::text_default().epoch(),
     }
 }
 
@@ -84,22 +96,47 @@ fn node_write(
             .map(|p| CanonicalEmbedding::new(&document, p).unwrap()),
     )
     .unwrap();
-    let result = store
-        .apply_native_graph(
-            &[StructuredWrite {
-                key: key(EntityKind::Node, name),
-                revision: GraphRevision::new(if replace.is_some() { 2 } else { 1 }).unwrap(),
-                operation: replace.map_or(StructuredOperation::Create, |n| {
-                    StructuredOperation::Put(EntityId::Node(n))
-                }),
-                image: Some(WriteImage::Node(&image)),
-            }],
-            &control(),
-        )
-        .unwrap();
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let write = StructuredWrite {
+        key: key(EntityKind::Node, name),
+        revision: GraphRevision::new(if replace.is_some() { 3 } else { 1 }).unwrap(),
+        operation: replace.map_or(StructuredOperation::Create, |n| {
+            StructuredOperation::Put(EntityId::Node(n))
+        }),
+        image: Some(WriteImage::Node(&image)),
+    };
+    let result = if let Some(node) = replace {
+        let documents = IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(node.get()), Revision::new(2)),
+                point.unwrap_or([1000.0; 2]).to_vec(),
+            )
+            .with_text("amber"),
+        ])
+        .with_epoch(store.epoch_identity().unwrap());
+        store
+            .apply_native_mixed(&documents, &[write], &control())
+            .unwrap()
+    } else {
+        store.apply_native_graph(&[write], &control()).unwrap()
+    };
     let EntityId::Node(n) = result[0].entity else {
         panic!("node receipt")
     };
+    if replace.is_none() {
+        store
+            .ingest(
+                IngestBatch::new(vec![
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(n.get()), Revision::new(1)),
+                        point.unwrap_or([1000.0; 2]).to_vec(),
+                    )
+                    .with_text("amber"),
+                ])
+                .with_epoch(store.epoch_identity().unwrap()),
+            )
+            .unwrap();
+    }
     n
 }
 fn edge(store: &Store, name: &str, source: NodeId, target: NodeId) -> RelId {
@@ -139,6 +176,7 @@ impl Fixture {
         let store = Store::create_native_graph(
             directory.path().join("native"),
             OpenOptions::new()
+                .with_epoch(store_epoch(&tower()))
                 .with_durability(DurabilityMode::Durable, CommitTier::Durable)
                 .with_max_resident_bytes(256 * 1024 * 1024),
             Some(tower()),
@@ -222,119 +260,115 @@ fn query<S: for<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g>>(
     mode: SearchMode,
     aggregate: bool,
 ) -> Result<CompletedGraphResult, GraphQueryError> {
-    store.execute_graph_query(
-        &control(),
-        &options(16),
-        Some(adapter),
-        |runtime, executor| {
-            let inputs: Vec<Vec<_>> = (0..4).map(|i| vec![PlanNodeId(i)]).collect();
-            let vector = vec![ExprId(0), ExprId(1)];
-            let property = String::from("p");
-            let mut expressions = vec![
-                Expression::Literal(Literal::F64(0.0)),
-                Expression::Literal(Literal::F64(0.0)),
-                Expression::List(&vector),
-                Expression::Literal(Literal::I64(2)),
-            ];
-            let mut project = Vec::new();
-            let mut aggregates = Vec::new();
-            let mut operators = vec![
-                Operator {
-                    inputs: &[],
-                    kind: OperatorKind::Unit,
-                },
-                Operator {
-                    inputs: &inputs[0],
-                    kind: OperatorKind::Search {
-                        call: SearchCallId(0),
-                        request: SearchRequest::Vector {
-                            vector: ExprId(2),
-                            k: ExprId(3),
-                            mode,
-                            eligible: None,
-                            options: Default::default(),
-                        },
-                        outputs: SearchOutputs {
-                            node: Some(SlotId(0)),
-                            distance: Some(SlotId(1)),
-                            ..SearchOutputs::default()
-                        },
+    let options = super::entry_probe::options(8);
+    store.execute_graph_query(&control(), &options, Some(adapter), |runtime, executor| {
+        let inputs: Vec<Vec<_>> = (0..4).map(|i| vec![PlanNodeId(i)]).collect();
+        let vector = vec![ExprId(0), ExprId(1)];
+        let property = String::from("p");
+        let mut expressions = vec![
+            Expression::Literal(Literal::F64(0.0)),
+            Expression::Literal(Literal::F64(0.0)),
+            Expression::List(&vector),
+            Expression::Literal(Literal::I64(2)),
+        ];
+        let mut project = Vec::new();
+        let mut aggregates = Vec::new();
+        let mut operators = vec![
+            Operator {
+                inputs: &[],
+                kind: OperatorKind::Unit,
+            },
+            Operator {
+                inputs: &inputs[0],
+                kind: OperatorKind::Search {
+                    call: SearchCallId(0),
+                    request: SearchRequest::Vector {
+                        vector: ExprId(2),
+                        k: ExprId(3),
+                        mode,
+                        eligible: None,
+                        options: Default::default(),
+                    },
+                    outputs: SearchOutputs {
+                        node: Some(SlotId(0)),
+                        distance: Some(SlotId(1)),
+                        ..SearchOutputs::default()
                     },
                 },
-                Operator {
-                    inputs: &inputs[1],
-                    kind: OperatorKind::Expand {
-                        source: SlotId(0),
-                        node: SlotId(2),
-                        relationship: SlotId(3),
-                        direction: Direction::Outgoing,
-                        relationship_types: &[],
-                        pattern: PatternId(0),
-                    },
+            },
+            Operator {
+                inputs: &inputs[1],
+                kind: OperatorKind::Expand {
+                    source: SlotId(0),
+                    node: SlotId(2),
+                    relationship: SlotId(3),
+                    direction: Direction::Outgoing,
+                    relationship_types: &[],
+                    pattern: PatternId(0),
                 },
-            ];
-            if aggregate {
-                expressions.push(Expression::Aggregate {
-                    operation: AggregateExpression::Count { distinct: false },
-                    operand: None,
-                });
-                aggregates.push(Projection {
-                    slot: SlotId(10),
-                    expression: ExprId(4),
-                });
-                operators.push(Operator {
-                    inputs: &inputs[2],
-                    kind: OperatorKind::Aggregate {
-                        keys: &[],
-                        aggregates: &aggregates,
-                    },
-                });
-            } else {
-                for slot in [0, 2, 1] {
-                    let e = ExprId(expressions.len() as u32);
-                    expressions.push(Expression::Slot(SlotId(slot)));
-                    project.push(Projection {
-                        slot: SlotId(10 + project.len() as u32),
-                        expression: e,
-                    });
-                }
-                expressions.push(Expression::Property {
-                    entity: ExprId(5),
-                    name: GraphName::new(&property).unwrap(),
-                });
+            },
+        ];
+        if aggregate {
+            expressions.push(Expression::Aggregate {
+                operation: AggregateExpression::Count { distinct: false },
+                operand: None,
+            });
+            aggregates.push(Projection {
+                slot: SlotId(10),
+                expression: ExprId(4),
+            });
+            operators.push(Operator {
+                inputs: &inputs[2],
+                kind: OperatorKind::Aggregate {
+                    keys: &[],
+                    aggregates: &aggregates,
+                },
+            });
+        } else {
+            for slot in [0, 2, 1] {
+                let e = ExprId(expressions.len() as u32);
+                expressions.push(Expression::Slot(SlotId(slot)));
                 project.push(Projection {
-                    slot: SlotId(13),
-                    expression: ExprId(7),
-                });
-                operators.push(Operator {
-                    inputs: &inputs[2],
-                    kind: OperatorKind::Project(&project),
+                    slot: SlotId(10 + project.len() as u32),
+                    expression: e,
                 });
             }
-            let eager = vec![PlanNodeId(1)];
-            let mut backing = Backing::default();
-            for input in &inputs {
-                backing.vec(input)?;
-            }
-            backing.vec(&vector)?;
-            backing.vec(&project)?;
-            backing.vec(&aggregates)?;
-            backing.string(&property)?;
-            run_plan(
-                runtime,
-                executor,
-                &operators,
-                &expressions,
-                &eager,
-                &backing,
-                if aggregate {
-                    &["count"]
-                } else {
-                    &["seed", "m", "distance", "p"]
-                },
-            )
-        },
-    )
+            expressions.push(Expression::Property {
+                entity: ExprId(5),
+                name: GraphName::new(&property).unwrap(),
+            });
+            project.push(Projection {
+                slot: SlotId(13),
+                expression: ExprId(7),
+            });
+            operators.push(Operator {
+                inputs: &inputs[2],
+                kind: OperatorKind::Project(&project),
+            });
+        }
+        let eager = vec![PlanNodeId(1)];
+        let mut backing = Backing::default();
+        for input in &inputs {
+            backing.vec(input)?;
+        }
+        backing.vec(&vector)?;
+        backing.vec(&project)?;
+        backing.vec(&aggregates)?;
+        backing.string(&property)?;
+        run_plan(
+            runtime,
+            executor,
+            &operators,
+            &expressions,
+            &eager,
+            &backing,
+            if aggregate {
+                &["count"]
+            } else {
+                &["seed", "m", "distance", "p"]
+            },
+        )
+    })
 }
 fn id(result: &CompletedGraphResult, row: usize, col: usize) -> NodeId {
     let Value::Node(i) = *result.cell(row, col).unwrap() else {
@@ -358,7 +392,7 @@ fn assert_old(result: &CompletedGraphResult, fixture: &Fixture, value: i64) {
         copied
             .iter()
             .filter(|n| n.id == fixture.neighbor)
-            .all(|n| n.revision.get() == 1)
+            .all(|n| n.revision.get() == 2)
     );
     assert!(
         copied
@@ -380,7 +414,7 @@ pub(super) fn same_view(value: i64) {
     let baseline = clean.store.stats().unwrap().temporary_bytes;
     clean.store.close().unwrap();
     let mut adapter = Observed {
-        adapter: NativeSearchAdapter::new(&fixture.store.tokenizer),
+        adapter: NativeSearchAdapter::new(&fixture.store),
         fixture: &fixture,
         publish: Some(value + 1),
         report: None,
@@ -388,7 +422,7 @@ pub(super) fn same_view(value: i64) {
     let result = query(&fixture.store, &mut adapter, SearchMode::Exact, false).unwrap();
     assert_old(&result, &fixture, value);
     assert_eq!(result.pools().reports, [adapter.report.unwrap()]);
-    let mut next = NativeSearchAdapter::new(&fixture.store.tokenizer);
+    let mut next = NativeSearchAdapter::new(&fixture.store);
     let newer = query(&fixture.store, &mut next, SearchMode::Exact, false).unwrap();
     assert_eq!(newer.metadata().rows, 1);
     assert_eq!(id(&newer, 0, 0), fixture.active);
@@ -400,6 +434,7 @@ pub(super) fn same_view(value: i64) {
     let reopened = Store::open_native_graph(
         fixture.directory.path().join("native"),
         OpenOptions::new()
+            .with_epoch(store_epoch(&tower()))
             .with_durability(DurabilityMode::Durable, CommitTier::Durable)
             .with_max_resident_bytes(256 * 1024 * 1024),
         Some(tower()),
@@ -407,7 +442,7 @@ pub(super) fn same_view(value: i64) {
     .unwrap();
     let newer = query(
         &reopened,
-        &mut NativeSearchAdapter::new(&reopened.tokenizer),
+        &mut NativeSearchAdapter::new(&reopened),
         SearchMode::Exact,
         false,
     )
@@ -418,22 +453,22 @@ pub(super) fn same_view(value: i64) {
     assert_old(&result, &fixture, value);
 }
 
-pub(super) fn approximation(value: i64) {
+pub(super) fn store_report(value: i64) {
     let fixture = Fixture::new(value);
     let baseline = fixture.store.stats().unwrap().temporary_bytes;
     let mut retained = Vec::new();
     for aggregate in [false, true] {
         let mut adapter = Observed {
-            adapter: NativeSearchAdapter::new(&fixture.store.tokenizer),
+            adapter: NativeSearchAdapter::new(&fixture.store),
             fixture: &fixture,
             publish: None,
             report: None,
         };
-        let result = query(&fixture.store, &mut adapter, SearchMode::Auto, aggregate).unwrap();
+        let result = query(&fixture.store, &mut adapter, SearchMode::Exact, aggregate).unwrap();
         let report = adapter.report.unwrap();
-        assert_eq!(report.actual_tier, Some(ActualTier::Graph));
+        assert_eq!(report.actual_tier, Some(ActualTier::Exact));
         assert_eq!(report.precision, ScorePrecision::Original);
-        assert_eq!(report.coverage, CandidateCoverage::Approximate);
+        assert_eq!(report.coverage, CandidateCoverage::Exact);
         assert_eq!(result.pools().reports, [report]);
         if aggregate {
             assert_eq!(result.cell(0, 0), Some(&Value::I64(2)));
@@ -447,6 +482,7 @@ pub(super) fn approximation(value: i64) {
     let reopened = Store::open_native_graph(
         fixture.directory.path().join("native"),
         OpenOptions::new()
+            .with_epoch(store_epoch(&tower()))
             .with_durability(DurabilityMode::Durable, CommitTier::Durable)
             .with_max_resident_bytes(256 * 1024 * 1024),
         Some(tower()),
@@ -455,16 +491,13 @@ pub(super) fn approximation(value: i64) {
     let baseline = reopened.stats().unwrap().temporary_bytes;
     let result = query(
         &reopened,
-        &mut NativeSearchAdapter::new(&reopened.tokenizer),
-        SearchMode::Auto,
+        &mut NativeSearchAdapter::new(&reopened),
+        SearchMode::Exact,
         true,
     )
     .unwrap();
     assert_eq!(result.cell(0, 0), Some(&Value::I64(2)));
-    assert_eq!(
-        result.pools().reports[0].coverage,
-        CandidateCoverage::Approximate
-    );
+    assert_eq!(result.pools().reports[0].coverage, CandidateCoverage::Exact);
     assert_eq!(reopened.stats().unwrap().temporary_bytes, baseline);
     reopened.close().unwrap();
     for (result, report) in retained {
@@ -491,7 +524,7 @@ pub(super) fn preparation_refusal() {
     let baseline = store.stats().unwrap().temporary_bytes;
     let error = match query(
         &store,
-        &mut NativeSearchAdapter::new(&store.tokenizer),
+        &mut NativeSearchAdapter::new(&store),
         SearchMode::Exact,
         false,
     ) {

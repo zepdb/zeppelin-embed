@@ -420,6 +420,7 @@ impl Store {
             options,
             control,
             true,
+            None,
             |mut outcome, snapshot, active, cancellation, addresses| {
                 cancellation.check_graph().map_err(super::map_scan_error)?;
                 let address = |rank| {

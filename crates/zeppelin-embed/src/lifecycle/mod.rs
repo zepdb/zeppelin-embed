@@ -21,13 +21,13 @@ pub use namespace_batch::{namespace_declare_cascade, namespace_delete_cascade};
 mod enable_graph;
 #[cfg(feature = "graph-cypher")]
 pub(crate) mod native_graph;
+#[cfg(feature = "graph-cypher")]
+mod pinned_search;
 mod pool;
 pub(crate) mod prepared;
 mod prepared_lexical;
 mod reindex;
 pub(crate) mod rescored_scan;
-#[cfg(test)]
-mod shared_bound_tests;
 mod snapshot;
 mod snapshot_copy;
 mod snapshot_view;
@@ -61,8 +61,6 @@ pub use materialize::{
     HybridPreparationError, MaterializationError, MaterializedRow, QueryMaterializer,
 };
 
-#[cfg(test)]
-mod hybrid_overlap_tests;
 pub use group_count::{
     DocumentGroup, DocumentGroupCounts, DocumentGroupValue, MAX_DOCUMENT_GROUP_LIMIT,
 };
@@ -4940,6 +4938,7 @@ impl Store {
             options,
             control,
             capture_rows,
+            None,
             finish,
         )
         .map_err(|error| match error {
@@ -4959,6 +4958,7 @@ impl Store {
         options: SearchOptions,
         control: QueryControl,
         capture_rows: bool,
+        pinned: Option<AdmittedVectorSearch<'_>>,
         finish: impl FnOnce(
             crate::ingest::StoreHybridSearchOutcome,
             &PublishedSnapshot,
@@ -4967,7 +4967,11 @@ impl Store {
             Option<&materialize::HybridAddresses>,
         ) -> Result<R, crate::fusion::FusionError>,
     ) -> Result<R, HybridPreparationError<E>> {
-        let control = control.with_clock(Arc::clone(&self.clock));
+        let control = if pinned.is_some() {
+            control
+        } else {
+            control.with_clock(Arc::clone(&self.clock))
+        };
         let started = self.clock.now();
         // Resolve known restrictions here, before either producer starts. Deferred
         // producers may supply ids later; their lexical ranking is refreshed below.
@@ -4996,9 +5000,15 @@ impl Store {
         // segment has earned a graph yet, hybrid therefore still selects
         // Exact for itself. This is the adaptive ladder choosing the
         // tier that can honour the contract, not a fallback hiding one.
-        let admitted = self
-            .admit_vector_search_for(options, requested_tier.is_none())
-            .map_err(crate::fusion::FusionError::from)?;
+        let pinned_epoch = pinned
+            .as_ref()
+            .map(|admitted| admitted.snapshot.epoch_alias());
+        let admitted = match pinned {
+            Some(admitted) => admitted,
+            None => self
+                .admit_vector_search_for(options, requested_tier.is_none())
+                .map_err(crate::fusion::FusionError::from)?,
+        };
         options = admitted.execution_options;
         let tier_resolution = if requested_tier.is_none() {
             if snapshot_has_graph(&admitted.snapshot) {
@@ -5107,7 +5117,7 @@ impl Store {
                 &admitted.active_segment,
                 &self.accounting,
                 admitted.generation,
-                self.epoch_identity(),
+                pinned_epoch.unwrap_or_else(|| self.epoch_identity()),
                 vector_query,
                 k,
                 // A graph traversal only pays for itself while its
@@ -5176,7 +5186,7 @@ impl Store {
                         .with_filter(deferred_filter.as_ref().or(filter).or(vector_query.filter));
                     let mut vector_preparation = prepared::PreparedVectorQuery::new(
                         vector_query.vector(),
-                        self.epoch_identity(),
+                        pinned_epoch.unwrap_or_else(|| self.epoch_identity()),
                         &self.accounting,
                     );
                     maybe_trigger_hybrid_leg_panic(
@@ -5775,7 +5785,7 @@ impl Store {
             snapshot: snapshot::ReadSnapshot::new(snapshot),
             active_segment,
             generation,
-            _active_query: active_query,
+            _active_query: Some(active_query),
         })
     }
 
@@ -9132,7 +9142,7 @@ struct AdmittedVectorSearch<'a> {
     snapshot: snapshot::ReadSnapshot,
     active_segment: Arc<crate::ingest::ActiveSegment>,
     generation: u64,
-    _active_query: ActiveQuery<'a>,
+    _active_query: Option<ActiveQuery<'a>>,
 }
 
 struct ActiveQuery<'a> {
@@ -11050,3 +11060,9 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod shared_bound_tests;
+
+#[cfg(test)]
+mod hybrid_overlap_tests;

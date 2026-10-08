@@ -7,10 +7,6 @@
 
 pub mod tokenizer;
 
-/// Bounded/accounted lexical preparation for native graph fragments.
-#[cfg(feature = "graph-cypher")]
-pub mod graph_build;
-
 /// Explicit test-only observations propagated to this query's lexical worker.
 #[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]

@@ -202,41 +202,15 @@ impl CapacityReservation<'_> {
 }
 
 trait QueryRuntime {
-    fn observe_candidate_window(&mut self, width: u64) -> Result<(), RuntimeError>;
     fn checkpoint(&self) -> Result<(), RuntimeError>;
     fn charge(&mut self, kind: WorkKind, units: u64) -> Result<(), RuntimeError>;
-    #[cfg(feature = "graph-cypher")]
-    fn decode_graph_lexical<'m>(
-        &mut self,
-        bytes: &[u8],
-        epoch: crate::fts::tokenizer::TokenizerEpoch,
-        memory: &'m QueryMemory<'m>,
-    ) -> Result<
-        crate::fts::graph_build::DecodedGraphLexical<'m>,
-        crate::fts::graph_build::GraphLexicalError,
-    >;
 }
 impl QueryRuntime for RuntimeContext<'_, '_, '_> {
-    fn observe_candidate_window(&mut self, width: u64) -> Result<(), RuntimeError> {
-        RuntimeContext::observe_candidate_window(self, width)
-    }
     fn checkpoint(&self) -> Result<(), RuntimeError> {
         RuntimeContext::checkpoint(self)
     }
     fn charge(&mut self, kind: WorkKind, units: u64) -> Result<(), RuntimeError> {
         RuntimeContext::charge(self, kind, units)
-    }
-    #[cfg(feature = "graph-cypher")]
-    fn decode_graph_lexical<'m>(
-        &mut self,
-        bytes: &[u8],
-        epoch: crate::fts::tokenizer::TokenizerEpoch,
-        memory: &'m QueryMemory<'m>,
-    ) -> Result<
-        crate::fts::graph_build::DecodedGraphLexical<'m>,
-        crate::fts::graph_build::GraphLexicalError,
-    > {
-        crate::fts::graph_build::DecodedGraphLexical::decode_query(bytes, epoch, memory, self)
     }
 }
 
@@ -465,29 +439,6 @@ impl<'a> TreeResources<'a> {
             _reservation: reservation,
         })
     }
-    #[cfg(feature = "graph-cypher")]
-    pub(crate) fn decode_graph_lexical<'m>(
-        &mut self,
-        bytes: &[u8],
-        epoch: crate::fts::tokenizer::TokenizerEpoch,
-        memory: &'m QueryMemory<'m>,
-    ) -> Result<
-        crate::fts::graph_build::DecodedGraphLexical<'m>,
-        crate::fts::graph_build::GraphLexicalError,
-    > {
-        use crate::fts::graph_build::GraphLexicalError;
-        self.step(0).map_err(GraphLexicalError::Resource)?;
-        self.require_query(memory)
-            .map_err(GraphLexicalError::Resource)?;
-        match &mut self.control {
-            TreeControl::Query { context, .. } => {
-                context.decode_graph_lexical(bytes, epoch, memory)
-            }
-            TreeControl::Direct { .. } => Err(GraphLexicalError::Resource(TreeError::Invalid(
-                "graph lexical query runtime required",
-            ))),
-        }
-    }
     fn cursor_owner(&self) -> Result<CursorOwner<'a>, TreeError> {
         match (&self.owner, &self.control) {
             (CapacityOwner::Shared(_), TreeControl::Direct { .. }) => Ok(CursorOwner::Direct),
@@ -588,33 +539,7 @@ impl<'a> TreeResources<'a> {
         }
         Ok(())
     }
-    pub(crate) fn observe_candidate_window(&mut self, width: usize) -> Result<(), TreeError> {
-        match &mut self.control {
-            TreeControl::Query { context, .. } => context
-                .observe_candidate_window(width as u64)
-                .map_err(TreeError::Runtime),
-            TreeControl::Direct { .. } => Err(TreeError::Invalid(
-                "candidate observation requires query owner",
-            )),
-        }
-    }
-    /// Charges query-owned retrieval work to the same cumulative runtime. There
-    /// is no silent direct-control path: scoring requires a query runtime.
-    #[cfg(feature = "graph-cypher")]
-    pub(crate) fn charge_query_work(
-        &mut self,
-        kind: WorkKind,
-        units: u64,
-    ) -> Result<(), TreeError> {
-        match &mut self.control {
-            TreeControl::Query { context, .. } => {
-                context.charge(kind, units).map_err(TreeError::Runtime)
-            }
-            TreeControl::Direct { .. } => {
-                Err(TreeError::Invalid("query work requires a query runtime"))
-            }
-        }
-    }
+
     /// Exact charged work, including work completed before an error.
     pub const fn work(&self) -> u64 {
         self.work
@@ -899,201 +824,6 @@ pub(crate) fn trace_page_scoped<R>(
         let cells = count(block.payload())?;
         callback(page, identity, cells, resources)
     })
-}
-
-#[derive(Clone, Copy)]
-struct FixedLookupBound {
-    bytes: [u8; 32],
-    length: u8,
-}
-
-impl FixedLookupBound {
-    fn copy(key: Key<'_>, width: usize) -> Result<Self, TreeError> {
-        let Key::Inline(bytes) = key else {
-            return Err(TreeError::Invalid("fixed lookup overflow key"));
-        };
-        if bytes.len() != width {
-            return Err(TreeError::Invalid("fixed lookup key width"));
-        }
-        let mut output = [0_u8; 32];
-        output
-            .get_mut(..width)
-            .ok_or(TreeError::Invalid("fixed lookup key extent"))?
-            .copy_from_slice(bytes);
-        Ok(Self {
-            bytes: output,
-            length: u8::try_from(width).map_err(|_| TreeError::Memory)?,
-        })
-    }
-
-    fn key(&self) -> Result<Key<'_>, TreeError> {
-        Ok(Key::Inline(
-            self.bytes
-                .get(..usize::from(self.length))
-                .ok_or(TreeError::Invalid("fixed lookup bound extent"))?,
-        ))
-    }
-}
-
-enum FixedLookupStep {
-    Found(usize),
-    Absent,
-    Child {
-        reference: PhysicalRef,
-        expected_level: u16,
-        generation_bound: GraphGeneration,
-        lower: Option<FixedLookupBound>,
-        upper: Option<FixedLookupBound>,
-    },
-}
-
-/// Copy one fixed-width trace-only value while releasing every page mapping
-/// before following its next route. Ordinary borrowed lookups retain their
-/// existing API and ownership semantics.
-pub(crate) fn lookup_fixed_scoped(
-    source: &impl BlockSource,
-    root: DirectoryRoot,
-    key: &[u8],
-    output: &mut [u8],
-    resources: &mut TreeResources<'_>,
-) -> Result<Option<usize>, TreeError> {
-    let width = match root.kind {
-        TreeKind::Nodes | TreeKind::SparseMembership => 16,
-        TreeKind::SparseSources => 32,
-        _ => return Err(TreeError::Invalid("fixed lookup tree kind")),
-    };
-    if key.len() != width {
-        return Err(TreeError::Invalid("fixed lookup probe width"));
-    }
-    resources.step(1)?;
-    resources.read_event(NativeReadEvent::Lookup)?;
-    validate_key(source, root, Key::Inline(key), resources)?;
-    let Some(mut reference) = root.reference else {
-        return Ok(None);
-    };
-    let mut expected_level = None;
-    let mut generation_bound = root.generation;
-    let mut lower = None;
-    let mut upper = None;
-    let mut ancestors = [None; MAX_DEPTH];
-    let mut depth = 0_usize;
-    loop {
-        if ancestors
-            .get(..depth)
-            .is_some_and(|path| path.contains(&Some(reference)))
-        {
-            return Err(TreeError::Invalid("fixed lookup directory cycle"));
-        }
-        *ancestors
-            .get_mut(depth)
-            .ok_or(TreeError::Invalid("fixed lookup directory depth"))? = Some(reference);
-        depth = depth.checked_add(1).ok_or(TreeError::Work)?;
-        let lower_key = lower.as_ref().map(FixedLookupBound::key).transpose()?;
-        let upper_key = upper.as_ref().map(FixedLookupBound::key).transpose()?;
-        let step = trace_page_scoped(
-            source,
-            root,
-            reference,
-            lower_key,
-            upper_key,
-            resources,
-            |page, _identity, cells, resources| {
-                if expected_level.is_some_and(|level| level != page.header().level)
-                    || page.header().generation > generation_bound
-                {
-                    return Err(TreeError::Invalid("fixed lookup child level or generation"));
-                }
-                if page.header().level == 0 {
-                    for index in 0..cells {
-                        resources.step(1)?;
-                        let Cell::Leaf { key: stored, value } = page.cell(index)? else {
-                            return Err(TreeError::Invalid("fixed lookup leaf cell"));
-                        };
-                        let Key::Inline(stored_bytes) = stored else {
-                            return Err(TreeError::Invalid("fixed lookup overflow key"));
-                        };
-                        if stored_bytes.len() != width {
-                            return Err(TreeError::Invalid("fixed lookup key width"));
-                        }
-                        match compare(source, root, Key::Inline(key), stored, resources)? {
-                            std::cmp::Ordering::Equal => {
-                                let destination =
-                                    output.get_mut(..value.len()).ok_or(TreeError::Memory)?;
-                                resources.step(value.len() as u64)?;
-                                resources
-                                    .read_event(NativeReadEvent::CopiedBytes(value.len() as u64))?;
-                                destination.copy_from_slice(value);
-                                return Ok(FixedLookupStep::Found(value.len()));
-                            }
-                            std::cmp::Ordering::Less => return Ok(FixedLookupStep::Absent),
-                            std::cmp::Ordering::Greater => {}
-                        }
-                    }
-                    return Ok(FixedLookupStep::Absent);
-                }
-                let mut selected = None;
-                let mut prior = lower;
-                for index in 0..cells {
-                    resources.step(1)?;
-                    let Cell::Branch {
-                        upper: bound,
-                        child,
-                    } = page.cell(index)?
-                    else {
-                        return Err(TreeError::Invalid("fixed lookup branch cell"));
-                    };
-                    let copied_bound = bound
-                        .map(|bound| FixedLookupBound::copy(bound, width))
-                        .transpose()?;
-                    if selected.is_none()
-                        && (bound.is_none()
-                            || compare(
-                                source,
-                                root,
-                                Key::Inline(key),
-                                bound.ok_or(TreeError::Invalid("fixed lookup bound"))?,
-                                resources,
-                            )?
-                            .is_lt())
-                    {
-                        selected = Some((child, prior, copied_bound.or(upper)));
-                        break;
-                    }
-                    prior = copied_bound;
-                }
-                let (child, child_lower, child_upper) =
-                    selected.ok_or(TreeError::Invalid("fixed lookup missing branch route"))?;
-                Ok(FixedLookupStep::Child {
-                    reference: child,
-                    expected_level: page
-                        .header()
-                        .level
-                        .checked_sub(1)
-                        .ok_or(TreeError::Invalid("fixed lookup branch level"))?,
-                    generation_bound: page.header().generation,
-                    lower: child_lower,
-                    upper: child_upper,
-                })
-            },
-        )?;
-        match step {
-            FixedLookupStep::Found(length) => return Ok(Some(length)),
-            FixedLookupStep::Absent => return Ok(None),
-            FixedLookupStep::Child {
-                reference: child,
-                expected_level: child_level,
-                generation_bound: child_generation,
-                lower: child_lower,
-                upper: child_upper,
-            } => {
-                reference = child;
-                expected_level = Some(child_level);
-                generation_bound = child_generation;
-                lower = child_lower;
-                upper = child_upper;
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy)]

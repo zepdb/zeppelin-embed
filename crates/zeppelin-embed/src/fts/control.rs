@@ -19,74 +19,12 @@ pub(crate) trait BuildPolicy<'m> {
 
     fn checkpoint(&mut self) -> Result<(), Self::Error>;
     fn step(&mut self, units: u64) -> Result<(), Self::Error>;
-    fn lexical_block(&mut self) -> Result<(), Self::Error> {
-        self.step(1)
-    }
-    fn lexical_posting(&mut self) -> Result<(), Self::Error> {
-        self.step(1)
-    }
+
     /// Accounts one actual initialized-memory copy immediately before it is
     /// performed. The caller has already proved the destination capacity.
     fn copy_step(&mut self, bytes: usize) -> Result<(), Self::Error>;
     fn allocate_vec<T>(&mut self, capacity: usize) -> Result<(Vec<T>, Self::Charge), Self::Error>;
     fn allocate_string(&mut self, capacity: usize) -> Result<(String, Self::Charge), Self::Error>;
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TestStage {
-    Work,
-    Analysis,
-    Sort,
-    PositionsEncode,
-    RegionEncode,
-    PositionsDecode,
-    RegionDecode,
-}
-
-#[cfg(test)]
-type StageHook = Box<dyn FnMut(TestStage)>;
-
-#[cfg(test)]
-std::thread_local! {
-    static TEST_STAGE_HOOK: std::cell::RefCell<Option<StageHook>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn test_stage_probe(stage: TestStage) {
-    TEST_STAGE_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().as_mut() {
-            hook(stage);
-        }
-    });
-}
-
-#[cfg(test)]
-pub(crate) fn with_test_stage_hook<R>(
-    hook: impl FnMut(TestStage) + 'static,
-    action: impl FnOnce() -> R,
-) -> R {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_STAGE_HOOK.with(|slot| {
-                let _ = slot.borrow_mut().take();
-            });
-        }
-    }
-
-    TEST_STAGE_HOOK.with(|slot| {
-        assert!(
-            slot.borrow().is_none(),
-            "test stage hook is already installed"
-        );
-        *slot.borrow_mut() = Some(Box::new(hook));
-    });
-    let reset = Reset;
-    let result = action();
-    drop(reset);
-    result
 }
 
 pub(crate) struct LegacyPolicy;
@@ -136,17 +74,6 @@ impl<'m, T, C> GuardedVec<'m, T, C> {
 
     pub(crate) fn len(&self) -> usize {
         self.values.len()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn actual_capacity_bytes(&self) -> usize {
-        self.values
-            .capacity()
-            .saturating_mul(std::mem::size_of::<T>())
     }
 
     pub(crate) fn as_slice(&self) -> &[T] {
@@ -200,27 +127,6 @@ impl<'m, T, C> GuardedVec<'m, T, C> {
         (self.values, self.charge)
     }
 
-    pub(crate) fn extend_from_slice<P>(
-        &mut self,
-        values: &[T],
-        policy: &mut P,
-    ) -> Result<(), P::Error>
-    where
-        T: Copy,
-        P: BuildPolicy<'m, Charge = C>,
-    {
-        for chunk in values.chunks(
-            8_192_usize
-                .saturating_div(std::mem::size_of::<T>().max(1))
-                .max(1),
-        ) {
-            for value in chunk {
-                self.push(*value, policy)?;
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn remove_first<P>(&mut self, policy: &mut P) -> Result<Option<T>, P::Error>
     where
         P: BuildPolicy<'m, Charge = C>,
@@ -234,17 +140,6 @@ impl<'m, T, C> GuardedVec<'m, T, C> {
     }
 }
 
-pub(crate) trait CapacityCharge {
-    fn bytes(&self) -> usize;
-}
-
-impl CapacityCharge for () {
-    fn bytes(&self) -> usize {
-        0
-    }
-}
-
-/// A String whose allocator capacity is paired with its authentic charge.
 pub(crate) struct GuardedString<'m, C> {
     value: String,
     charge: C,
@@ -274,8 +169,6 @@ impl<'m, C> GuardedString<'m, C> {
             let bytes = character.len_utf8();
             policy.copy_step(bytes)?;
             guarded.value.push(character);
-            #[cfg(test)]
-            test_stage_probe(TestStage::Analysis);
         }
         Ok(guarded)
     }
@@ -286,11 +179,6 @@ impl<'m, C> GuardedString<'m, C> {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.value.is_empty()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn actual_capacity_bytes(&self) -> usize {
-        self.value.capacity()
     }
 
     pub(crate) fn push_str<P>(&mut self, policy: &mut P, value: &str) -> Result<(), P::Error>
@@ -462,8 +350,6 @@ fn sift_down_policy<'m, T, P: BuildPolicy<'m>>(
         policy.step(1)?;
         if let (Some(left), Some(right)) = (values.get(child), values.get(child + 1)) {
             let order = compare(left, right, policy)?;
-            #[cfg(test)]
-            test_stage_probe(TestStage::Sort);
             if order.is_lt() {
                 child = child.saturating_add(1);
             }
@@ -476,8 +362,6 @@ fn sift_down_policy<'m, T, P: BuildPolicy<'m>>(
             return Ok(());
         };
         let order = compare(parent, selected, policy)?;
-        #[cfg(test)]
-        test_stage_probe(TestStage::Sort);
         if !order.is_lt() {
             return Ok(());
         }

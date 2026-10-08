@@ -1,30 +1,17 @@
-//! ZE-64: the real `SearchAdapter`, composing ZE-62's `rank_vector` and
-//! ZE-63's `rank_text`/`rank_hybrid` behind the ZE-53 eager `Search` seam.
-//!
-//! Every call routes through the invocation's own admitted `view`, so a
-//! search and any surrounding graph expansion in the same statement read
-//! the same admitted active+published view; the adapter never admits or
-//! opens a second one. Reports are built as honest translations of the
-//! real ranking producers' own reports, never invented: an unpopulated
-//! field (the document/query/tokenizer epochs) stays `None` because no
-//! production code anywhere in this crate populates it yet.
+//! Graph search runs on the document segments pinned by its statement lease.
 
 use super::super::{LegState, ScorePrecision, SearchKind, SearchReport};
-use crate::fts::tokenizer::Analyzer;
+use crate::lifecycle::Store;
 use crate::property_graph::query::eligibility::Eligibility;
 use crate::property_graph::query::pattern::{
     SearchAdapter, SearchArguments, SearchHit, SearchInvocation,
 };
-use crate::property_graph::query::plan::SearchBounds;
+use crate::property_graph::query::plan::{SearchMode, SearchOptions};
 use crate::property_graph::query::resources::{QueryArena, QueryMemory};
 use crate::property_graph::query::runtime::{NativeExecutionError, RuntimeContext, RuntimeError};
 use crate::property_graph::query::{QueryError, QueryList, QueryValue};
-use crate::property_graph::retrieval::{NativeRetrievalContext, RetrievalError};
+use crate::property_graph::retrieval::RetrievalError;
 use crate::property_graph::storage::GraphReadView;
-
-fn retrieval(error: RetrievalError) -> NativeExecutionError {
-    error.into()
-}
 
 /// Copies a `QueryList` numeric argument into owned charged `f32` storage.
 /// The evaluator only ever produces `F64`/`I64` list elements for a
@@ -56,33 +43,182 @@ fn copy_vector<'m, 'g>(
     Ok(coordinates)
 }
 
-/// Copies `invocation`'s eligibility by value; `Eligibility` borrows an
-/// `EligibleNodeSet` reference (itself `Copy`) rather than deriving `Copy`
-/// on the enum, so this reconstructs it from a shared reference. The two
-/// calls a `Hybrid` invocation makes both copy from the same source field,
-/// so `rank_hybrid`'s pointer-identity check on the two prepared legs
-/// always sees the same underlying set.
-fn eligibility<'e, 'v, 'm, 'g>(
-    invocation: &SearchInvocation<'_, 'e, 'v, 'm, 'g>,
-) -> Eligibility<'e, 'v, 'm, 'g> {
-    match &invocation.eligibility {
-        Eligibility::AllIndexed => Eligibility::AllIndexed,
-        Eligibility::Set(set) => Eligibility::Set(set),
+pub(crate) struct NativeSearchAdapter<'a> {
+    store: &'a Store,
+}
+impl<'a> NativeSearchAdapter<'a> {
+    pub(crate) const fn new(store: &'a Store) -> Self {
+        Self { store }
     }
 }
 
-/// The real `SearchAdapter`. It holds only the store's own lexical
-/// analyzer, borrowed independently of the view. The caller constructs it
-/// before admission and it must satisfy the
-/// `for<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g>` bound across every retry
-/// attempt, so it cannot capture a view-typed reference in its own type.
-pub(crate) struct NativeSearchAdapter<'a> {
-    analyzer: &'a Analyzer,
+fn lexical(store: &Store, text: &str, prefix: bool) -> crate::fts::query::LexicalQuery {
+    let mut terms = store
+        .tokenizer
+        .analyze(text)
+        .into_iter()
+        .map(|token| token.term.into_bytes())
+        .collect::<Vec<_>>();
+    if prefix && let Some(prefix) = terms.pop() {
+        crate::fts::query::LexicalQuery::TermsWithPrefix {
+            terms,
+            prefix,
+            fields: crate::fts::search::FieldWeights::flat(&[crate::fts::index::DEFAULT_FIELD]),
+        }
+    } else {
+        crate::fts::query::LexicalQuery::term(crate::fts::search::TermQuery::flat(
+            terms,
+            &[crate::fts::index::DEFAULT_FIELD],
+        ))
+    }
 }
 
-impl<'a> NativeSearchAdapter<'a> {
-    pub(crate) const fn new(analyzer: &'a Analyzer) -> Self {
-        Self { analyzer }
+fn vector_options(
+    mode: SearchMode,
+    options: SearchOptions,
+    window: usize,
+) -> Result<crate::lifecycle::SearchOptions, RetrievalError> {
+    use crate::lifecycle::{GraphSearchOptions, SearchTier};
+    let mut result = crate::lifecycle::SearchOptions::default();
+    result = match mode {
+        SearchMode::Default => result,
+        SearchMode::Auto => result.with_tier(SearchTier::Auto),
+        SearchMode::Exact => result.with_tier(SearchTier::Exact),
+        SearchMode::Scan => result.with_tier(SearchTier::Scan),
+        SearchMode::Graph => {
+            let profile = options
+                .graph_profile
+                .unwrap_or(crate::graph::search::GraphSearchProfile::SiftClass);
+            let mut graph = GraphSearchOptions::new(profile).with_seed(options.graph_seed);
+            if options.graph_ef != 0 {
+                graph = graph.with_ef(options.graph_ef as usize);
+            }
+            result.with_tier(SearchTier::Graph(graph))
+        }
+    };
+    if mode != SearchMode::Graph
+        && (options.graph_profile.is_some() || options.graph_ef != 0 || options.graph_seed != 0)
+    {
+        return Err(RetrievalError::Control(RuntimeError::Value(
+            QueryError::Type,
+        )));
+    }
+    if options.rescore {
+        if mode != SearchMode::Scan {
+            return Err(RetrievalError::Control(RuntimeError::Value(
+                QueryError::Type,
+            )));
+        }
+        result = result.with_scan_rescore(
+            crate::lifecycle::ScanRescoreOptions::new(1, window)
+                .map_err(|_| RetrievalError::Memory)?,
+        );
+    }
+    Ok(result)
+}
+
+fn report(
+    invocation: &SearchInvocation<'_, '_, '_, '_, '_>,
+    diagnostics: &crate::diag::QueryDiagnostics,
+    kind: SearchKind,
+) -> SearchReport {
+    use super::super::{ActualTier, CandidateCoverage};
+    let hybrid = diagnostics.hybrid.as_ref();
+    let fusion = diagnostics.fusion.as_ref();
+    let vector = kind != SearchKind::Lexical;
+    let text = kind != SearchKind::Vector;
+    let members = diagnostics
+        .plan
+        .iter()
+        .map(|plan| plan.filter_cardinality)
+        .sum::<u64>();
+    let lexical_nonempty = hybrid.map_or(diagnostics.returned > 0, |report| {
+        report.lexical_returned > 0
+    });
+    SearchReport {
+        call: invocation.call,
+        generation: invocation.generation,
+        kind,
+        requested_tier: None,
+        actual_tier: (vector && members > 0).then_some(
+            if diagnostics.plan.iter().any(|plan| {
+                matches!(
+                    plan.branch,
+                    crate::planner::SegmentBranch::Graph
+                        | crate::planner::SegmentBranch::FilteredGraph
+                )
+            }) {
+                ActualTier::Graph
+            } else if diagnostics.plan.iter().any(|plan| {
+                matches!(
+                    plan.scan_reason,
+                    Some(crate::planner::ScanReason::ExplicitTier(
+                        crate::planner::ExplicitScanTier::Scan
+                    ))
+                )
+            }) {
+                ActualTier::Scan
+            } else {
+                ActualTier::Exact
+            },
+        ),
+        precision: if !vector {
+            ScorePrecision::NotApplicable
+        } else if diagnostics.exact_rescore {
+            ScorePrecision::Original
+        } else {
+            ScorePrecision::Quantized
+        },
+        coverage: if diagnostics.approximate {
+            CandidateCoverage::Approximate
+        } else {
+            CandidateCoverage::Exact
+        },
+        vector_leg: if !vector {
+            LegState::NotRequested
+        } else if members == 0 {
+            LegState::NoEligibleMembers
+        } else {
+            LegState::Nonempty
+        },
+        lexical_leg: if !text {
+            LegState::NotRequested
+        } else if lexical_nonempty {
+            LegState::Nonempty
+        } else {
+            LegState::NoQueryMatches
+        },
+        document_epoch: diagnostics.embedding_epoch.map(|epoch| epoch.value()),
+        query_epoch: diagnostics.embedding_epoch.map(|epoch| epoch.value()),
+        tokenizer_epoch: diagnostics.tokenizer_epoch.map(|epoch| epoch.value()),
+        effective_alpha_bits: fusion.map_or(0, |report| report.effective_alpha.to_bits()),
+        normalization_version: hybrid
+            .map_or(0, |report| u32::from(report.normalization_policy_version)),
+        rules_version: fusion.map_or(0, |report| u32::from(report.alpha_policy_version)),
+        candidate_count: hybrid.map_or_else(
+            || {
+                if vector {
+                    members
+                } else {
+                    diagnostics.counters.lexical.docs_evaluated
+                }
+            },
+            |report| report.vector_returned as u64,
+        ),
+        cross_scored_count: hybrid.map_or(0, |report| {
+            if report.provenance.cross_scores_complete {
+                report.vector_returned as u64
+            } else {
+                0
+            }
+        }),
+        fallback_count: diagnostics
+            .plan
+            .iter()
+            .filter(|plan| plan.branch == crate::planner::SegmentBranch::GraphExactFallback)
+            .count() as u64,
+        cross_score_complete: hybrid.is_some_and(|report| report.provenance.cross_scores_complete),
+        work: Default::default(),
     }
 }
 
@@ -95,161 +231,157 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<SearchReport, NativeExecutionError> {
         let outer_peak = context.reset_candidate_window_peak()?;
+        let before = context.counters();
         let result = (|| {
-            let before = context.counters();
-            let ctx = NativeRetrievalContext::new(view, context).map_err(retrieval)?;
-            let bounds = SearchBounds::new(i64::from(invocation.k), u64::from(invocation.window))?;
-            match invocation.arguments {
-                SearchArguments::Vector { vector, mode } => {
-                    let coordinates = copy_vector(context.memory(), vector)?;
-                    let prepared = ctx
-                        .prepare_vector(
-                            coordinates.as_slice(),
-                            mode,
-                            eligibility(invocation),
-                            context,
-                        )
-                        .map_err(retrieval)?
-                        .with_options(invocation.options);
-                    let ranked = ctx
-                        .rank_vector(&prepared, bounds, context)
-                        .map_err(retrieval)?;
-                    let report = ranked.report();
-                    for hit in ranked.hits() {
-                        hits.push(SearchHit {
-                            node: hit.node,
-                            score: hit.distance,
-                            vector_distance: None,
-                            lexical_score: None,
-                        })
-                        .map_err(RuntimeError::Memory)?;
-                    }
-                    Ok(SearchReport {
-                        call: invocation.call,
-                        generation: invocation.generation,
-                        kind: SearchKind::Vector,
-                        requested_tier: report.requested_tier,
-                        actual_tier: report.actual_tier,
-                        precision: report.precision,
-                        coverage: report.coverage,
-                        vector_leg: report.leg,
-                        lexical_leg: LegState::NotRequested,
-                        document_epoch: None,
-                        query_epoch: None,
-                        tokenizer_epoch: None,
-                        effective_alpha_bits: 0,
-                        normalization_version: 0,
-                        rules_version: 0,
-                        candidate_count: report.eligible_members,
-                        cross_scored_count: 0,
-                        fallback_count: report.fallback_count,
-                        cross_score_complete: false,
-                        work: context.counters().since(before),
-                    })
+            if invocation.k > invocation.window {
+                return Err(RetrievalError::CandidateWindow {
+                    required: invocation.k as usize,
+                    window: invocation.window as usize,
                 }
-                SearchArguments::Text { query } => {
-                    let prepared = ctx
-                        .prepare_text_with_options(
-                            self.analyzer,
-                            query,
-                            eligibility(invocation),
-                            invocation.options,
-                            context,
-                        )
-                        .map_err(retrieval)?;
-                    let ranked = ctx
-                        .rank_text(&prepared, bounds, context)
-                        .map_err(retrieval)?;
-                    let report = ranked.report();
-                    for hit in ranked.hits() {
-                        hits.push(SearchHit {
-                            node: hit.node,
-                            score: hit.bm25,
-                            vector_distance: None,
-                            lexical_score: None,
-                        })
-                        .map_err(RuntimeError::Memory)?;
-                    }
-                    Ok(SearchReport {
-                        call: invocation.call,
-                        generation: invocation.generation,
-                        kind: SearchKind::Lexical,
-                        requested_tier: None,
-                        actual_tier: None,
-                        precision: ScorePrecision::NotApplicable,
-                        coverage: report.coverage,
-                        vector_leg: LegState::NotRequested,
-                        lexical_leg: report.domain.leg,
-                        document_epoch: None,
-                        query_epoch: None,
-                        tokenizer_epoch: None,
-                        effective_alpha_bits: 0,
-                        normalization_version: 0,
-                        rules_version: 0,
-                        candidate_count: report.domain.eligible_matches,
-                        cross_scored_count: 0,
-                        fallback_count: 0,
-                        cross_score_complete: false,
-                        work: context.counters().since(before),
-                    })
-                }
-                SearchArguments::Hybrid { vector, text, mode } => {
-                    let coordinates = copy_vector(context.memory(), vector)?;
-                    let prepared_vector = ctx
-                        .prepare_vector(
-                            coordinates.as_slice(),
-                            mode,
-                            eligibility(invocation),
-                            context,
-                        )
-                        .map_err(retrieval)?
-                        .with_options(invocation.options);
-                    let prepared_text = ctx
-                        .prepare_text_with_options(
-                            self.analyzer,
-                            text,
-                            eligibility(invocation),
-                            invocation.options,
-                            context,
-                        )
-                        .map_err(retrieval)?;
-                    let ranked = ctx
-                        .rank_hybrid(&prepared_vector, &prepared_text, bounds, context)
-                        .map_err(retrieval)?;
-                    let report = ranked.report();
-                    for hit in ranked.hits() {
-                        hits.push(SearchHit {
-                            node: hit.node,
-                            score: hit.fused,
-                            vector_distance: hit.vector,
-                            lexical_score: hit.lexical,
-                        })
-                        .map_err(RuntimeError::Memory)?;
-                    }
-                    Ok(SearchReport {
-                        call: invocation.call,
-                        generation: invocation.generation,
-                        kind: SearchKind::Hybrid,
-                        requested_tier: report.requested_tier,
-                        actual_tier: report.actual_tier,
-                        precision: report.precision,
-                        coverage: report.coverage,
-                        vector_leg: report.vector_leg,
-                        lexical_leg: report.lexical_leg,
-                        document_epoch: None,
-                        query_epoch: None,
-                        tokenizer_epoch: None,
-                        effective_alpha_bits: report.effective_alpha.to_bits(),
-                        normalization_version: u32::from(report.normalization_version),
-                        rules_version: u32::from(report.rules_version),
-                        candidate_count: report.candidate_count,
-                        cross_scored_count: report.cross_scored_count,
-                        fallback_count: report.fallback_count,
-                        cross_score_complete: report.cross_score_complete,
-                        work: context.counters().since(before),
-                    })
-                }
+                .into());
             }
+            let binding = view.retrieval_binding(context)?;
+            let pin = view.search_documents()?;
+            let ids = match &invocation.eligibility {
+                Eligibility::AllIndexed => None,
+                Eligibility::Set(set) => Some(
+                    set.ids_for(context.view())
+                        .map_err(RetrievalError::Eligibility)?
+                        .iter()
+                        .map(|id| crate::ingest::DocId::new(id.get()))
+                        .collect::<Vec<_>>(),
+                ),
+            };
+            let filter = ids
+                .as_deref()
+                .map(|ids| crate::lifecycle::QueryFilter::eligible(self.store.schema(), ids));
+            let control = context.values().control().clone();
+            let (mut report, counters) = match invocation.arguments {
+                SearchArguments::Text { query } => {
+                    let query = lexical(self.store, query, invocation.options.last_as_prefix);
+                    let (outcome, matching) = self
+                        .store
+                        .graph_text_in(pin, &query, invocation.k as usize, filter.as_ref(), control)
+                        .map_err(RetrievalError::Fusion)?;
+                    context.observe_candidate_window(outcome.candidates.len() as u64)?;
+                    for hit in &outcome.candidates {
+                        hits.push(SearchHit {
+                            node: crate::property_graph::NodeId::from(hit.document.doc_id()),
+                            score: hit.score,
+                            vector_distance: None,
+                            lexical_score: None,
+                        })
+                        .map_err(RuntimeError::Memory)?;
+                    }
+                    let mut mapped = report(invocation, &outcome.diagnostics, SearchKind::Lexical);
+                    mapped.candidate_count = matching;
+                    if ids.as_ref().is_some_and(Vec::is_empty) {
+                        mapped.lexical_leg = LegState::NoEligibleMembers;
+                    }
+                    (mapped, outcome.diagnostics.counters)
+                }
+                SearchArguments::Vector { vector, mode }
+                | SearchArguments::Hybrid { vector, mode, .. } => {
+                    let tower = binding
+                        .interpretation
+                        .embedding()
+                        .ok_or(RetrievalError::NoVectorSpace)?;
+                    let coordinates = copy_vector(context.memory(), vector)?;
+                    context.charge(
+                        crate::property_graph::query::runtime::WorkKind::VectorCoordinates,
+                        coordinates.len() as u64,
+                    )?;
+                    context.charge(
+                        crate::property_graph::query::runtime::WorkKind::VectorBytes,
+                        (coordinates.len() * std::mem::size_of::<f32>()) as u64,
+                    )?;
+                    if coordinates.len() != tower.dimensions() as usize {
+                        return Err(RetrievalError::Dimension {
+                            expected: tower.dimensions() as usize,
+                            actual: coordinates.len(),
+                        }
+                        .into());
+                    }
+                    let options =
+                        vector_options(mode, invocation.options, invocation.window as usize)?;
+                    let request = crate::ingest::SearchRequest::new(coordinates.as_slice())
+                        .with_filter(filter.as_ref());
+                    let request = if let Some(ids) = ids.as_deref() {
+                        request.with_eligible(ids)
+                    } else {
+                        request
+                    };
+                    let (mut mapped, counters) = if let SearchArguments::Hybrid { text, .. } =
+                        invocation.arguments
+                    {
+                        let query = lexical(self.store, text, invocation.options.last_as_prefix);
+                        let mut hybrid = crate::fusion::HybridQuery::new(invocation.k as usize);
+                        hybrid.alpha = invocation.options.alpha;
+                        hybrid.rules_enabled = invocation.options.rules_enabled;
+                        if let Some(rounds) = invocation.options.max_rounds {
+                            hybrid.max_rounds =
+                                usize::try_from(rounds).map_err(|_| RuntimeError::Batch)?;
+                        }
+                        let outcome = self
+                            .store
+                            .graph_hybrid_in(pin, request, &query, &hybrid, options, control)
+                            .map_err(RetrievalError::Fusion)?;
+                        context.observe_candidate_window(
+                            outcome
+                                .diagnostics
+                                .hybrid
+                                .as_ref()
+                                .map_or(outcome.hits.len(), |report| report.window)
+                                as u64,
+                        )?;
+                        for hit in &outcome.hits {
+                            hits.push(SearchHit {
+                                node: crate::property_graph::NodeId::from(hit.key),
+                                score: hit.fused_score,
+                                vector_distance: hit.vector_squared_l2,
+                                lexical_score: hit.lexical_bm25,
+                            })
+                            .map_err(RuntimeError::Memory)?;
+                        }
+                        (
+                            report(invocation, &outcome.diagnostics, SearchKind::Hybrid),
+                            outcome.diagnostics.counters,
+                        )
+                    } else {
+                        let outcome = self.store.graph_vector_in(pin, request, invocation.k as usize, options, control)
+                            .map_err(|error| RetrievalError::Storage(crate::property_graph::storage::tree::directory::TreeError::Control(error)))?;
+                        context.observe_candidate_window(outcome.candidates.len() as u64)?;
+                        for hit in &outcome.candidates {
+                            hits.push(SearchHit {
+                                node: crate::property_graph::NodeId::from(
+                                    hit.document()
+                                        .ok_or(RetrievalError::Invariant(
+                                            "vector hit has no document identity",
+                                        ))?
+                                        .doc_id(),
+                                ),
+                                score: -(hit.score() as f64),
+                                vector_distance: None,
+                                lexical_score: None,
+                            })
+                            .map_err(RuntimeError::Memory)?;
+                        }
+                        (
+                            report(invocation, &outcome.diagnostics, SearchKind::Vector),
+                            outcome.diagnostics.counters,
+                        )
+                    };
+                    mapped.requested_tier = options.explicit_tier();
+                    (mapped, counters)
+                }
+            };
+            use crate::property_graph::query::runtime::WorkKind;
+            context.charge(WorkKind::VectorCoordinates, counters.scan.dims_touched)?;
+            context.charge(WorkKind::VectorBytes, counters.scan.bytes_read)?;
+            context.charge(WorkKind::LexicalPostings, counters.lexical.postings_decoded)?;
+            context.charge(WorkKind::LexicalBlocks, counters.lexical.blocks_decoded)?;
+            report.work = context.counters().since(before);
+            Ok(report)
         })();
         context.restore_candidate_window_peak(outer_peak)?;
         result

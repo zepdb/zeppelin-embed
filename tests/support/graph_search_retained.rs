@@ -137,10 +137,21 @@ pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Va
         .unwrap();
         corpus
             .graph()
-            .graph_apply(
+            .apply_mixed_for_test(
+                &zeppelin_embed::ingest::IngestBatch::new(vec![
+                    zeppelin_embed::ingest::IngestDocument::new(
+                        zeppelin_embed::ingest::DocumentVersion::new(
+                            zeppelin_embed::ingest::DocId::new(7),
+                            zeppelin_embed::ingest::Revision::new(3),
+                        ),
+                        coords.to_vec(),
+                    )
+                    .with_text("quartz"),
+                ])
+                .with_epoch(corpus.graph().epoch_identity().unwrap()),
                 &[StructuredWrite {
                     key: ApplicationKey::new(EntityKind::Node, "ze65", "b").unwrap(),
-                    revision: GraphRevision::new(2).unwrap(),
+                    revision: GraphRevision::new(3).unwrap(),
                     operation: StructuredOperation::Put(EntityId::Node(NodeId::new(7).unwrap())),
                     image: Some(WriteImage::Node(&content)),
                 }],
@@ -169,7 +180,9 @@ pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Va
     };
     // Writer/maintenance bookkeeping control uses the same publications.
     let clean = Corpus::new();
+    drop(clean.run(q));
     write(&clean);
+    drop(clean.run(q));
     let baseline = clean.store.as_ref().unwrap().reserved();
     let result = std::thread::scope(|scope| {
         let task = scope.spawn(|| {
@@ -207,7 +220,7 @@ pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Va
         .iter()
         .find(|n| n.id.get() == 7)
         .unwrap();
-    assert_eq!(replaced.revision.get(), 2);
+    assert_eq!(replaced.revision.get(), 3);
     assert!(later.metadata().generation > result.metadata().generation);
     assert_eq!(
         observe(&later)

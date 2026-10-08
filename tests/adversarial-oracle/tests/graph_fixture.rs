@@ -765,10 +765,11 @@ fn hybrid_optional_modalities_keep_query_weights_and_absence_distinct() {
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0][0], Cell::Node(4));
     assert_eq!(rows[0][2], Cell::Score(0.75_f64.to_bits()));
-    assert_eq!(rows[0][4], Cell::Null);
+    // A vector-only Store row cross-scores to lexical zero.
+    assert_eq!(rows[0][4], Cell::Score(0.0_f64.to_bits()));
     assert_eq!(
         &rows[0][5..8],
-        &[Cell::Bool(true), Cell::Bool(false), Cell::Null]
+        &[Cell::Bool(true), Cell::Bool(true), Cell::Null]
     );
     for row in &rows[1..] {
         assert_eq!(row[2], Cell::Score(0.25_f64.to_bits()));

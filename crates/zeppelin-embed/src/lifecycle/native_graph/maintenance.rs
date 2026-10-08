@@ -26,9 +26,7 @@ use crate::property_graph::storage::reclaim::{
     ProtectedStreamBuilder, ProtectedValue, SpillBinding, SpillIo, SpillMark,
     decode_pending_intent_manifest, pending_intent_candidate_at, validate_protected_stream,
 };
-use crate::property_graph::storage::search::{
-    SearchTraceCursor, SparseRoots, prepare_sparse_maintenance,
-};
+
 use crate::property_graph::storage::tree::TreeKind;
 use crate::property_graph::storage::tree::directory::{BlockSink, DirectoryCursor, TreeScratch};
 use crate::property_graph::storage::{NativePreparationCatalog, NativePreparationSource};
@@ -762,6 +760,7 @@ fn prepare_durable_proof<'m>(
     target_generation: GraphGeneration,
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
+    remaining_manifests: &[crate::property_graph::wal::RequiredRef],
     storage: &'m StorageMemory<'m>,
     control: &crate::lifecycle::QueryControl,
     resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'m>,
@@ -887,6 +886,23 @@ fn prepare_durable_proof<'m>(
                 storage,
                 crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
             )?;
+            // A partial prepared manifest still requires every descriptor at
+            // the next fold. It releases these packs only when it retires.
+            let manifests = if Arc::ptr_eq(bundle, admitted) {
+                remaining_manifests
+            } else {
+                bundle.prepared_inventories()
+            };
+            for required in manifests.iter().copied() {
+                crate::property_graph::storage::inventory::for_each_prepared_descriptor(
+                    &source,
+                    required,
+                    bundle.base().store,
+                    bundle.base().generation,
+                    resources,
+                    |descriptor, resources| mark.emit(descriptor.artifact, &mut writer, resources),
+                )?;
+            }
             let catalog = NativePreparationCatalog::open(&source, resources)?;
             let mut range_scratch = RangeScratch::for_prepare(storage, resources)?;
             if !Arc::ptr_eq(bundle, admitted) {
@@ -925,45 +941,7 @@ fn prepare_durable_proof<'m>(
             }
         }
         if bundle.text().is_some() || bundle.vector().is_some() {
-            let mut state = {
-                let source = NativePreparationSource::new(lease, storage, 64)?;
-                let catalog = NativePreparationCatalog::open(&source, resources)?;
-                SearchTraceCursor::for_preparation(&source, &catalog, resources)?.into_state()
-            };
-            let mut output = [None; crate::property_graph::storage::reclaim::TRACE_OUTPUT_LIMIT];
-            loop {
-                let source = NativePreparationSource::new(lease, storage, 64)?;
-                let catalog = NativePreparationCatalog::open(&source, resources)?;
-                let result = state.trace_preparation(&source, &catalog, &mut output, resources);
-                let result = match result {
-                    Ok(result) => result,
-                    Err(error) => {
-                        return Err(error.into());
-                    }
-                };
-                for reference in output.iter().take(result.count).flatten().copied() {
-                    if !Arc::ptr_eq(bundle, admitted) {
-                        let required = reader_required(&source, reference, resources)?;
-                        protected
-                            .emit(
-                                ProtectedRecord::required(ProtectedClass::Reader, required),
-                                &mut writer,
-                                resources,
-                            )
-                            .map_err(|error| spill_error(&writer, error))?;
-                        base.closure_count = base
-                            .closure_count
-                            .checked_add(1)
-                            .ok_or(NativeGraphError::IdentityExhausted)?;
-                    }
-                    if let Err(error) = mark.emit(reference.artifact, &mut writer, resources) {
-                        return Err(spill_error(&writer, error));
-                    }
-                }
-                if result.complete {
-                    break;
-                }
-            }
+            return Err(NativeGraphError::Invalid("retired sparse search roots"));
         }
     }
     // Open proofs retain their full captured closure, including their role-7
@@ -1337,27 +1315,7 @@ fn resume_pending_reclaim(
     )?;
     roots.replace(inventory_root)?;
     let catalog = NativePreparationCatalog::open(&source, &mut resources)?;
-    let sparse = prepare_sparse_maintenance(
-        &source,
-        &mut objects,
-        SparseRoots {
-            text: admitted.text(),
-            vector: admitted.vector(),
-        },
-        admitted.roots(),
-        roots,
-        admitted.catalog(),
-        &catalog,
-        admitted.document(),
-        admitted.lexical(),
-        admitted
-            .sequence()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-        &[],
-        &storage,
-        &mut resources,
-    )?;
+
     let completion_capacity = crate::property_graph::storage::reclaim::reclaim_completion_bytes(
         pending.candidates.as_slice().len(),
         pending.partials.as_slice().len(),
@@ -1457,7 +1415,6 @@ fn resume_pending_reclaim(
         &shared,
         &admission.lease,
         &objects,
-        &sparse,
         &catalog,
         roots,
         pending.manifest.binding,
@@ -1727,7 +1684,7 @@ fn retire_completed_reclaim(
     );
     let completed = load_completed_reclaim(admission, &storage, &mut resources)?;
     let generation = super::write::assigned_generation(store, admitted.base().generation)?;
-    let sequence = admitted
+    let _sequence = admitted
         .sequence()
         .checked_add(1)
         .ok_or(NativeGraphError::IdentityExhausted)?;
@@ -1775,24 +1732,7 @@ fn retire_completed_reclaim(
     )?;
     roots.replace(inventory_root)?;
     let catalog = NativePreparationCatalog::open(&source, &mut resources)?;
-    let sparse = prepare_sparse_maintenance(
-        &source,
-        &mut objects,
-        SparseRoots {
-            text: admitted.text(),
-            vector: admitted.vector(),
-        },
-        admitted.roots(),
-        roots,
-        admitted.catalog(),
-        &catalog,
-        admitted.document(),
-        admitted.lexical(),
-        sequence,
-        &[],
-        &storage,
-        &mut resources,
-    )?;
+
     objects.finish(&mut resources)?;
     let mut inventory = StorageBuffer::new(&storage, objects.len())?;
     let mut new_pack_bytes = 0_u64;
@@ -1857,7 +1797,6 @@ fn retire_completed_reclaim(
         &admission.lease,
         &completed,
         &objects,
-        &sparse,
         &catalog,
         roots,
         inventory.as_slice(),
@@ -2013,7 +1952,7 @@ pub(super) fn commit_with_limits(
         .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
     let admitted = Arc::clone(admission.lease.bundle());
     if admitted.sequence() == 0 {
-        // Nothing was ever committed: no record, sparse state or inventory
+        // Nothing was ever committed: no record or inventory
         // exists to move, fold or reclaim. Publishing a Maintenance envelope
         // over the empty base would only burn a generation.
         return Ok(NativeMaintenanceReport {
@@ -2090,6 +2029,10 @@ pub(super) fn commit_with_limits(
         generation,
         store,
         admission,
+        admitted
+            .prepared_inventories()
+            .get(folded_inventory.retired()..)
+            .ok_or(NativeGraphError::Invalid("inventory retirement prefix"))?,
         &storage,
         control,
         &mut resources,
@@ -2128,7 +2071,7 @@ pub(super) fn commit_with_limits(
         crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
     )?;
     let catalog = NativePreparationCatalog::open(&source, &mut resources)?;
-    let sequence = admitted
+    let _sequence = admitted
         .sequence()
         .checked_add(1)
         .ok_or(NativeGraphError::IdentityExhausted)?;
@@ -2198,29 +2141,7 @@ pub(super) fn commit_with_limits(
         "maintenance-directories-end",
         resources.work(),
     );
-    let sparse = prepare_sparse_maintenance(
-        &source,
-        &mut objects,
-        SparseRoots {
-            text: admitted.text(),
-            vector: admitted.vector(),
-        },
-        admitted.roots(),
-        consolidated.roots(),
-        admitted.catalog(),
-        &catalog,
-        admitted.document(),
-        admitted.lexical(),
-        sequence,
-        consolidated.relocations(),
-        &storage,
-        &mut resources,
-    )?;
-    #[cfg(all(test, feature = "graph-cypher"))]
-    crate::property_graph::storage::preparation_work_capture::phase(
-        "maintenance-sparse-end",
-        resources.work(),
-    );
+
     objects.finish(&mut resources)?;
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
@@ -2306,7 +2227,6 @@ pub(super) fn commit_with_limits(
         &admission.lease,
         &objects,
         &consolidated,
-        &sparse,
         Some(durable),
         &catalog,
         inventory.as_slice(),

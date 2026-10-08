@@ -24,7 +24,7 @@ pub(crate) mod fold;
 mod fold_table;
 pub(crate) mod numbers;
 mod pipeline;
-pub(crate) use pipeline::ControlledToken;
+
 pub mod profiles;
 #[cfg(test)]
 mod properties;
@@ -398,23 +398,6 @@ impl Analyzer {
     #[must_use]
     pub fn analyze(&self, text: &str) -> Vec<Token> {
         pipeline::analyze(&self.config, text)
-    }
-
-    pub(crate) fn analyze_with_policy<'m, P: super::control::BuildPolicy<'m>>(
-        &self,
-        text: &str,
-        policy: &mut P,
-    ) -> Result<pipeline::ControlledTokens<'m, P::Charge>, P::Error>
-    where
-        P::Error: From<TokenizerError>,
-    {
-        if text.len() > MAX_TEXT_BYTES {
-            return Err(P::Error::from(TokenizerError::TextTooLong {
-                bytes: text.len(),
-                limit: MAX_TEXT_BYTES,
-            }));
-        }
-        pipeline::analyze_with_policy(&self.config, text, policy)
     }
 
     /// Analyzes bytes, rejecting invalid UTF-8 with a typed error.

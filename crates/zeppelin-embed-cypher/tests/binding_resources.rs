@@ -262,9 +262,10 @@ fn ze76_public_failure_preserves_real_retrieval_and_publication() {
             assert_eq!(ranked.cell(row, 0), Some(&Value::F64(expected.to_bits())));
         }
         let lexical = fixture.run("CALL ze.text_search('amber',2) YIELD node,score RETURN score");
-        let idf = (1.0_f64 + (3.0 - 2.0 + 0.5) / (2.0 + 0.5)).ln();
+        // The Store indexes four document rows, including the vector-only row.
+        let idf = (1.0_f64 + (4.0 - 2.0 + 0.5) / (2.0 + 0.5)).ln();
         for (row, length) in [(0, 1.0), (1, 2.0)] {
-            let expected = idf * 2.2 / (1.0 + 1.2 * (0.25 + 0.75 * length / (4.0 / 3.0)));
+            let expected = idf * 2.2 / (1.0 + 1.2 * (0.25 + 0.75 * length / (4.0 / 4.0)));
             assert_eq!(lexical.cell(row, 0), Some(&Value::F64(expected.to_bits())));
         }
     };

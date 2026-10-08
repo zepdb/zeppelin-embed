@@ -430,7 +430,7 @@ pub(super) fn select_adoptions<'m>(
             admitted.base().store,
             admitted.base().generation,
             resources,
-            |listed| {
+            |listed, _| {
                 registered(found.as_mut_slice(), listed);
                 registered_partial(targets.as_mut_slice(), listed);
                 Ok(())

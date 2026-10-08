@@ -378,3 +378,88 @@ impl PoolBuilder {
         index
     }
 }
+
+/// Bind graph identities to the document segments searched by graph calls.
+/// The ABI fixture closes its writer before the Rust Store writer opens.
+pub fn bind_search_documents(
+    handle: &mut ZeHandle,
+    path: &Path,
+    epoch: Option<&EpochFixture>,
+    documents: &[(ZeNodeId, Option<&str>, [f32; 2])],
+    searches: &[zeppelin_embed::lifecycle::SearchOptions],
+) -> Vec<Vec<(u128, f64)>> {
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use zeppelin_embed::lifecycle::OpenOptions;
+    use zeppelin_embed::lifecycle::Store;
+    assert_eq!(ze_close(*handle), ZeErrorCode::ZeOk);
+    let options = OpenOptions::new().with_max_resident_bytes(256 << 20);
+    let options = match epoch {
+        Some(epoch) => {
+            let document = epoch.core().embedding.document;
+            // store_open declares the document tower for both sides of the epoch.
+            options.with_epoch(zeppelin_embed::epoch::StoreEpoch {
+                embedding: zeppelin_embed::epoch::EmbeddingEpoch {
+                    query: document.clone(),
+                    document,
+                    alignment_digest: vec![],
+                },
+                tokenizer: zeppelin_embed::fts::tokenizer::TokenizerConfig::text_default().epoch(),
+            })
+        }
+        None => options,
+    };
+    let store = Store::open_graph(
+        path,
+        options,
+        epoch.map(|epoch| epoch.core().embedding.document),
+    )
+    .unwrap();
+    let documents = documents
+        .iter()
+        .map(|(id, text, vector)| {
+            let id = (u128::from(id.high) << 64) | u128::from(id.low);
+            let document = IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vector.to_vec(),
+            );
+            text.map_or(document.clone(), |text| document.with_text(text))
+        })
+        .collect();
+    let batch = IngestBatch::new(documents);
+    let batch = match store.epoch_identity() {
+        Some(epoch) => batch.with_epoch(epoch),
+        None => batch,
+    };
+    store.ingest(batch).unwrap();
+    let expected = searches
+        .iter()
+        .map(|options| {
+            let result = store
+                .search(
+                    zeppelin_embed::ingest::SearchRequest::new(&[0.0, 0.0]),
+                    3,
+                    *options,
+                    zeppelin_embed::lifecycle::QueryControl::Cancel(
+                        zeppelin_embed::lifecycle::CancelToken::new(),
+                    ),
+                )
+                .unwrap();
+            result
+                .candidates
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.document().unwrap().doc_id().get(),
+                        -f64::from(hit.score()),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    store.close().unwrap();
+    let mut open = open_request(path.to_str().unwrap().as_bytes(), MODE_READ_WRITE);
+    let declaration = epoch.map(|epoch| epoch.request().embedding.document);
+    open.document_tower = declaration.as_ref().map_or(std::ptr::null(), |tower| tower);
+    assert_eq!(store_open(&open, handle), ZeErrorCode::ZeOk);
+    expected
+}

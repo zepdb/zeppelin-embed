@@ -597,11 +597,12 @@ pub(super) fn with_plan<R>(
             {
                 return Err(invalid("irrelevant search options"));
             }
-            options.graph_profile = (search.kind != 1).then_some(if raw.graph_profile == 0 {
-                zeppelin_embed::graph::search::GraphSearchProfile::SiftClass
-            } else {
-                zeppelin_embed::graph::search::GraphSearchProfile::Angular
-            });
+            options.graph_profile = (mode == SearchMode::Graph || raw.graph_profile != 0)
+                .then_some(if raw.graph_profile == 0 {
+                    zeppelin_embed::graph::search::GraphSearchProfile::SiftClass
+                } else {
+                    zeppelin_embed::graph::search::GraphSearchProfile::Angular
+                });
             options.graph_ef = raw.graph_ef;
             options.graph_seed = raw.graph_seed;
             options.last_as_prefix = raw.lexical_flags == 1;

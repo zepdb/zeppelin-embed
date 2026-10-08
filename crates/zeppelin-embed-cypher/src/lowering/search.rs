@@ -30,7 +30,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         k: self.lower_invariant_expression(bound, k, clause.span)?,
                         mode: search_mode(mode),
                         eligible,
-                        options: Default::default(),
+                        options: self.search_options,
                     },
                     independent,
                 )
@@ -45,7 +45,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         query: self.lower_invariant_expression(bound, query, clause.span)?,
                         k: self.lower_invariant_expression(bound, k, clause.span)?,
                         eligible,
-                        options: Default::default(),
+                        options: self.search_options,
                     },
                     independent,
                 )
@@ -67,7 +67,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         k: self.lower_invariant_expression(bound, k, clause.span)?,
                         mode: search_mode(mode),
                         eligible,
-                        options: Default::default(),
+                        options: self.search_options,
                     },
                     independent,
                 )
@@ -141,5 +141,6 @@ const fn search_mode(mode: BoundSearchMode) -> SearchMode {
         BoundSearchMode::Auto => SearchMode::Auto,
         BoundSearchMode::Exact => SearchMode::Exact,
         BoundSearchMode::Scan => SearchMode::Scan,
+        BoundSearchMode::Graph => SearchMode::Graph,
     }
 }

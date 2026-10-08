@@ -26,10 +26,12 @@ use std::time::Instant;
 
 pub(crate) mod automatic;
 mod base;
-mod documents;
+pub(crate) mod documents;
 pub(crate) mod maintenance;
 mod mutate;
 mod persistence;
+#[cfg(any(test, feature = "test-seams"))]
+pub(crate) mod preparation_limits;
 pub(crate) mod recovery;
 #[cfg(test)]
 pub(crate) use recovery::{open_metrics_for_test, serial_probes_for_test};
@@ -2340,7 +2342,6 @@ pub(crate) mod tests {
     #[cfg(test)]
     mod documents_are_nodes;
     mod expression_tests;
-    mod hybrid_ranking;
     mod identity;
     mod mapping_slots;
     #[cfg(test)]
@@ -2354,7 +2355,6 @@ pub(crate) mod tests {
     #[cfg(test)]
     mod process_lock;
     pub(crate) mod publication;
-    mod ranking;
     pub(crate) mod recovery;
 
     #[cfg(feature = "test-seams")]
@@ -2363,7 +2363,6 @@ pub(crate) mod tests {
     }
     mod retrieval;
     pub(crate) mod seal;
-    mod sparse;
     pub(crate) mod storage_faults;
     mod text_lifecycle;
 
@@ -3750,7 +3749,6 @@ pub(crate) mod tests {
                     });
             let roots = artifacts.candidate().roots();
             let sequence = artifacts.candidate().sequence();
-            let sparse_roots = artifacts.sparse_roots();
             let descriptors = artifacts
                 .inventory()
                 .iter()
@@ -3817,8 +3815,8 @@ pub(crate) mod tests {
                 wal_roots,
                 sequence,
                 catalog,
-                vector: sparse_roots.vector,
-                text: sparse_roots.text,
+                vector: None,
+                text: None,
                 reclaim: None,
                 high_waters: HighWaters {
                     node: staged.high_waters().node,
@@ -3966,14 +3964,6 @@ pub(crate) mod tests {
                     storage.peak_reserved_bytes()
                 )
             });
-        assert_eq!(artifacts.membership_changes().len(), count);
-        assert!(
-            artifacts
-                .membership_changes()
-                .iter()
-                .all(|change| change.node.is_none() && change.membership.is_none()),
-            "relationship-only successor acquired sparse membership"
-        );
         let mut sparse_sources = 0_usize;
         for object_index in 0..artifacts.objects().len() {
             let object = artifacts.objects().artifact(object_index).unwrap();
@@ -3998,7 +3988,6 @@ pub(crate) mod tests {
         );
         let roots = artifacts.candidate().roots();
         let sequence = artifacts.candidate().sequence();
-        let sparse_roots = artifacts.sparse_roots();
         let descriptors = artifacts
             .inventory()
             .iter()
@@ -4076,8 +4065,8 @@ pub(crate) mod tests {
             wal_roots,
             sequence,
             catalog,
-            vector: sparse_roots.vector,
-            text: sparse_roots.text,
+            vector: None,
+            text: None,
             reclaim: admitted.reclaim,
             high_waters: HighWaters {
                 node: staged.high_waters().node,
@@ -4094,9 +4083,8 @@ pub(crate) mod tests {
             lexical: admitted.lexical,
             document: admitted.document.clone(),
         };
-        let (candidate, _sparse_roots, _sparse, objects, retained) = artifacts.into_parts();
+        let (candidate, objects, retained) = artifacts.into_parts();
         drop(candidate);
-        drop(_sparse);
         drop(objects);
         drop(retained);
         drop(resources);
@@ -4881,26 +4869,6 @@ pub(crate) mod tests {
                 .unwrap_or_else(|_| panic!("coordinator preparation failed"));
             assert!(artifacts.objects().is_finished());
             assert!(!artifacts.inventory().is_empty());
-            assert!(artifacts.sparse_roots().text.is_some());
-            assert!(artifacts.sparse_roots().vector.is_none());
-            assert_eq!(artifacts.membership_changes().len(), 1);
-            assert_eq!(artifacts.membership_changes()[0].ordinal, 0);
-            assert_eq!(
-                artifacts.membership_changes()[0].node,
-                Some(match staged.receipts()[0].entity {
-                    EntityId::Node(node) => node,
-                    EntityId::Relationship(_) => panic!("created node returned relationship"),
-                })
-            );
-            assert_eq!(
-                artifacts.membership_changes()[0].membership,
-                Some(crate::property_graph::wal::Membership {
-                    text_before: false,
-                    text_after: true,
-                    vector_before: false,
-                    vector_after: false,
-                })
-            );
             assert_eq!(artifacts.expected_fold(), lease.bundle().base().fold);
             assert!(artifacts.matches_base(&lease));
             drop(artifacts);
@@ -5052,25 +5020,9 @@ pub(crate) mod tests {
             &mut resources,
         )
         .unwrap();
-        let batch_catalog = crate::property_graph::storage::participant::BatchCatalog {
-            base: &EmptyPreparationCatalog(base_identity),
-            additions: staged.symbols(),
-        };
-        let sparse = crate::property_graph::storage::search::prepare_sparse(
-            &mut objects,
-            &staged,
-            &candidate,
-            &batch_catalog,
-            &store.tokenizer,
-            &lease,
-            &storage,
-            &mut resources,
-        )
-        .unwrap();
         objects.finish(&mut resources).unwrap();
-        let artifacts =
-            PreparedGraphArtifacts::new(candidate, sparse, objects, &lease, lease.clone())
-                .unwrap_or_else(|_| panic!("exact retained base must be accepted"));
+        let artifacts = PreparedGraphArtifacts::new(candidate, objects, &lease, lease.clone())
+            .unwrap_or_else(|_| panic!("exact retained base must be accepted"));
         store
             .install_native_graph_for_test(bundle(identity, 2, 151))
             .unwrap();
@@ -5101,88 +5053,10 @@ pub(crate) mod tests {
             assert!(protected.contains_prepared(change.object));
         }
         drop(protected);
-        let (_candidate, _sparse_roots, _sparse, _objects, retained) = artifacts.into_parts();
+        let (_candidate, _objects, retained) = artifacts.into_parts();
         assert_eq!(retained.bundle().base(), base_identity);
         drop(retained);
 
-        let mut next_foreign = 9_100_u128;
-        let mut foreign_objects = PreparedObjects::new(
-            &MissingProducerSource,
-            || {
-                let artifact = ArtifactId::new(next_foreign)?;
-                next_foreign += 1;
-                Ok(ArtifactIdentity {
-                    store: identity,
-                    artifact,
-                    generation: GraphGeneration::new(1),
-                    creation_serial: next_foreign as u64,
-                })
-            },
-            identity,
-            GraphGeneration::new(1),
-            PackLimits::default(),
-            &storage,
-            &mut resources,
-        )
-        .unwrap();
-        let foreign_candidate = prepare_native_graph(
-            &mut foreign_objects,
-            &staged,
-            NativeGraphBase {
-                directories: DirectoryBase {
-                    identity: base_identity,
-                    roots: base_roots,
-                },
-                committed,
-            },
-            &EmptyPreparationCatalog(base_identity),
-            None,
-            &storage,
-            &mut resources,
-        )
-        .unwrap();
-        let foreign_batch_catalog = crate::property_graph::storage::participant::BatchCatalog {
-            base: &EmptyPreparationCatalog(base_identity),
-            additions: staged.symbols(),
-        };
-        let foreign_sparse = crate::property_graph::storage::search::prepare_sparse(
-            &mut foreign_objects,
-            &staged,
-            &foreign_candidate,
-            &foreign_batch_catalog,
-            &store.tokenizer,
-            &foreign,
-            &storage,
-            &mut resources,
-        )
-        .unwrap();
-        foreign_objects.finish(&mut resources).unwrap();
-        let failure = match PreparedGraphArtifacts::new(
-            foreign_candidate,
-            foreign_sparse,
-            foreign_objects,
-            &lease,
-            lease.clone(),
-        ) {
-            Ok(_) => panic!("foreign sparse preparation owner was accepted"),
-            Err(failure) => failure,
-        };
-        assert!(matches!(
-            failure.error(),
-            crate::property_graph::storage::tree::directory::TreeError::Invalid(
-                "prepared native graph base mismatch"
-            )
-        ));
-        let (_error, failed_objects, retained) = failure.into_parts();
-        assert!(!failed_objects.is_empty());
-        assert_eq!(
-            failed_objects.abort_inventory().count(),
-            failed_objects.len()
-        );
-        assert!(failed_objects.is_finished());
-        assert_eq!(retained.token(), lease.token());
-        assert_eq!(retained.bundle().base().generation, GraphGeneration::new(0));
-        drop(retained);
         drop(foreign);
         drop(lease);
         store.close().unwrap();
@@ -5382,22 +5256,12 @@ pub(crate) mod tests {
         let catalog = NativeCatalog::open(&source, &mut initial_resources).unwrap();
         drop(initial_resources);
         let view = GraphReadView::new(&source, &catalog).unwrap();
-        let sparse = view.sparse_view(&mut runtime).unwrap();
-        assert_eq!(sparse.generation(), GraphGeneration::new(2));
-        assert_eq!(sparse.sequence(), 42);
-        assert_eq!(sparse.text_count(), 0);
-        assert_eq!(sparse.vector_count(), 1);
         let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
-        let member = sparse
-            .lookup(
-                crate::property_graph::storage::search::Modality::Vector,
-                node_b,
-                &mut resources,
-            )
+        let vector = view
+            .vector_payload(node_b, &mut resources)
             .unwrap()
             .unwrap();
-        let vector = member.vector.unwrap();
         assert_eq!(
             vector.coordinate(0, &mut resources).unwrap().to_bits(),
             0x3f80_0001
@@ -5407,7 +5271,6 @@ pub(crate) mod tests {
             0x8000_0000
         );
         drop(resources);
-        drop(sparse);
         drop(view);
         drop(catalog);
         drop(source);
@@ -6211,10 +6074,7 @@ pub(crate) mod tests {
             0,
             false,
         );
-        assert!(
-            installed.vector.is_some(),
-            "prepared vector participant is absent"
-        );
+        assert!(installed.vector.is_none() && installed.text.is_none());
         store.install_native_graph_for_test(installed).unwrap();
         let lease = store.admit_native_read().unwrap();
         let shared = GraphResources::from_store(&store).unwrap();
@@ -6250,21 +6110,6 @@ pub(crate) mod tests {
             0x8000_0000
         );
         drop(resources);
-        let sparse = view.sparse_view(&mut runtime).unwrap();
-        assert_eq!(sparse.text_count(), 0);
-        assert_eq!(sparse.vector_count(), 1);
-        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
-        assert_eq!(
-            sparse
-                .validate_all(
-                    crate::property_graph::storage::search::Modality::Vector,
-                    &mut resources,
-                )
-                .unwrap(),
-            1
-        );
-        drop(resources);
-        drop(sparse);
         drop(view);
         drop(catalog);
         drop(source);

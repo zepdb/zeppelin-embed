@@ -12,7 +12,7 @@ use crate::property_graph::storage::records::{
     CanonicalShape, NodeRecordState, RecordView, StoredProvenance, verify_fence_entry,
     verify_node_state, verify_record,
 };
-use crate::property_graph::storage::search::{Modality, SparseRoots, SparseView};
+
 use crate::property_graph::storage::stream::{PayloadCursor, PayloadSlice};
 use crate::property_graph::storage::tree::TreeKind;
 use crate::property_graph::storage::tree::directory::{
@@ -519,7 +519,7 @@ fn cached_from_parts<'source, 'resources, 'm>(
     >,
     canonical_bytes: Option<PayloadSlice<'_, NativePreparationSource<'source, 'm>>>,
     canonical_ref: Option<crate::property_graph::storage::payload::PayloadRef>,
-    membership: Membership,
+    _membership: Membership,
     memory: &'m StorageMemory<'m>,
     resources_cell: &'resources RefCell<&'resources mut TreeResources<'m>>,
     first_error: &'resources Cell<Option<TreeError>>,
@@ -530,6 +530,10 @@ fn cached_from_parts<'source, 'resources, 'm>(
     // absence must survive here rather than being forced into a key or
     // refused as corruption. `provenance.key()` is already `Option` for
     // exactly this reason (ZE-32/ZE-34: absence is not an empty value).
+    let membership = canonical.map_or(Membership::default(), |canonical| Membership {
+        text: canonical.stored_text().is_some(),
+        vector: canonical.stored_vector().is_some(),
+    });
     let stored_key = provenance.key();
     let namespace = stored_key
         .map(|stored_key| copy_text(stored_key.namespace(), memory, resources))
@@ -793,20 +797,6 @@ where
             let resources = &mut **resources_ref;
             let catalog = NativePreparationCatalog::open(source, resources)?;
             let roots = lease.bundle().roots();
-            let sparse = SparseView::open(
-                source,
-                SparseRoots {
-                    text: lease.bundle().text(),
-                    vector: lease.bundle().vector(),
-                },
-                roots,
-                lease.bundle().catalog(),
-                &catalog,
-                lease.bundle().document(),
-                lease.bundle().lexical(),
-                memory,
-                resources,
-            )?;
 
             for request in requests {
                 let mut cached = false;
@@ -854,9 +844,9 @@ where
                         resources,
                     )?;
                     let membership = match fence.incarnation() {
-                        EntityId::Node(node) => Membership {
-                            text: sparse.lookup(Modality::Text, node, resources)?.is_some(),
-                            vector: sparse.lookup(Modality::Vector, node, resources)?.is_some(),
+                        EntityId::Node(_) => Membership {
+                            text: false,
+                            vector: false,
                         },
                         EntityId::Relationship(_) => Membership::default(),
                     };
@@ -958,9 +948,9 @@ where
                     &catalog,
                     lease.bundle().document(),
                     match entity {
-                        EntityId::Node(node) => Membership {
-                            text: sparse.lookup(Modality::Text, node, resources)?.is_some(),
-                            vector: sparse.lookup(Modality::Vector, node, resources)?.is_some(),
+                        EntityId::Node(_) => Membership {
+                            text: false,
+                            vector: false,
                         },
                         EntityId::Relationship(_) => Membership::default(),
                     },
@@ -1057,24 +1047,11 @@ where
         let resources = &mut **resources_ref;
         let catalog = NativePreparationCatalog::open(self.source, resources)?;
         let roots = self.lease.bundle().roots();
-        let sparse = SparseView::open(
-            self.source,
-            SparseRoots {
-                text: self.lease.bundle().text(),
-                vector: self.lease.bundle().vector(),
-            },
-            roots,
-            self.lease.bundle().catalog(),
-            &catalog,
-            self.lease.bundle().document(),
-            self.lease.bundle().lexical(),
-            self.memory,
-            resources,
-        )?;
+
         let membership = match id {
-            EntityId::Node(node) => Membership {
-                text: sparse.lookup(Modality::Text, node, resources)?.is_some(),
-                vector: sparse.lookup(Modality::Vector, node, resources)?.is_some(),
+            EntityId::Node(_) => Membership {
+                text: false,
+                vector: false,
             },
             EntityId::Relationship(_) => Membership::default(),
         };

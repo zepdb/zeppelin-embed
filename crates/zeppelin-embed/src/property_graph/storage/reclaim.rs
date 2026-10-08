@@ -62,8 +62,6 @@ pub(crate) fn take_omitted_mark_emissions_for_test() -> u64 {
     OMITTED_MARK_EMISSIONS.with(|count| count.replace(0))
 }
 
-pub(crate) const TRACE_OUTPUT_LIMIT: usize = 256;
-
 /// The protected-root mark reads every live page, so its work grows with the
 /// store and a fixed limit would cap the store size instead. Owner decision
 /// 2026-09-20: the mark, its recovery retrace and the unlink resume carry no

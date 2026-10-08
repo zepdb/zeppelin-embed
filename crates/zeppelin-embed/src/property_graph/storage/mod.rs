@@ -47,10 +47,6 @@ pub(crate) mod reclaim;
 /// Native directory changes from one authentic normalized writer batch.
 pub mod participant;
 
-/// Sparse text/vector retrieval participants over native graph records.
-#[cfg(feature = "graph-cypher")]
-pub(crate) mod search;
-
 /// Current durable recovery inventory bound. Native sources must be able to
 /// address that inventory; 64 mapping slots imposed a smaller accidental store
 /// limit. Descriptors are charged to the existing query/storage owner; payloads

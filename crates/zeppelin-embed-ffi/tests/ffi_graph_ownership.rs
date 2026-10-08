@@ -182,7 +182,15 @@ fn ze72_nested_search_error_and_retained_responses_keep_heap_flat() {
             ),
             ZeErrorCode::ZeOk
         );
+        let id = receipts(&created)[0].node;
         ze_graph_response_free(&mut created);
+        bind_search_documents(
+            &mut store.handle,
+            &store.path,
+            None,
+            &[(id, Some("amber"), [0.0, 0.0])],
+            &[],
+        );
         let mut nested = cypher_ok(store.handle, "MATCH (n:Owned) RETURN n,[n,null,[n]],[]");
         let mut search = cypher_ok(
             store.handle,

@@ -406,7 +406,7 @@ fn ze190_fence_only_statement_commits_and_reopens() {
         let symbols = catalog_symbols(&store.path, lease.bundle().catalog());
         let membership = search_membership(&store.path, lease.bundle().text());
         let vectors = search_membership(&store.path, lease.bundle().vector());
-        assert!(membership.is_some() && vectors.is_some());
+        assert!(membership.is_none() && vectors.is_none());
         drop(lease);
 
         let spec = Spec {

@@ -6,6 +6,7 @@ pub enum BoundSearchMode {
     Auto,
     Exact,
     Scan,
+    Graph,
 }
 /// Eligibility provenance, separate from a list's ordinary value type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,6 +113,7 @@ impl<'a> Binder<'a, '_> {
                 Some(QueryValue::String("auto")) => BoundSearchMode::Auto,
                 Some(QueryValue::String("exact")) => BoundSearchMode::Exact,
                 Some(QueryValue::String("scan")) => BoundSearchMode::Scan,
+                Some(QueryValue::String("graph")) => BoundSearchMode::Graph,
                 _ => return Err(rejected(node(self.ast, root)?.span, "invalid search mode")),
             })
         } else {

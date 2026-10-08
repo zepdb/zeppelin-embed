@@ -12,29 +12,6 @@ pub(crate) struct Bit4Scratch {
 }
 
 impl Bit4Scratch {
-    pub(crate) fn required_bytes(dimensions: usize) -> Option<usize> {
-        dimensions
-            .checked_mul(MAX_MAGNITUDE_LEVEL as usize)
-            .and_then(|events| events.checked_mul(std::mem::size_of::<CriticalValue>()))
-            .and_then(|bytes| bytes.checked_add(dimensions))
-    }
-
-    pub(crate) fn try_new(dimensions: usize) -> Result<Self, ()> {
-        let events = dimensions
-            .checked_mul(MAX_MAGNITUDE_LEVEL as usize)
-            .ok_or(())?;
-        let mut critical_values = Vec::new();
-        critical_values.try_reserve_exact(events).map_err(|_| ())?;
-        let mut magnitudes = Vec::new();
-        magnitudes.try_reserve_exact(dimensions).map_err(|_| ())?;
-        magnitudes.resize(dimensions, 0);
-        Ok(Self {
-            critical_values,
-            magnitudes,
-            dimensions,
-        })
-    }
-
     pub(super) fn compatibility(dimensions: usize) -> Self {
         let events = dimensions.saturating_mul(MAX_MAGNITUDE_LEVEL as usize);
         Self {
@@ -42,13 +19,6 @@ impl Bit4Scratch {
             magnitudes: vec![0; dimensions],
             dimensions,
         }
-    }
-
-    pub(crate) fn owned_bytes(&self) -> Option<usize> {
-        self.critical_values
-            .capacity()
-            .checked_mul(std::mem::size_of::<CriticalValue>())
-            .and_then(|bytes| bytes.checked_add(self.magnitudes.capacity()))
     }
 }
 
@@ -157,10 +127,6 @@ pub(crate) fn quantize_bit4_controlled<E>(
     control: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<Bit4Factors, Bit4ControlError<E>> {
     {
-        #[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
-        let _phase = crate::property_graph::storage::search::native_vector_validation_phase(
-            crate::property_graph::storage::search::NativeVectorValidationStage::QuantizeValidation,
-        );
         validate_input_controlled(v, out.len(), control)?;
     }
     if scratch.dimensions != v.len() {
@@ -312,10 +278,6 @@ pub(crate) fn prepare_bit4_query_controlled<E>(
     control: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(Bit4Query, usize), Bit4ControlError<E>> {
     {
-        #[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
-        let _phase = crate::property_graph::storage::search::native_vector_validation_phase(
-            crate::property_graph::storage::search::NativeVectorValidationStage::QueryValidation,
-        );
         validate_vector_controlled(q, control)?;
     }
     let mut max_absolute = 0.0_f32;

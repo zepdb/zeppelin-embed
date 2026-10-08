@@ -177,8 +177,20 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             })
         })
         .collect::<Result<_, String>>()?;
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let docs = IngestBatch::new(
+        (1..=64)
+            .map(|id| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text(term)
+            })
+            .collect(),
+    );
     store
-        .graph_apply(&writes, &QueryControl::Cancel(CancelToken::new()))
+        .apply_mixed_for_test(&docs, &writes, &QueryControl::Cancel(CancelToken::new()))
         .map_err(|e| e.to_string())?;
     let shared = GraphResources::from_store(&store).map_err(|e| e.to_string())?;
     let (clean, polls, fires) = trial(&store, seed, None)?;
@@ -207,8 +219,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     check(&observation, expected)?;
     drop(clean);
     let baseline = shared.reserved_bytes().map_err(|e| e.to_string())?;
-    // Locate the first posting checkpoint from measured execution counters.
-    // Bisection avoids a coarse schedule skipping the narrow retrieval phase.
+    // Locate the first invocation checkpoint. Shared Store producers report
+    // completed work in their outcome; an interrupted producer has no outcome.
+    // Fire inside that invocation, before result materialization.
     let mut low = 1;
     let mut high = polls;
     while low < high {
@@ -218,7 +231,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             Err(StatementError::Compile(_)) => false,
             Err(StatementError::Query(e)) => e
                 .counters()
-                .is_some_and(|c| c.get(WorkKind::LexicalPostings) > 0),
+                .is_some_and(|c| c.get(WorkKind::SearchInvocations) > 0),
             Ok(_) => true,
         };
         if after_posting {
@@ -230,8 +243,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             return Err("deadline leaked temporary ownership".into());
         }
     }
-    // Move inside the measured posting phase, away from the first-posting
-    // boundary whose few admission checkpoints depend on mapping reuse.
+    // Step past entry into the Store producer's controlled preparation.
     let nth = low + 64;
     let (result, _, fires) = trial(&store, seed, Some(nth))?;
     let fired_postings = match &result {
@@ -245,16 +257,16 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             if e.kind() == GraphQueryErrorKind::Timeout
                 && e.nothing_committed()
                 && fires == 1
+                && e.operator()
+                    == Some(zeppelin_embed::property_graph::query::plan::PlanNodeId(1))
                 && e.counters().is_some_and(|c| {
-                    c.get(WorkKind::SearchInvocations) == 1
-                        && c.get(WorkKind::LexicalPostings) > 0
-                        && c.get(WorkKind::LexicalPostings) < postings
+                    c.get(WorkKind::SearchInvocations) == 1 && c.get(WorkKind::LexicalPostings) == 0
                 }) => {}
         other => {
             return Err(format!(
                 "no retrieval deadline can-fire at {nth}/{polls}: {}",
                 match other {
-                    Err(e) => e.to_string(),
+                    Err(e) => format!("{e}; fires={fires}; {e:?}"),
                     Ok(_) => "returned result".into(),
                 }
             ));
@@ -442,9 +454,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             if e.kind() == GraphQueryErrorKind::Closed
                 && e.nothing_committed()
                 && e.counters().is_some_and(|c| {
-                    c.get(WorkKind::SearchInvocations) == 1
-                        && c.get(WorkKind::LexicalPostings) > 0
-                        && c.get(WorkKind::LexicalPostings) < postings
+                    c.get(WorkKind::SearchInvocations) == 1 && c.get(WorkKind::LexicalPostings) == 0
                 }) => {}
         other => {
             return Err(format!(

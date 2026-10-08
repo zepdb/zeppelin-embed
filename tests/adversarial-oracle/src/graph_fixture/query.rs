@@ -443,12 +443,17 @@ fn lexical(graph: &Snapshot, terms: &[String], phrase: bool) -> Result<Lexical, 
         return Err("invalid fixture query terms".into());
     }
     let mut docs = Vec::new();
+    // Unified search statistics include every indexed document, including
+    // vector-only and present-empty text rows. Graph-only nodes have no row.
     for node in &graph.nodes {
-        if let Some(text) = &node.text {
-            let tokens = tokenize(text)?;
-            if !tokens.is_empty() {
-                docs.push((node.id, tokens));
-            }
+        if node.text.is_some() || node.vector.is_some() {
+            let tokens = node
+                .text
+                .as_deref()
+                .map(tokenize)
+                .transpose()?
+                .unwrap_or_default();
+            docs.push((node.id, tokens));
         }
     }
     let mut scores = BTreeMap::new();

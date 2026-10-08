@@ -282,6 +282,13 @@ fn control(error: &crate::lifecycle::QueryError) -> Kind {
         crate::lifecycle::QueryError::Cancelled { .. } => Kind::Cancelled,
         crate::lifecycle::QueryError::ReadCancelled { .. } => Kind::Closed,
         crate::lifecycle::QueryError::Store(error) => store(error),
+        crate::lifecycle::QueryError::Scan(crate::scan::ScanError::Timeout { .. }) => Kind::Timeout,
+        crate::lifecycle::QueryError::Scan(crate::scan::ScanError::Cancelled { .. }) => {
+            Kind::Cancelled
+        }
+        crate::lifecycle::QueryError::Scan(crate::scan::ScanError::ReadCancelled { .. }) => {
+            Kind::Closed
+        }
         crate::lifecycle::QueryError::Scan(_) | crate::lifecycle::QueryError::Graph(_) => {
             Kind::Corruption
         }
@@ -289,7 +296,11 @@ fn control(error: &crate::lifecycle::QueryError) -> Kind {
 }
 
 fn store(error: &StoreError) -> Kind {
-    match error.kind() {
+    store_kind(error.kind())
+}
+
+fn store_kind(kind: StoreErrorKind) -> Kind {
+    match kind {
         StoreErrorKind::Io => Kind::Storage,
         StoreErrorKind::InvalidArgument
         | StoreErrorKind::Unsupported
@@ -406,6 +417,18 @@ fn retrieval(error: &crate::property_graph::retrieval::RetrievalError) -> Kind {
         RetrievalError::Storage(error) => tree(error),
         RetrievalError::Control(error) => runtime(error),
         RetrievalError::Eligibility(error) => value(*error),
+        RetrievalError::Fusion(error) => match error {
+            crate::fusion::FusionError::Timeout { .. } => Kind::Timeout,
+            crate::fusion::FusionError::Cancelled { .. } => Kind::Cancelled,
+            crate::fusion::FusionError::ReadCancelled { .. } => Kind::Closed,
+            crate::fusion::FusionError::InvalidAlpha(_) => Kind::Expression,
+            crate::fusion::FusionError::EstimatedVectorScore { .. } => Kind::Constraint,
+            crate::fusion::FusionError::Leg {
+                kind: crate::fusion::LegFailureKind::Store(kind),
+                ..
+            } => store_kind(*kind),
+            _ => Kind::Corruption,
+        },
         RetrievalError::Memory | RetrievalError::CandidateWindow { .. } => Kind::Limit,
         RetrievalError::LexicalTerms { .. } => Kind::Limit,
         RetrievalError::NoVectorSpace
@@ -420,8 +443,6 @@ fn retrieval(error: &crate::property_graph::retrieval::RetrievalError) -> Kind {
         RetrievalError::Identity(_)
         | RetrievalError::Vector(_)
         | RetrievalError::Graph(_)
-        | RetrievalError::Lexical(_)
-        | RetrievalError::Fusion(_)
         | RetrievalError::EligibilityMismatch
         | RetrievalError::Invariant(_) => Kind::Corruption,
     }

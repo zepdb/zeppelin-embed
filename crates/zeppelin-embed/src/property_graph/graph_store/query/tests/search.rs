@@ -34,7 +34,14 @@ impl SearchFixture {
         let document = tower();
         let store = Store::create_graph(
             directory.path().join("native"),
-            store_options(),
+            store_options().with_epoch(crate::epoch::StoreEpoch {
+                embedding: crate::epoch::EmbeddingEpoch {
+                    query: document.clone(),
+                    document: document.clone(),
+                    alignment_digest: vec![],
+                },
+                tokenizer: crate::fts::tokenizer::TokenizerConfig::text_default().epoch(),
+            }),
             Some(document.clone()),
         )
         .unwrap();
@@ -84,6 +91,23 @@ impl SearchFixture {
             EntityId::Node(n) => n,
             _ => panic!("node receipt"),
         });
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        let documents = nodes
+            .iter()
+            .zip(points)
+            .zip(texts)
+            .filter(|((_, vector), text)| vector.is_some() || text.is_some())
+            .map(|((id, vector), text)| {
+                let document = IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id.get()), Revision::new(1)),
+                    vector.unwrap_or([1000.0; 2]).to_vec(),
+                );
+                text.map_or(document.clone(), |text| document.with_text(text))
+            })
+            .collect();
+        store
+            .ingest(IngestBatch::new(documents).with_epoch(store.epoch_identity().unwrap()))
+            .unwrap();
         Self {
             directory,
             store,
@@ -260,10 +284,10 @@ fn ze64_public_search_sources_execute_and_report() {
                 assert_eq!(node(&result, 1, 0), fixture.nodes[1]);
                 assert!(score(&result, 0, 1).unwrap() > score(&result, 1, 1).unwrap());
                 assert_eq!(report.lexical_leg, LegState::Nonempty);
-                // N=3 indexed texts, df=2, avgdl=4/3, tf=1; the two
-                // BM25 denominators are 1.975 (length 1) and 2.65 (length 2).
-                for (row, denominator) in [(0, 1.975), (1, 2.65)] {
-                    let expected = 1.6_f64.ln() * 2.2 / denominator;
+                // Store statistics include all four indexed documents:
+                // N=4, df=2, avgdl=1, tf=1, k1=1.2, b=0.75.
+                for (row, denominator) in [(0, 2.2), (1, 3.1)] {
+                    let expected = 2.0_f64.ln() * 2.2 / denominator;
                     assert!((score(&result, row, 1).unwrap() - expected).abs() < 1e-12);
                 }
             }
@@ -516,20 +540,21 @@ fn ze64_application_shapes_preserve_scores_and_bags() {
         ]
     );
     let eligible = expand_search(&fixture.store, Some(false), false, SearchMode::Exact).unwrap();
-    // collect contains b three times and c once; only c has a vector.
+    // The Store indexes both eligible documents; duplicate graph edges
+    // preserve the three c rows after seed ranking.
     assert_eq!(eligible.metadata().rows, 3);
     assert!((0..3).all(|i| node(&eligible, i, 0) == fixture.nodes[2]));
-    assert_eq!(eligible.pools().reports[0].candidate_count, 1);
+    assert_eq!(eligible.pools().reports[0].candidate_count, 2);
     let hybrid = search(&fixture.store, SearchKind::Hybrid, 4).unwrap();
     for i in 0..4 {
         let n = node(&hybrid, i, 0);
         if n == fixture.nodes[1] {
-            assert_eq!(score(&hybrid, i, 2), None);
+            assert_eq!(score(&hybrid, i, 2), Some(2_000_000.0));
             assert!(score(&hybrid, i, 3).unwrap() > 0.0);
         }
         if n == fixture.nodes[0] {
             assert_eq!(score(&hybrid, i, 2), Some(2.0));
-            assert_eq!(score(&hybrid, i, 3), None);
+            assert_eq!(score(&hybrid, i, 3), Some(0.0));
         }
         if n == fixture.nodes[3] {
             assert_eq!(score(&hybrid, i, 2), Some(50.0));
@@ -910,38 +935,65 @@ fn ze64_hybrid_window_limited_cross_scoring_is_reported_not_hidden() {
             image: Some(WriteImage::Node(image)),
         })
         .collect();
-    fixture.store.graph_apply(&writes, &control()).unwrap();
-    // The producer width is 50, smaller than the 69-member eligible union.
-    // Both routes must retain complete cross-scoring of the actual union
-    // without claiming complete candidate coverage.
-    for (mode, tier) in [
-        (SearchMode::Scan, ActualTier::Scan),
-        (SearchMode::Auto, ActualTier::Graph),
-    ] {
-        let result =
-            search_with_eligibility(&fixture.store, SearchKind::Hybrid, 1, false, mode).unwrap();
-        let report = result.pools().reports[0];
-        assert_eq!(result.metadata().rows, 1);
-        assert_eq!(report.actual_tier, Some(tier));
-        assert_eq!(report.coverage, CandidateCoverage::Approximate);
-        assert_eq!(
-            report.precision,
-            crate::property_graph::query::completed::ScorePrecision::Original
-        );
-        assert!(report.candidate_count < 69);
-        assert!(report.candidate_count > 1);
-        assert_eq!(report.cross_scored_count, report.candidate_count);
-        assert!(report.cross_score_complete);
-        assert_ne!(report.normalization_version, 0);
-        assert_ne!(report.rules_version, 0);
-    }
+    let receipts = fixture.store.graph_apply(&writes, &control()).unwrap();
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let documents = receipts
+        .receipts()
+        .iter()
+        .zip(&points)
+        .map(|(receipt, point)| {
+            let EntityId::Node(node) = receipt.entity else {
+                panic!("node receipt")
+            };
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(node.get()), Revision::new(1)),
+                point.to_vec(),
+            )
+            .with_text("amber")
+        })
+        .collect();
+    fixture
+        .store
+        .ingest(IngestBatch::new(documents).with_epoch(fixture.store.epoch_identity().unwrap()))
+        .unwrap();
+    let result = search_with_eligibility(
+        &fixture.store,
+        SearchKind::Hybrid,
+        1,
+        false,
+        SearchMode::Exact,
+    )
+    .unwrap();
+    let report = result.pools().reports[0];
+    assert_eq!(result.metadata().rows, 1);
+    assert_eq!(report.actual_tier, Some(ActualTier::Exact));
+    assert_eq!(
+        report.precision,
+        crate::property_graph::query::completed::ScorePrecision::Original
+    );
+    assert!(report.candidate_count > 1 && report.candidate_count <= 69);
+    assert_eq!(report.cross_scored_count, report.candidate_count);
+    assert!(report.cross_score_complete);
+    assert_ne!(report.normalization_version, 0);
+    assert_ne!(report.rules_version, 0);
+    // Store fusion refuses estimated scan scores; graph search preserves it.
+    let error = search_with_eligibility(
+        &fixture.store,
+        SearchKind::Hybrid,
+        1,
+        false,
+        SearchMode::Scan,
+    )
+    .err()
+    .expect("estimated hybrid scores must refuse");
+    assert!(error.to_string().contains("EstimatedVectorScore"));
 }
 
 #[test]
 fn ze305_candidate_count_is_pre_top_k_population() {
     let fixture = SearchFixture::create();
     for mode in [SearchMode::Exact, SearchMode::Scan, SearchMode::Graph] {
-        for (kind, count) in [(SearchKind::Vector, 3), (SearchKind::Lexical, 2)] {
+        for (kind, count) in [(SearchKind::Vector, 4), (SearchKind::Lexical, 2)] {
             for k in [1, 20] {
                 let result = search_with_eligibility(&fixture.store, kind, k, false, mode).unwrap();
                 assert_eq!(result.metadata().rows, if k == 1 { 1 } else { count });

@@ -9,7 +9,7 @@ use crate::property_graph::staging::{
     StructuredWrite, WriteImage, WritePhase,
 };
 use crate::property_graph::storage::adjacency::RelationshipRow;
-use crate::property_graph::storage::search::Modality;
+
 use crate::property_graph::storage::tree::directory::{TreeError, TreeResources};
 use crate::property_graph::storage::{
     CursorState, DirectionSelection, GraphReadView, NativeCatalog, NativeQuerySource,
@@ -782,41 +782,6 @@ impl super::super::NativeReadConsumer<Vec<RelationshipRow>> for ObserveMixed {
         let relationship_row = relationship.row();
         drop(resources);
 
-        let sparse = view.sparse_view(runtime)?;
-        let mut resources = TreeResources::for_query(runtime)?;
-        assert_eq!((sparse.text_count(), sparse.vector_count()), (1, 1));
-        assert!(
-            sparse
-                .lookup(Modality::Text, self.first, &mut resources)?
-                .is_some()
-        );
-        assert!(
-            sparse
-                .lookup(Modality::Text, self.second, &mut resources)?
-                .is_none()
-        );
-        assert!(
-            sparse
-                .lookup(Modality::Vector, self.first, &mut resources)?
-                .is_none()
-        );
-        let vector_member = sparse
-            .lookup(Modality::Vector, self.second, &mut resources)?
-            .ok_or(TreeError::Invalid("missing exact vector membership"))?;
-        let stored = vector_member
-            .vector
-            .ok_or(TreeError::Invalid("missing sparse vector payload"))?;
-        assert_eq!(
-            stored.coordinate(0, &mut resources)?.to_bits(),
-            self.vector_bits[0]
-        );
-        assert_eq!(
-            stored.coordinate(1, &mut resources)?.to_bits(),
-            self.vector_bits[1]
-        );
-        drop(resources);
-        drop(sparse);
-
         let mut observed = Vec::new();
         for (node, direction) in [
             (self.first, DirectionSelection::Out),
@@ -1192,16 +1157,8 @@ pub(super) fn snapshot_for_lease(
     let incoming = rows[..count].iter().map(|row| row.rel).collect();
     drop(in_cursor);
 
-    let sparse = view.sparse_view(&mut runtime).expect("sparse view");
-    let mut resources = TreeResources::for_query(&mut runtime).expect("sparse resources");
-    let sparse_text = sparse
-        .lookup(Modality::Text, node, &mut resources)
-        .expect("text membership")
-        .is_some();
-    let sparse_vector = sparse
-        .lookup(Modality::Vector, node, &mut resources)
-        .expect("vector membership")
-        .is_some();
+    let sparse_text = record.record().canonical().stored_text().is_some();
+    let sparse_vector = record.record().canonical().stored_vector().is_some();
     GenerationSnapshot {
         generation: lease.bundle().base().generation.get(),
         revision: record.record().revision().get(),
@@ -1271,30 +1228,34 @@ pub(super) fn rows_for_lease(
     rows[..count].to_vec()
 }
 
-pub(super) fn sparse_physical_for_lease(
+pub(super) fn record_physical_for_lease(
     store: &Store,
     lease: &super::super::NativeReadLease,
     node: NodeId,
-    modality: Modality,
-) -> crate::property_graph::storage::search::SparsePhysicalSnapshot {
-    let shared = crate::property_graph::resources::GraphResources::from_store(store)
-        .expect("shared graph resources");
-    let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).expect("query memory");
+) -> crate::property_graph::storage::payload::PayloadRef {
+    let shared =
+        crate::property_graph::resources::GraphResources::from_store(store).expect("resources");
+    let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).expect("memory");
     let control = QueryControl::Cancel(CancelToken::new());
-    let mut runtime = RuntimeContext::new(lease, &control, &memory, RuntimeLimits::default())
-        .expect("retained runtime");
-    let capability = NativeReadCapability::admit(lease, &runtime).expect("retained capability");
-    let mut resources = TreeResources::for_query(&mut runtime).expect("initial resources");
-    let source = NativeQuerySource::new(capability, &resources, 16).expect("retained source");
-    let catalog = NativeCatalog::open(&source, &mut resources).expect("retained catalog");
-    drop(resources);
-    let view = GraphReadView::new(&source, &catalog).expect("retained view");
-    let sparse = view.sparse_view(&mut runtime).expect("sparse view");
-    let mut resources = TreeResources::for_query(&mut runtime).expect("sparse resources");
-    sparse
-        .physical_snapshot(modality, node, &mut resources)
-        .expect("physical sparse lookup")
-        .expect("physical sparse member")
+    let mut runtime =
+        RuntimeContext::new(lease, &control, &memory, RuntimeLimits::default()).unwrap();
+    let capability = NativeReadCapability::admit(lease, &runtime).unwrap();
+    let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+    let source = NativeQuerySource::new(capability, &resources, 16).unwrap();
+    let root = lease
+        .bundle()
+        .roots()
+        .directory(crate::property_graph::storage::tree::TreeKind::Nodes)
+        .unwrap();
+    let entry = crate::property_graph::storage::tree::directory::lookup_entry(
+        &source,
+        root,
+        &node.get().to_le_bytes(),
+        &mut resources,
+    )
+    .unwrap()
+    .unwrap();
+    crate::property_graph::storage::payload::PayloadRef::decode(entry.value()).unwrap()
 }
 
 fn run_ze39_retained_reader_and_new_admission_observe_whole_generations() {
@@ -2191,13 +2152,16 @@ impl super::super::NativeReadConsumer<()> for ObserveTextMembership {
         let expected = bytes.len();
         assert_eq!(text.read_at(0, &mut bytes, &mut resources)?, expected);
         assert_eq!(bytes, self.expected_text);
-        drop(resources);
-        let sparse = view.sparse_view(runtime)?;
-        let mut resources = TreeResources::for_query(runtime)?;
+        // Indexed text membership requires at least one analyzed term; stored
+        // present empty/whitespace payloads remain observable.
+        let text = std::str::from_utf8(&bytes).unwrap();
         assert_eq!(
-            sparse
-                .lookup(Modality::Text, self.node, &mut resources)?
-                .is_some(),
+            !crate::fts::tokenizer::Analyzer::new(
+                crate::fts::tokenizer::TokenizerConfig::text_default()
+            )
+            .unwrap()
+            .analyze(text)
+            .is_empty(),
             self.expected_member
         );
         Ok(())

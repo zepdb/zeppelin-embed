@@ -622,15 +622,10 @@ fn ze52_slice_d1_structured_path_is_unchanged() {
 /// canonical image back dominates the work one statement charges.
 const WIDE_TEXT_BYTES: usize = 64 * 1024;
 
-/// Preparation work budgets that land inside the canonical stream comparison
-/// `overlay.finish` runs, measured on this fixture: the statement completes at
-/// and above 1,495,000 units, and fails inside the consumer's own base read at
-/// and below 1,360,000. Every budget between those bounds stops in
-/// `CachedCanonical::read_at`, which stashes the typed `TreeError` and returns
-/// only an opaque `io::Error` to its caller. These five sit at least 15,000
-/// units inside both edges of that window.
-const CANONICAL_READ_WORK_BUDGETS: [u64; 5] =
-    [1_380_000, 1_405_000, 1_430_000, 1_455_000, 1_480_000];
+/// Five measured budgets inside the canonical comparison after sparse removal:
+/// 675,000 stops in the consumer, 700,000..825,000 preserves the typed
+/// canonical storage failure, and 850,000 completes the same NoOp.
+const CANONICAL_READ_WORK_BUDGETS: [u64; 5] = [710_000, 735_000, 760_000, 785_000, 810_000];
 
 /// A budget the same statement completes under, proving the window above is a
 /// storage failure and not an unconditional rejection.
@@ -717,11 +712,8 @@ fn ze52_slice_d1_canonical_read_failure_surfaces_as_the_typed_storage_error() {
     let committed = published_generation(&store);
 
     let replace = |work_limit: u64| {
-        let _schedule = crate::property_graph::storage::search::native_vector_index_test_schedule(
-            None,
-            Some(work_limit),
-            |_| {},
-        );
+        let _schedule =
+            crate::lifecycle::native_graph::preparation_limits::install(None, Some(work_limit));
         store.with_native_mutation(
             &control(),
             RuntimeLimits::default(),

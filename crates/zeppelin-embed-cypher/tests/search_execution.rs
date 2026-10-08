@@ -17,10 +17,10 @@ fn ze58_text_search_returns_real_rows() {
     let r = f.run("CALL ze.text_search('amber',2) YIELD node,score RETURN node,score");
     assert_eq!(r.metadata().rows, 2);
     assert_eq!(r.pools().reports.len(), 1);
-    // Full-domain BM25: three indexed texts, lengths 2,1,1, df(amber)=2.
-    let idf = (1.0_f64 + (3.0 - 2.0 + 0.5) / (2.0 + 0.5)).ln();
+    // Full-domain BM25: four indexed documents, lengths 2,1,1,0, df(amber)=2.
+    let idf = (1.0_f64 + (4.0 - 2.0 + 0.5) / (2.0 + 0.5)).ln();
     for (row, len) in [(0, 1.0), (1, 2.0)] {
-        let expected = idf * 2.2 / (1.0 + 1.2 * (0.25 + 0.75 * len / (4.0 / 3.0)));
+        let expected = idf * 2.2 / (1.0 + 1.2 * (0.25 + 0.75 * len));
         let Some(Value::F64(score)) = r.cell(row, 1) else {
             panic!("score type")
         };
@@ -48,7 +48,7 @@ fn scalar(
 fn ze58_eligibility_domains_remain_distinct() {
     let f = SearchFixture::create();
     for (prefix, eligible, count, leg) in [
-        ("", "", 3, LegState::Nonempty),
+        ("", "", 4, LegState::Nonempty),
         ("", ", []", 0, LegState::NoEligibleMembers),
         (
             "MATCH (n:Chunk {key: 'a'}) WITH collect(DISTINCT n) AS e ",
@@ -149,9 +149,9 @@ fn ze58_modes_and_components_preserve_provenance() {
         ),
         (
             "scan",
-            ActualTier::Scan,
+            ActualTier::Exact,
             ScorePrecision::Quantized,
-            CandidateCoverage::Approximate,
+            CandidateCoverage::Exact,
         ),
     ] {
         let r = f.run(&format!(
@@ -173,36 +173,21 @@ fn ze58_modes_and_components_preserve_provenance() {
     assert!(default.pools().reports[0].requested_tier.is_none());
     assert!(auto.pools().reports[0].requested_tier.is_some());
     let r=f.run("CALL ze.hybrid_search([0,0],'amber',4,'exact') YIELD node,score,vector_distance,lexical_score RETURN node,score,vector_distance,lexical_score");
-    assert_eq!(r.metadata().rows, 3);
-    // Independently calculated full-domain normalization: max squared norm 50,
-    // max BM25 belongs to the length-one text. Small enclosure rounding is allowed.
-    let idf = (1.0_f64 + 1.5 / 2.5).ln();
-    let maximum = idf * 2.2 / (1.0 + 1.2 * (0.25 + 0.75 / (4.0 / 3.0)));
-    assert_eq!(
-        f64::from_bits(r.pools().reports[0].effective_alpha_bits),
-        0.7
-    );
-    for row in 0..3 {
+    assert_eq!(r.metadata().rows, 4);
+    // Store fixed anchors: max squared norm is the distant text document's
+    // 2,000,000; max BM25 uses N=4, df=2, avgdl=1.
+    let maximum = 2.0_f64.ln();
+    let alpha = f64::from_bits(r.pools().reports[0].effective_alpha_bits);
+    assert_eq!(alpha, 0.7);
+    for row in 0..4 {
         let distance = scalar(&r, row, 2);
-        let lexical = match r.cell(row, 3) {
-            Some(Value::Null) => 0.0,
-            Some(Value::F64(bits)) => f64::from_bits(*bits),
-            other => panic!("lexical {other:?}"),
-        };
-        let expected = 0.7 * (1.0 - distance / 50.0) + 0.3 * lexical / maximum;
+        let lexical = scalar(&r, row, 3);
+        let expected = alpha * (1.0 - distance / 2_000_000.0) + (1.0 - alpha) * lexical / maximum;
         assert!((scalar(&r, row, 1) - expected).abs() < 1e-6);
     }
-    assert!((0..3).any(|i| matches!(r.cell(i, 3), Some(Value::Null))));
-    let lexical_only=f.run("CALL ze.hybrid_search([0,0],'birch',4,'exact') YIELD node,vector_distance RETURN node,vector_distance");
-    assert!(
-        (0..lexical_only.metadata().rows as usize)
-            .any(|i| matches!(lexical_only.cell(i, 1), Some(Value::Null)))
-    );
+    assert!((0..4).any(|i| scalar(&r, i, 3) == 0.0));
     let zero=f.run("CALL ze.hybrid_search([0,0],'absent',4,'exact') YIELD node,lexical_score RETURN node,lexical_score");
-    assert!(
-        (0..3)
-            .any(|i| matches!(zero.cell(i,1),Some(Value::F64(bits)) if f64::from_bits(*bits)==0.0))
-    );
+    assert!((0..4).all(|i| scalar(&zero, i, 1) == 0.0));
 }
 #[test]
 fn ze58_search_results_outlive_close_and_reopen() {
@@ -212,20 +197,20 @@ fn ze58_search_results_outlive_close_and_reopen() {
     let bytes = before.pools().bytes.to_vec();
     let nodes = before.pools().nodes.to_vec();
     let mut reports = before.pools().reports.to_vec();
-    assert_eq!(before.metadata().generation.get(), 7);
-    assert_eq!(f.store().snapshot().unwrap().generation(), 7);
+    assert_eq!(before.metadata().generation.get(), 11);
+    assert_eq!(f.store().snapshot().unwrap().generation(), 11);
     f.reopen();
     let after = f.run(q);
     assert_eq!(before.pools().bytes, bytes);
     assert_eq!(before.pools().nodes, nodes);
     assert_eq!(before.pools().reports, reports);
-    // Close checkpoints the manifest once. The retained result stays at 7;
-    // a new coherent admission and its reports must use store generation 8.
-    assert_eq!(f.store().snapshot().unwrap().generation(), 8);
-    assert_eq!(after.metadata().generation.get(), 8);
+    // Close checkpoints the manifest once. The retained result stays at 11;
+    // a new coherent admission and its reports must use store generation 12.
+    assert_eq!(f.store().snapshot().unwrap().generation(), 12);
+    assert_eq!(after.metadata().generation.get(), 12);
     for report in &mut reports {
-        assert_eq!(report.generation.get(), 7);
-        report.generation = zeppelin_embed::property_graph::GraphGeneration::new(8);
+        assert_eq!(report.generation.get(), 11);
+        report.generation = zeppelin_embed::property_graph::GraphGeneration::new(12);
     }
     assert_eq!(after.pools().bytes, bytes);
     assert_eq!(after.pools().nodes, nodes);
@@ -295,11 +280,11 @@ fn ze58_search_compile_rejections_publish_nothing() {
     };
     assert_eq!(e.kind, ErrorKind::SearchContext);
     assert_eq!(f.run("RETURN 1").metadata().generation, generation);
-    assert_eq!(generation.get(), 7);
-    assert_eq!(f.store().snapshot().unwrap().generation(), 7);
+    assert_eq!(generation.get(), 11);
+    assert_eq!(f.store().snapshot().unwrap().generation(), 11);
     f.reopen();
-    assert_eq!(f.store().snapshot().unwrap().generation(), 8);
-    assert_eq!(f.run("RETURN 1").metadata().generation.get(), 8);
+    assert_eq!(f.store().snapshot().unwrap().generation(), 12);
+    assert_eq!(f.run("RETURN 1").metadata().generation.get(), 12);
 }
 #[test]
 fn ze58_search_write_mixing_publish_nothing() {
@@ -326,12 +311,12 @@ fn ze58_search_write_mixing_publish_nothing() {
         f.run("RETURN 1").metadata().generation,
         before.metadata().generation
     );
-    assert_eq!(before.metadata().generation.get(), 7);
-    assert_eq!(f.store().snapshot().unwrap().generation(), 7);
+    assert_eq!(before.metadata().generation.get(), 11);
+    assert_eq!(f.store().snapshot().unwrap().generation(), 11);
     f.reopen();
     let after = f.run("MATCH (n) RETURN n ORDER BY ze.node_id(n)");
-    assert_eq!(f.store().snapshot().unwrap().generation(), 8);
-    assert_eq!(after.metadata().generation.get(), 8);
+    assert_eq!(f.store().snapshot().unwrap().generation(), 12);
+    assert_eq!(after.metadata().generation.get(), 12);
     assert_eq!(before.pools().nodes, after.pools().nodes);
     assert_eq!(before.pools().bytes, after.pools().bytes);
     assert_eq!(before.pools().properties, after.pools().properties);
@@ -414,7 +399,7 @@ fn ze58_full_u128_ties_remain_ordered() {
     .unwrap();
     for key in ["lo", "hi"] {
         let contents = CanonicalContents::node(&mut [], &mut [], Some("equal"), None).unwrap();
-        store
+        let receipt = store
             .graph_apply(
                 &[StructuredWrite {
                     key: ApplicationKey::new(EntityKind::Node, "ze58", key).unwrap(),
@@ -424,6 +409,22 @@ fn ze58_full_u128_ties_remain_ordered() {
                 }],
                 &search::control(),
             )
+            .unwrap();
+        let zeppelin_embed::property_graph::EntityId::Node(id) = receipt.receipts()[0].entity
+        else {
+            panic!("node receipt")
+        };
+        use zeppelin_embed::ingest::{
+            DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+        };
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id.get()), Revision::new(1)),
+                    vec![0.0; 2],
+                )
+                .with_text("equal"),
+            ]))
             .unwrap();
     }
     let mut observed = Vec::new();
@@ -487,26 +488,40 @@ fn ze58_graph_coverage_requires_actual_traversal() {
             image: Some(WriteImage::Node(image)),
         })
         .collect();
-    f.apply(&writes);
-    for mode in ["auto", "default"] {
-        let r = f.run(&format!(
-            "CALL ze.hybrid_search([0,0],'amber',1,'{mode}') YIELD node,score RETURN node,score"
-        ));
-        let report = r.pools().reports[0];
-        assert_eq!(report.actual_tier, Some(ActualTier::Graph));
-        assert_eq!(report.coverage, CandidateCoverage::Approximate);
-        assert_eq!(report.precision, ScorePrecision::Original);
-        assert!(report.candidate_count < 69);
-        assert_eq!(report.cross_scored_count, report.candidate_count);
-        assert!(report.cross_score_complete);
-    }
+    let receipts = f.store().graph_apply(&writes, &search::control()).unwrap();
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let documents = receipts
+        .receipts()
+        .iter()
+        .zip(&points)
+        .map(|(receipt, point)| {
+            let zeppelin_embed::property_graph::EntityId::Node(node) = receipt.entity else {
+                panic!("node receipt")
+            };
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(node.get()), Revision::new(1)),
+                point.to_vec(),
+            )
+            .with_text("amber")
+        })
+        .collect();
+    f.store()
+        .ingest(IngestBatch::new(documents).with_epoch(f.store().epoch_identity().unwrap()))
+        .unwrap();
+    let r =
+        f.run("CALL ze.vector_search([0,0],1,'graph') YIELD node,distance RETURN node,distance");
+    let report = r.pools().reports[0];
+    assert_eq!(report.actual_tier, Some(ActualTier::Exact));
+    assert_eq!(report.coverage, CandidateCoverage::Exact);
+    assert_eq!(report.precision, ScorePrecision::Original);
+    assert_eq!(report.candidate_count, 69);
 }
 
 #[test]
 fn ze305_candidate_count_survives_cypher_limit() {
     let f = SearchFixture::create();
     for (call, count) in [
-        ("ze.vector_search([0,0],1,'exact')", 3),
+        ("ze.vector_search([0,0],1,'exact')", 4),
         ("ze.text_search('amber',1)", 2),
     ] {
         for (suffix, rows) in [("", 1), (" LIMIT 0", 0)] {

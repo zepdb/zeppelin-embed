@@ -1207,8 +1207,9 @@ writable reopen starts count-due. `GraphStore::maintain` exposes one step;
 
 ## ZE-64 composed search statements
 
-The statement seam binds real vector/text/hybrid ranking using a borrowed Store
-analyzer. Ranking, eligibility, expansion and copied results share one admitted
+The statement seam runs vector/text/hybrid retrieval on the Store's lexical
+and vector segments, using the document snapshot pinned by its graph lease.
+Canonical graph payloads without document rows are not indexed. Ranking, eligibility, expansion and copied results share one admitted
 view. Reports retain per-call work including preparation. Vector and text
 candidate_count count eligible candidates before top-k: live eligible vector
 members and eligible text matches, respectively. These counts are independent

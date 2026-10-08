@@ -6,13 +6,17 @@ use crate::property_graph::NodeId;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(super) struct NativeDocuments {
-    pub(super) generation: u64,
-    pub(super) active: Arc<ActiveSegment>,
-    pub(super) snapshot: Arc<PublishedSnapshot>,
+pub(crate) struct NativeDocuments {
+    pub(crate) generation: u64,
+    pub(crate) active: Arc<ActiveSegment>,
+    pub(crate) snapshot: Arc<PublishedSnapshot>,
 }
 
 impl NativeReadLease {
+    pub(crate) fn search_documents(&self) -> Result<&NativeDocuments, StoreError> {
+        self.documents.as_ref().ok_or(StoreError::Closed)
+    }
+
     pub(crate) fn document_version(
         &self,
         node: NodeId,

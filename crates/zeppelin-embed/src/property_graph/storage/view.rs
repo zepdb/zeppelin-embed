@@ -33,8 +33,6 @@ mod prepared;
 #[cfg(feature = "graph-cypher")]
 mod retrieval;
 #[cfg(feature = "graph-cypher")]
-mod search;
-#[cfg(feature = "graph-cypher")]
 mod source;
 
 #[cfg(feature = "graph-cypher")]
@@ -138,6 +136,14 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
             source,
             catalog,
         })
+    }
+
+    pub(crate) fn search_documents(
+        &self,
+    ) -> Result<&crate::lifecycle::native_graph::documents::NativeDocuments, TreeError> {
+        self.lease
+            .search_documents()
+            .map_err(|error| TreeError::Control(crate::lifecycle::QueryError::Store(error)))
     }
 
     pub(crate) fn document_version(

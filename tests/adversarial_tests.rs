@@ -19410,8 +19410,8 @@ fn native_vector_index_probe_credits_exact_registered_receipts() {
     for key in adversarial::graph_native_vector_index::REGISTERED_COVERAGE {
         assert_eq!(coverage.count(key), 1, "native vector-index receipt {key}");
     }
-    assert_eq!(report.oracle.fires, 6);
-    assert_eq!(report.oracle.release_checks, 2);
+    assert_eq!(report.comparisons, 5);
+    assert_eq!(report.refusals, 2);
 }
 
 #[cfg(feature = "graph-cypher")]

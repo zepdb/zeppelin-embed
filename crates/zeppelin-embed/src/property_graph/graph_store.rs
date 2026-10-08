@@ -243,6 +243,25 @@ impl Store {
         })
     }
 
+    /// Test fixture seam for document segments and graph images in one commit.
+    #[cfg(any(test, feature = "test-seams"))]
+    #[doc(hidden)]
+    pub fn apply_mixed_for_test(
+        &self,
+        documents: &crate::ingest::IngestBatch,
+        requests: &[StructuredWrite<'_, '_>],
+        control: &QueryControl,
+    ) -> Result<GraphWriteResult, GraphStoreError> {
+        self.graph_apply(
+            GraphBatch {
+                documents: Some(documents),
+                writes: requests,
+                node_documents: &[],
+            },
+            control,
+        )
+    }
+
     /// Applies the same atomic batch with binding materialization before commit.
     /// The returned registration is already owned; publication performs no copy.
     #[doc(hidden)]

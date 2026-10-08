@@ -653,6 +653,32 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
         .map(|r| r.node)
         .collect::<Vec<_>>();
     ze_graph_response_free(&mut response);
+    use zeppelin_embed::lifecycle::{
+        GraphSearchOptions, ScanRescoreOptions, SearchOptions, SearchTier,
+    };
+    let store_options = [
+        SearchOptions::default(),
+        SearchOptions::default().with_tier(SearchTier::Auto),
+        SearchOptions::default().with_tier(SearchTier::Exact),
+        SearchOptions::default().with_scan_rescore(ScanRescoreOptions::new(1, 4096).unwrap()),
+        SearchOptions::default().with_tier(SearchTier::Graph(
+            GraphSearchOptions::new(zeppelin_embed::graph::search::GraphSearchProfile::SiftClass)
+                .with_ef(3)
+                .with_seed(7),
+        )),
+    ];
+    let expected_vectors = bind_search_documents(
+        &mut handle,
+        &path,
+        Some(&epoch),
+        &[
+            (ids[0], Some("amber"), [0.0, 0.0]),
+            (ids[1], None, [3.0, 4.0]),
+            (ids[2], Some("amber amber"), [1000.0, 1000.0]),
+            (ids[3], Some(""), [2000.0, 2000.0]),
+        ],
+        &store_options,
+    );
     let mut get: ZeGraphGetNodesRequest = sized_zeroed();
     get.ids = ids.as_ptr();
     get.id_count = ids.len();
@@ -733,11 +759,18 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
         ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
-    for (has_tier, tier) in [(0, 0), (1, 0), (1, 1), (1, 2), (1, 3)] {
+    for ((has_tier, tier), expected) in [(0, 0), (1, 0), (1, 1), (1, 2), (1, 3)]
+        .into_iter()
+        .zip(&expected_vectors)
+    {
         let mut options: ZeGraphSearchOptions = sized_zeroed();
-        options.graph_seed = 7;
-        options.graph_ef = 2;
-        options.rescore = 1;
+        if has_tier == 1 && tier == 3 {
+            options.graph_seed = 7;
+            options.graph_ef = 3;
+        }
+        if has_tier == 1 && tier == 2 {
+            options.rescore = 1;
+        }
         search.has_tier = has_tier;
         search.tier = tier;
         search.options = &options;
@@ -750,8 +783,19 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
             last_error(handle)
         );
         let result = rows(&response);
-        assert_eq!(result.len(), 2);
-        assert_eq!((result[0][1].floating, result[1][1].floating), (0.0, 25.0));
+        assert_eq!(result.len(), expected.len());
+        for (row, (expected_id, expected_score)) in result.iter().zip(expected) {
+            let node = unsafe { &*response.pool.nodes.add(row[0].entity_index as usize) };
+            assert_eq!(
+                (u128::from(node.id.high) << 64) | u128::from(node.id.low),
+                *expected_id
+            );
+            assert_eq!(
+                row[1].floating.to_bits(),
+                expected_score.to_bits(),
+                "tier {tier}"
+            );
+        }
         let report = unsafe { &*response.reports };
         assert_eq!(
             (report.has_requested_tier, report.requested_tier),
@@ -804,10 +848,10 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     );
     let result = rows(&response);
     assert_eq!(result.len(), 2);
-    // Only the two nonempty analyzed texts are indexed: N=2, df=2, avglen=1.5.
-    let idf = 1.2_f64.ln();
-    assert!((result[0][1].floating - idf * 4.4 / 3.5).abs() < 1e-6);
-    assert!((result[1][1].floating - idf * 2.2 / 1.9).abs() < 1e-6);
+    // Store BM25 includes all four documents: N=4, df=2, avglen=0.75.
+    let idf = 2.0_f64.ln();
+    assert!((result[0][1].floating - idf * 4.4 / 4.7).abs() < 1e-6);
+    assert!((result[1][1].floating - idf * 2.2 / 2.5).abs() < 1e-6);
     ze_graph_response_free(&mut response);
     let mut prefix: ZeGraphSearchOptions = sized_zeroed();
     prefix.lexical_flags = 1;
@@ -863,11 +907,11 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     );
     let result = rows(&response);
     assert_eq!(result.len(), 3);
-    assert!((result[0][1].floating - (0.25 + 0.75 * 3.5 / 3.8)).abs() < 1e-6);
-    assert!((result[1][1].floating - 0.75).abs() < 1e-6);
-    assert_eq!(result[1][2].tag, 0);
-    assert!(result[2][1].floating.abs() < 1e-12);
-    assert_eq!(result[2][3].tag, 0);
+    assert!((result[0][1].floating - (0.25 + 0.75 * 4.7 / 5.0)).abs() < 1e-6);
+    assert!((result[1][1].floating - (0.75 + 0.25 * 0.75)).abs() < 1e-6);
+    assert_eq!(result[1][2].floating, 2_000_000.0);
+    assert!((result[2][1].floating - 0.25 * (1.0 - 25.0 / 8_000_000.0)).abs() < 1e-6);
+    assert_eq!(result[2][3].floating, 0.0);
     assert_eq!(unsafe { (*response.reports).effective_alpha }, 0.25);
     ze_graph_response_free(&mut response);
     options.has_alpha = 0;
@@ -880,7 +924,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
         ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk
     );
-    assert_eq!(unsafe { (*response.reports).effective_alpha }, 0.4);
+    assert_eq!(unsafe { (*response.reports).effective_alpha }, 0.7);
     ze_graph_response_free(&mut response);
     // The eager call survives a root LIMIT 0 and still validates its window.
     let mut limit: ZeGraphOperator = sized_zeroed();
@@ -959,7 +1003,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
             2,
         ),
         (
-            "CALL ze.vector_search([0,0],3,'exact') YIELD node RETURN count(node)",
+            "CALL ze.vector_search([0,0],2,'exact') YIELD node RETURN count(node)",
             2,
         ),
         (
@@ -1510,8 +1554,19 @@ fn ze311_vector_parameter_query(refuse: bool) {
         ze_store_graph_apply(handle, &batch_request(&items, &pool), &mut response),
         ZeErrorCode::ZeOk
     );
-    let expected = receipts(&response)[1].node;
+    let ids = receipts(&response)
+        .iter()
+        .map(|receipt| receipt.node)
+        .collect::<Vec<_>>();
+    let expected = ids[1];
     assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
+    bind_search_documents(
+        &mut handle,
+        &path,
+        Some(&epoch),
+        &[(ids[0], None, [0.0, 0.0]), (ids[1], None, [3.0, 4.0])],
+        &[],
+    );
     let mut values: [ZeGraphValue; 3] = [sized_zeroed(); 3];
     values[0].tag = 2;
     values[0].integer = 3;
@@ -1615,7 +1670,9 @@ fn ze311_vector_parameter_query(refuse: bool) {
     assert_eq!(result[0][1].floating, 0.0);
     assert_eq!(response.report_count, 1);
     let report = unsafe { &*response.reports };
-    assert_eq!((report.call_id, report.generation), (0, 2));
+    // EnableGraph, the keyed node batch, and the document binding each commit once.
+    // Unified Store close/reopen does not add a generation.
+    assert_eq!((report.call_id, report.generation), (0, 3));
     assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
 }
 

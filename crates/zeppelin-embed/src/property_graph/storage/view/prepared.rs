@@ -9,9 +9,7 @@ use crate::property_graph::storage::adjacency::{
 use crate::property_graph::storage::memory::StorageBuffer;
 use crate::property_graph::storage::participant::DirectoryBase;
 use crate::property_graph::storage::prepared::{PackLimits, PreparedObjects};
-use crate::property_graph::storage::search::{
-    PreparedMembershipChange, PreparedSparseCandidate, SparseRoots, prepare_sparse,
-};
+
 use crate::property_graph::storage::tree::directory::{BlockSource, TreeError, TreeResources};
 use crate::property_graph::wal::{
     ArtifactDescriptor, CommitState, InventoryChange, InventoryState, ReferenceList,
@@ -44,7 +42,6 @@ pub(crate) struct GraphPreparation<'source, 'lease, 'm, F> {
     catalog: NativePreparationCatalog<'source, 'lease, 'm>,
     source: &'source NativePreparationSource<'lease, 'm>,
     base: NativeReadLease,
-    analyzer: &'source crate::fts::tokenizer::Analyzer,
 }
 
 impl<
@@ -90,7 +87,6 @@ impl<
             catalog,
             source,
             base,
-            analyzer,
         })
     }
 
@@ -170,34 +166,6 @@ impl<
             "directories-end",
             resources.work(),
         );
-        let batch_catalog = crate::property_graph::storage::participant::BatchCatalog {
-            base: &self.catalog,
-            additions: batch.symbols(),
-        };
-        let sparse = match prepare_sparse(
-            &mut self.objects,
-            batch,
-            &candidate,
-            &batch_catalog,
-            self.analyzer,
-            &self.base,
-            memory,
-            resources,
-        ) {
-            Ok(candidate) => candidate,
-            Err(error) => {
-                return Err(PreparedGraphFailure::from_preparation(
-                    error,
-                    self.objects,
-                    self.base,
-                ));
-            }
-        };
-        #[cfg(all(test, feature = "graph-cypher"))]
-        crate::property_graph::storage::preparation_work_capture::phase(
-            "sparse-end",
-            resources.work(),
-        );
         if let Err(error) = self.objects.finish(resources) {
             return Err(PreparedGraphFailure::from_preparation(
                 error,
@@ -210,13 +178,7 @@ impl<
             "sealing-end",
             resources.work(),
         );
-        PreparedGraphArtifacts::new(
-            candidate,
-            sparse,
-            self.objects,
-            self.source.lease(),
-            self.base,
-        )
+        PreparedGraphArtifacts::new(candidate, self.objects, self.source.lease(), self.base)
     }
 }
 
@@ -226,8 +188,6 @@ pub(crate) struct PreparedGraphArtifacts<'source, 'a, 'b, S, F> {
     _registration: NativePreparedRegistration,
     inventory: StorageBuffer<'a, InventoryChange>,
     candidate: NativeGraphCandidate<'a>,
-    sparse: PreparedSparseCandidate<'a>,
-    sparse_roots: SparseRoots,
     objects: PreparedObjects<'a, 'b, S, F>,
     base: NativeReadLease,
     _source: std::marker::PhantomData<&'source NativeReadLease>,
@@ -247,7 +207,6 @@ impl<
     )]
     pub(crate) fn new(
         candidate: NativeGraphCandidate<'a>,
-        sparse: PreparedSparseCandidate<'a>,
         objects: PreparedObjects<'a, 'b, S, F>,
         source_lease: &'source NativeReadLease,
         base: NativeReadLease,
@@ -268,8 +227,7 @@ impl<
             && candidate.roots().store() == admitted.base().store
             && candidate.target_generation() == candidate.roots().generation()
             && candidate.target_generation() == objects.generation()
-            && objects.store() == admitted.base().store
-            && sparse.matches(&candidate, admitted, base.token());
+            && objects.store() == admitted.base().store;
         if !valid {
             return Err(PreparedGraphFailure {
                 error: TreeError::Invalid("prepared native graph base mismatch"),
@@ -353,22 +311,10 @@ impl<
                 });
             }
         };
-        let sparse_roots = match sparse.finalize(inventory.as_slice()) {
-            Ok(roots) => roots,
-            Err(error) => {
-                return Err(PreparedGraphFailure {
-                    error,
-                    objects,
-                    base,
-                });
-            }
-        };
         Ok(Self {
             _registration: registration,
             inventory,
             candidate,
-            sparse,
-            sparse_roots,
             objects,
             base,
             _source: std::marker::PhantomData,
@@ -381,14 +327,6 @@ impl<
 
     pub(crate) const fn objects(&self) -> &PreparedObjects<'a, 'b, S, F> {
         &self.objects
-    }
-
-    pub(crate) const fn sparse_roots(&self) -> SparseRoots {
-        self.sparse_roots
-    }
-
-    pub(crate) fn membership_changes(&self) -> &[PreparedMembershipChange] {
-        self.sparse.changes()
     }
 
     pub(crate) fn abort_inventory(
@@ -413,18 +351,10 @@ impl<
         self,
     ) -> (
         NativeGraphCandidate<'a>,
-        SparseRoots,
-        PreparedSparseCandidate<'a>,
         PreparedObjects<'a, 'b, S, F>,
         NativeReadLease,
     ) {
-        (
-            self.candidate,
-            self.sparse_roots,
-            self.sparse,
-            self.objects,
-            self.base,
-        )
+        (self.candidate, self.objects, self.base)
     }
 }
 

@@ -23,6 +23,18 @@ pub struct SearchFixture {
     pub store: Option<Store>,
     pub tower: EmbeddingTower,
 }
+fn store_epoch(tower: &EmbeddingTower) -> zeppelin_embed::epoch::StoreEpoch {
+    use zeppelin_embed::epoch::{EmbeddingEpoch, StoreEpoch};
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: tower.clone(),
+            document: tower.clone(),
+            alignment_digest: vec![],
+        },
+        tokenizer: zeppelin_embed::fts::tokenizer::TokenizerConfig::text_default().epoch(),
+    }
+}
+
 pub fn control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
 }
@@ -44,6 +56,7 @@ impl SearchFixture {
         let store = Store::create_graph(
             &root,
             zeppelin_embed::lifecycle::OpenOptions::new()
+                .with_epoch(store_epoch(&tower))
                 .with_max_resident_bytes(256 * 1024 * 1024),
             Some(tower.clone()),
         )
@@ -68,7 +81,10 @@ impl SearchFixture {
                     .map(|v| CanonicalEmbedding::new(&tower, v).unwrap()),
             )
             .unwrap();
-            store
+            use zeppelin_embed::ingest::{
+                DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+            };
+            let receipt = store
                 .graph_apply(
                     &[StructuredWrite {
                         key: ApplicationKey::new(EntityKind::Node, "ze58", key).unwrap(),
@@ -77,6 +93,20 @@ impl SearchFixture {
                         image: Some(WriteImage::Node(&contents)),
                     }],
                     &control(),
+                )
+                .unwrap();
+            let zeppelin_embed::property_graph::EntityId::Node(id) = receipt.receipts()[0].entity
+            else {
+                panic!("node receipt")
+            };
+            let document = IngestDocument::new(
+                DocumentVersion::new(DocId::new(id.get()), Revision::new(1)),
+                vector.unwrap_or([1000.0; 2]).to_vec(),
+            );
+            let document = text.map_or(document.clone(), |text| document.with_text(text));
+            store
+                .ingest(
+                    IngestBatch::new(vec![document]).with_epoch(store.epoch_identity().unwrap()),
                 )
                 .unwrap();
         }
@@ -119,6 +149,7 @@ impl SearchFixture {
             Store::open_graph(
                 &self.root,
                 zeppelin_embed::lifecycle::OpenOptions::new()
+                    .with_epoch(store_epoch(&self.tower))
                     .with_max_resident_bytes(256 * 1024 * 1024),
                 Some(self.tower.clone()),
             )

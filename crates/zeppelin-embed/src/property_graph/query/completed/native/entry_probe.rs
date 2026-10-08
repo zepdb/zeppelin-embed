@@ -496,6 +496,7 @@ pub(crate) fn options(image_capacity: usize) -> GraphQueryOptions {
     };
     GraphQueryOptions {
         slot_column_names: false,
+        search_options: Default::default(),
         limits: RuntimeLimits::default(),
         memory_limit: 16 * 1024 * 1024,
         source_slots: 64,
@@ -1262,7 +1263,7 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
 
     super::search_probe::preparation_refusal();
     super::search_probe::same_view(base);
-    super::search_probe::approximation(base);
+    super::search_probe::store_report(base);
 
     let mut perturbed = observations.clone();
     if let Some(first) = perturbed.first_mut() {

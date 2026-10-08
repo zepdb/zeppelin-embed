@@ -697,11 +697,8 @@ fn ze257_small_batch_does_not_reserve_maximum_wal_envelope() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
         Store::create_graph(parent.path().join("graph"), options(), None).expect("graph store");
-    let _schedule = crate::property_graph::storage::search::native_vector_index_test_schedule(
-        Some(8 * 1024 * 1024),
-        None,
-        |_| {},
-    );
+    let _schedule =
+        crate::lifecycle::native_graph::preparation_limits::install(Some(8 * 1024 * 1024), None);
     create_node(&store, "small", 1);
     store.close_graph().expect("close graph store");
 }
@@ -886,15 +883,23 @@ fn ze257_checkpoint_recovery_work_scales_linearly() {
         );
         store.close_graph().unwrap();
     }
-    // Check both doublings and the complete 4x span with 5% tolerance.
-    for (index, &(small_nodes, small_work)) in measurements.iter().enumerate() {
-        for &(large_nodes, large_work) in measurements.iter().skip(index + 1) {
-            assert!(
-                large_work * small_nodes * 20 <= small_work * large_nodes * 21,
-                "recovery work grew superlinearly: {small_nodes} nodes/{small_work} work -> {large_nodes} nodes/{large_work} work"
-            );
-        }
-    }
+    // Removing sparse checkpoints removes fixed recovery setup work. Compare
+    // the marginal cost of each doubling; the absolute per-node cap above
+    // still bounds every complete open, including setup and tree splits.
+    let slopes: Vec<_> = measurements
+        .windows(2)
+        .map(|pair| {
+            let (small_nodes, small_work) = pair[0];
+            let (large_nodes, large_work) = pair[1];
+            (large_work - small_work, large_nodes - small_nodes)
+        })
+        .collect();
+    let (small_work, small_nodes) = slopes[0];
+    let (large_work, large_nodes) = slopes[1];
+    assert!(
+        large_work * small_nodes * 20 <= small_work * large_nodes * 21,
+        "marginal recovery work grew superlinearly: {slopes:?}"
+    );
 }
 
 #[test]

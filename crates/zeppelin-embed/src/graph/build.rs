@@ -1,9 +1,5 @@
 //! Single-threaded flat Vamana graph construction.
 
-mod native;
-
-pub(crate) use native::{NativeGraphBuildError, build_native_graph};
-
 use std::path::{Path, PathBuf};
 
 use xxhash_rust::xxh3::xxh3_64;
@@ -114,20 +110,6 @@ impl GraphBuildArtifact {
     #[must_use]
     pub const fn work_rows_completed(&self) -> u64 {
         self.work_rows_completed
-    }
-
-    pub(crate) fn resident_bytes(&self) -> Result<usize, GraphBuildError> {
-        self.encoded_region
-            .capacity()
-            .checked_add(
-                self.entry_points
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<u32>())
-                    .ok_or_else(|| {
-                        GraphBuildError::Geometry("entry capacity overflow".to_owned())
-                    })?,
-            )
-            .ok_or_else(|| GraphBuildError::Geometry("graph capacity overflow".to_owned()))
     }
 
     /// Atomically publishes the sealed input plus this graph through M2's writer.
@@ -548,16 +530,6 @@ fn build_graph(
     encode_artifact(&vectors, params, &entries, &adjacency, memory)
 }
 
-#[cfg(test)]
-pub(crate) fn build_graph_for_test(
-    reader: &SegmentReader,
-    params: GraphParams,
-    seed: u64,
-    passes: GraphBuildPasses,
-) -> Result<GraphBuildArtifact, GraphBuildError> {
-    build_graph(reader, params, seed, passes)
-}
-
 /// Validated controls for an interruptible graph build.
 #[derive(Clone, Copy, Debug)]
 pub struct CheckpointedGraphBuild<'a> {
@@ -676,31 +648,7 @@ struct SegmentVectors<'a> {
 }
 
 impl<'a> SegmentVectors<'a> {
-    fn new(reader: &'a SegmentReader) -> Result<Self, GraphBuildError> {
-        if reader.meta().scheme != 4 {
-            return Err(GraphBuildError::Geometry(format!(
-                "flat Vamana requires Bit4 scheme 4, got {}",
-                reader.meta().scheme
-            )));
-        }
-        let dimensions = reader.meta().dims as usize;
-        let node_count = reader.meta().row_count;
-        if node_count == 0 {
-            return Err(GraphBuildError::Geometry(
-                "flat Vamana requires at least one row".to_owned(),
-            ));
-        }
-        Ok(Self {
-            segment_id: *reader.meta().id.as_bytes(),
-            node_count,
-            dimensions,
-            code_stride: dimensions.div_ceil(2),
-            codes: reader.bit4_codes()?,
-            factors: reader.bit4_factors()?,
-            rescore: reader.rescore_f32()?,
-        })
-    }
-
+    #[cfg(test)]
     fn from_native(
         dimensions: usize,
         codes: &'a [u8],
@@ -735,6 +683,31 @@ impl<'a> SegmentVectors<'a> {
             codes,
             factors,
             rescore,
+        })
+    }
+
+    fn new(reader: &'a SegmentReader) -> Result<Self, GraphBuildError> {
+        if reader.meta().scheme != 4 {
+            return Err(GraphBuildError::Geometry(format!(
+                "flat Vamana requires Bit4 scheme 4, got {}",
+                reader.meta().scheme
+            )));
+        }
+        let dimensions = reader.meta().dims as usize;
+        let node_count = reader.meta().row_count;
+        if node_count == 0 {
+            return Err(GraphBuildError::Geometry(
+                "flat Vamana requires at least one row".to_owned(),
+            ));
+        }
+        Ok(Self {
+            segment_id: *reader.meta().id.as_bytes(),
+            node_count,
+            dimensions,
+            code_stride: dimensions.div_ceil(2),
+            codes: reader.bit4_codes()?,
+            factors: reader.bit4_factors()?,
+            rescore: reader.rescore_f32()?,
         })
     }
 
@@ -781,67 +754,6 @@ impl<'a> SegmentVectors<'a> {
             GraphBuildError::Geometry(format!("Bit4 factor {node_id} is unavailable"))
         })
     }
-}
-
-fn build_native_graph_inner(
-    vectors: &SegmentVectors<'_>,
-    params: GraphParams,
-    seed: u64,
-    control: &mut BuildControl<'_>,
-) -> Result<GraphBuildArtifact, GraphBuildError> {
-    let mut state = BuildState::new_controlled(vectors, params, seed, None, control)?;
-    while !state.advance_batch_controlled(
-        vectors,
-        params,
-        seed,
-        GraphBuildPasses::One,
-        None,
-        control,
-    )? {}
-    let transient_bytes = state
-        .order
-        .capacity()
-        .checked_mul(std::mem::size_of::<u32>())
-        .and_then(|bytes| bytes.checked_add(state.inserted.capacity()))
-        .and_then(|bytes| {
-            state
-                .visited
-                .capacity()
-                .checked_mul(std::mem::size_of::<u32>())
-                .and_then(|visited| bytes.checked_add(visited))
-        })
-        .ok_or_else(|| GraphBuildError::Geometry("build state capacity overflow".to_owned()))?;
-    let BuildState {
-        entries,
-        adjacency,
-        order,
-        inserted,
-        visited,
-        memory,
-        ..
-    } = state;
-    drop(order);
-    drop(inserted);
-    drop(visited);
-    control.release(transient_bytes)?;
-    let source_bytes = entries
-        .capacity()
-        .checked_mul(std::mem::size_of::<u32>())
-        .and_then(|bytes| {
-            adjacency
-                .slots
-                .capacity()
-                .checked_mul(std::mem::size_of::<u32>())
-                .and_then(|slots| bytes.checked_add(slots))
-        })
-        .and_then(|bytes| bytes.checked_add(adjacency.degrees.capacity()))
-        .ok_or_else(|| GraphBuildError::Geometry("graph source capacity overflow".to_owned()))?;
-    let artifact =
-        encode_artifact_controlled(vectors, params, &entries, &adjacency, memory, control)?;
-    drop(entries);
-    drop(adjacency);
-    control.release(source_bytes)?;
-    Ok(artifact)
 }
 
 struct BuildControl<'a> {
@@ -909,6 +821,10 @@ fn fill_controlled<T: Clone>(
     Ok(())
 }
 
+#[allow(
+    dead_code,
+    reason = "shared segment build accounting event shape is independent of graph retrieval"
+)]
 #[derive(Clone, Copy)]
 pub(crate) enum BuildMemoryEvent {
     Acquire(usize),

@@ -63,7 +63,14 @@ fn check(c: &Corpus) -> Result<(), String> {
     {
         let expected = oracle::query(&c.snapshot(), query)?;
         let actual = c.run(apps::APPLICATIONS[shape]);
-        oracle::compare_scored_rows(&expected, &observe(&actual), ABSOLUTE, RELATIVE)?;
+        oracle::compare_scored_rows(&expected, &observe(&actual), ABSOLUTE, RELATIVE).map_err(
+            |error| {
+                format!(
+                    "{query:?}: {error}; expected={expected:?}; actual={:?}",
+                    observe(&actual)
+                )
+            },
+        )?;
         for report in actual.pools().reports {
             if report.generation != actual.metadata().generation {
                 return Err("mixed source/report generation".into());
@@ -109,13 +116,24 @@ pub fn lifecycle_observations(
             c.checkpoint().map_err(|e| e.to_string())?;
             // Create/replace/remove membership before the injected boundary. These
             // committed deltas survive either failure and modeled power loss.
-            c.node("a", "Eligible", None, None, 2, oracle::Operation::Put);
+            c.apply(&oracle::Mutation {
+                key: oracle::Key {
+                    kind: oracle::Kind::Node,
+                    namespace: "ze65".into(),
+                    value: "a".into(),
+                },
+                operation: oracle::Operation::Delete,
+                revision: 3,
+                expected: oracle::Expectation::Entity(6),
+                detach: true,
+                image: None,
+            });
             c.node(
                 "empty",
                 "Eligible",
                 Some("amber"),
                 Some([4.0, 0.0]),
-                2,
+                3,
                 oracle::Operation::Put,
             );
             let key = oracle::Key {
@@ -126,7 +144,7 @@ pub fn lifecycle_observations(
             c.apply(&oracle::Mutation {
                 key,
                 operation: oracle::Operation::Delete,
-                revision: 2,
+                revision: 3,
                 expected: oracle::Expectation::Entity(8),
                 detach: false,
                 image: None,
@@ -136,22 +154,9 @@ pub fn lifecycle_observations(
                 "Outside",
                 Some("amber"),
                 Some([0.0, 0.0]),
-                3,
+                4,
                 oracle::Operation::Recreate,
             );
-            let key = oracle::Key {
-                kind: oracle::Kind::Node,
-                namespace: "ze65".into(),
-                value: "a".into(),
-            };
-            c.apply(&oracle::Mutation {
-                key,
-                operation: oracle::Operation::Delete,
-                revision: 3,
-                expected: oracle::Expectation::Entity(6),
-                detach: true,
-                image: None,
-            });
             c.checkpoint().map_err(|e| e.to_string())?;
             let before = observe(&c.run(apps::APPLICATIONS[2]));
             let mut rng = super::test_support::seeded_rng("ze65-membership-value", seed);
@@ -162,7 +167,7 @@ pub fn lifecycle_observations(
                     "Eligible",
                     Some("cedar"),
                     Some(point),
-                    2,
+                    3,
                     oracle::Operation::Put,
                 );
             }
@@ -193,11 +198,23 @@ pub fn lifecycle_observations(
                     Some(CanonicalEmbedding::new(&tower, &point).unwrap()),
                 )
                 .unwrap();
+                use zeppelin_embed::ingest::{
+                    DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+                };
+                let documents = IngestBatch::new(vec![
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(7), Revision::new(3)),
+                        point.to_vec(),
+                    )
+                    .with_text("cedar"),
+                ])
+                .with_epoch(c.graph().epoch_identity().unwrap());
                 c.graph()
-                    .graph_apply(
+                    .apply_mixed_for_test(
+                        &documents,
                         &[StructuredWrite {
                             key: ApplicationKey::new(EntityKind::Node, "ze65", "b").unwrap(),
-                            revision: GraphRevision::new(2).unwrap(),
+                            revision: GraphRevision::new(3).unwrap(),
                             operation: StructuredOperation::Put(EntityId::Node(
                                 NodeId::new(7).unwrap(),
                             )),
@@ -233,7 +250,7 @@ pub fn lifecycle_observations(
                 };
                 let mut m = c.model.history[&key].last.clone();
                 m.operation = oracle::Operation::Put;
-                m.revision = 2;
+                m.revision = 3;
                 m.expected = oracle::Expectation::Entity(7);
                 if let Some(oracle::Image::Node { vector, text, .. }) = &mut m.image {
                     *vector = Some(point.map(f32::to_bits).to_vec());

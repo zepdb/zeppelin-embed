@@ -83,6 +83,7 @@ pub fn execute_with_boundary(
                 memory,
                 runtime,
                 Route::Statement,
+                options.search_options(),
                 |lowered, _, _, runtime| {
                     // The seam's inventory and column names are statement-owned
                     // copies of what the lowered plan lends; charge them first.

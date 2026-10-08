@@ -9,7 +9,7 @@ use super::inventory::{
 use super::memory::{StorageBuffer, StorageMemory};
 use super::payload::{PayloadRef, prepare_stream};
 use super::records::{
-    NativeDirectoryValues, NodeRecordState, RecordCatalog, RecordInput, prepare_record,
+    NativeDirectoryValues, NodeRecordState, RecordCatalog, RecordInput, prepare_record_bound,
     verify_node_state, verify_record,
 };
 use super::stream::PayloadSlice;
@@ -66,14 +66,6 @@ impl Drop for SelectionPin {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct RecordRelocation {
-    pub(crate) entity: EntityId,
-    pub(crate) revision: u64,
-    pub(crate) old_record: PayloadRef,
-    pub(crate) new_record: PayloadRef,
-}
-
 /// Volatile progress hints. Losing them only repeats a bounded window; no
 /// correctness fact or physical reference is stored outside published roots.
 #[derive(Clone, Copy, Default)]
@@ -96,7 +88,6 @@ pub(crate) struct ConsolidationOutcome<'m> {
     inventory_fold: PreparedInventoryFold<'m>,
     inventory_fold_root: super::tree::directory::DirectoryRoot,
     adoptions: StorageBuffer<'m, crate::property_graph::wal::InventoryChange>,
-    relocations: StorageBuffer<'m, RecordRelocation>,
 }
 
 impl ConsolidationOutcome<'_> {
@@ -135,10 +126,6 @@ impl ConsolidationOutcome<'_> {
     pub(crate) fn adoptions(&self) -> &[crate::property_graph::wal::InventoryChange] {
         self.adoptions.as_slice()
     }
-
-    pub(crate) fn relocations(&self) -> &[RecordRelocation] {
-        self.relocations.as_slice()
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -169,7 +156,6 @@ where
     let context = RangeEditContext::at_generation(base.generation(), base_sequence, generation)?;
     let mut roots = base.for_generation(generation)?;
 
-    let mut relocations = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
     let mut tree = TreeScratch::for_prepare(memory)?;
     let mut replaced_physical_refs = 0_u64;
     let mut copied_bytes = 0_u64;
@@ -230,7 +216,6 @@ where
             resources,
         )?;
         let [old_canonical, old_provenance] = record.required_payloads();
-        let revision = record.revision().get();
         copied_bytes = copied_bytes
             .checked_add(record_reference.len())
             .and_then(|n| n.checked_add(old_canonical.len()))
@@ -297,7 +282,8 @@ where
                 .ok_or(TreeError::Memory)?
                 .rotate_right(1);
         }
-        let record = prepare_record(
+        let record_version = record.document_version();
+        let record = prepare_record_bound(
             sink,
             RecordInput {
                 store: base.store(),
@@ -308,17 +294,12 @@ where
             },
             catalog,
             document,
+            record_version,
             memory,
             resources,
         )?;
         let mut encoded_record = [0_u8; 48];
         record.encode_into(&mut encoded_record)?;
-        relocations.push(RecordRelocation {
-            entity: selected.entity,
-            revision,
-            old_record: record_reference,
-            new_record: record,
-        })?;
         values.push(encoded_record)?;
         replaced_physical_refs += 3;
     }
@@ -401,7 +382,6 @@ where
         inventory_fold,
         inventory_fold_root,
         adoptions: adopted,
-        relocations,
     })
 }
 
@@ -619,7 +599,7 @@ pub(crate) fn pack_census<'lease, 'm>(
             base.store(),
             base.generation(),
             resources,
-            &mut offer,
+            |descriptor, _| offer(descriptor),
         )?;
     }
     Ok(rows)

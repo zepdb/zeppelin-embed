@@ -7,8 +7,6 @@
 use super::staging::NormalizedDelta;
 use super::{EntityId, GraphRevision, NodeId};
 
-pub(crate) mod hybrid;
-pub(crate) mod rank;
 use crate::ingest::{DocId, DocumentVersion, Revision};
 use crate::lifecycle::materialize::{VersionMismatch, require_document_version};
 use crate::lifecycle::prepared::{VectorValidationError, validate_vector_coordinates};
@@ -89,7 +87,7 @@ pub(crate) enum RetrievalError {
         limit: usize,
     },
     /// Existing bounded lexical analysis/decoding refusal.
-    Lexical(crate::fts::graph_build::GraphLexicalError),
+
     /// Store fusion policy v1 rejected a component or anchor.
     Fusion(crate::fusion::FusionError),
     /// Hybrid legs were prepared against different eligibility domains.

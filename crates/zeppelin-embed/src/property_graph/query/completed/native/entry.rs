@@ -50,6 +50,7 @@ use std::cell::Cell;
 #[derive(Clone, Copy)]
 pub struct GraphQueryOptions {
     pub(crate) slot_column_names: bool,
+    pub(crate) search_options: crate::property_graph::query::plan::SearchOptions,
     /// Cumulative runtime work limits.
     pub(crate) limits: RuntimeLimits,
     /// The statement's query-memory sublimit.
@@ -69,6 +70,27 @@ pub struct GraphQueryOptions {
 }
 
 impl GraphQueryOptions {
+    /// Sets statement-wide retrieval controls for Cypher search calls.
+    pub fn with_search_options(
+        mut self,
+        options: crate::property_graph::query::plan::SearchOptions,
+    ) -> Result<Self, PlanError> {
+        if options.window.is_some()
+            || options.hide_input
+            || options
+                .alpha
+                .is_some_and(|alpha| !alpha.is_finite() || !(0.0..=1.0).contains(&alpha))
+        {
+            return Err(PlanError::Search);
+        }
+        self.search_options = options;
+        Ok(self)
+    }
+    /// Retrieval controls passed to each compiled search call.
+    pub const fn search_options(&self) -> crate::property_graph::query::plan::SearchOptions {
+        self.search_options
+    }
+
     /// Tightens query memory and cumulative work without widening hard limits.
     pub fn with_limits(
         mut self,
@@ -124,6 +146,7 @@ impl Default for GraphQueryOptions {
         };
         Self {
             slot_column_names: false,
+            search_options: Default::default(),
             limits: RuntimeLimits::default(),
             memory_limit: 24 * 1024 * 1024,
             source_slots: crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
@@ -503,7 +526,7 @@ impl Store {
             GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g>,
         ) -> Result<Executed, GraphQueryError>,
     {
-        let mut adapter = super::search_adapter::NativeSearchAdapter::new(&self.tokenizer);
+        let mut adapter = super::search_adapter::NativeSearchAdapter::new(self);
         self.execute_graph_query_with_boundary(control, options, Some(&mut adapter), build, None)
     }
 
@@ -522,7 +545,7 @@ impl Store {
             GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g>,
         ) -> Result<Executed, GraphQueryError>,
     {
-        let mut adapter = super::search_adapter::NativeSearchAdapter::new(&self.tokenizer);
+        let mut adapter = super::search_adapter::NativeSearchAdapter::new(self);
         self.execute_graph_query_with_boundary(
             control,
             options,

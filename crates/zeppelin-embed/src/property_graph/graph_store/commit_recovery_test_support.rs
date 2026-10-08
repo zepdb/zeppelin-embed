@@ -15,7 +15,7 @@ use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
 use crate::property_graph::resources::GraphResources;
 use crate::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
 use crate::property_graph::storage::adjacency::RelationshipRow;
-use crate::property_graph::storage::search::Modality;
+
 use crate::property_graph::storage::tree::directory::{TreeError, TreeResources};
 use crate::property_graph::storage::{
     CursorState, DirectionSelection, GraphReadView, RelationshipTypeSelection,
@@ -61,7 +61,17 @@ pub fn document() -> EmbeddingTower {
     }
 }
 fn options() -> OpenOptions {
-    OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024)
+    let tower = document();
+    OpenOptions::new()
+        .with_epoch(crate::epoch::StoreEpoch {
+            embedding: crate::epoch::EmbeddingEpoch {
+                query: tower.clone(),
+                document: tower,
+                alignment_digest: vec![],
+            },
+            tokenizer: crate::fts::tokenizer::TokenizerConfig::text_default().epoch(),
+        })
+        .with_max_resident_bytes(256 * 1024 * 1024)
 }
 fn control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
@@ -208,31 +218,23 @@ impl crate::lifecycle::native_graph::NativeReadConsumer<BatchObservation>
         let second_revision = second.record().revision().get();
         drop(resources);
 
-        let sparse = view.sparse_view(runtime)?;
-        let mut resources = TreeResources::for_query(runtime)?;
         let text_membership = [
-            sparse
-                .lookup(Modality::Text, self.first, &mut resources)?
-                .is_some(),
-            sparse
-                .lookup(Modality::Text, self.second, &mut resources)?
-                .is_some(),
+            first.record().canonical().stored_text().is_some(),
+            second.record().canonical().stored_text().is_some(),
         ];
-        let first_vector = sparse
-            .lookup(Modality::Vector, self.first, &mut resources)?
-            .is_some();
-        let vector_member = sparse
-            .lookup(Modality::Vector, self.second, &mut resources)?
-            .ok_or(TreeError::Invalid("missing recovered sparse vector"))?;
-        let stored = vector_member.vector.ok_or(TreeError::Invalid(
-            "missing recovered sparse vector payload",
-        ))?;
+        let first_vector = first.record().canonical().stored_vector().is_some();
+        let stored = second
+            .record()
+            .canonical()
+            .stored_vector()
+            .ok_or(TreeError::Invalid("missing recovered vector payload"))?;
+        let mut resources = TreeResources::for_query(runtime)?;
         let mut sparse_vector_bits = Vec::new();
         for index in 0..stored.dimensions() {
             sparse_vector_bits.push(stored.coordinate(index, &mut resources)?.to_bits());
         }
-        let text_count = sparse.text_count();
-        let vector_count = sparse.vector_count();
+        let text_count = text_membership.iter().filter(|member| **member).count() as u64;
+        let vector_count = u64::from(first_vector) + 1;
         drop(resources);
 
         let mut outgoing = Vec::new();

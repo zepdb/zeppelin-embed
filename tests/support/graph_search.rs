@@ -155,6 +155,13 @@ impl Corpus {
                 vector: vector.map(|v| v.map(f32::to_bits).to_vec()),
             }),
         };
+        let mut mutation = mutation;
+        if let Some(oracle::Image::Node { text, vector, .. }) = &mut mutation.image
+            && vector.is_none()
+            && text.is_some()
+        {
+            *vector = Some(vec![1000.0_f32.to_bits(); 2]);
+        }
         self.apply(&mutation);
     }
     pub fn edge(&mut self, key: &str, source: u128, target: u128, ty: &str) {
@@ -177,7 +184,22 @@ impl Corpus {
         });
     }
     pub fn apply(&mut self, m: &oracle::Mutation) {
+        let delete_document = matches!(m.operation, oracle::Operation::Delete)
+            && self.model.history.get(&m.key).is_some_and(|history| {
+                matches!(&history.last.image, Some(oracle::Image::Node { text, vector, .. })
+                    if text.is_some() || vector.is_some())
+            });
         let expected = self.model.apply(std::slice::from_ref(m)).unwrap();
+        if delete_document {
+            let generation = self
+                .graph()
+                .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![
+                    zeppelin_embed::ingest::DocId::new(expected.receipts[0].id),
+                ]))
+                .unwrap();
+            assert_eq!(generation.generation(), expected.generation);
+            return;
+        }
         let entity = match m.expected {
             oracle::Expectation::Entity(id) => Some(match m.key.kind {
                 oracle::Kind::Node => EntityId::Node(NodeId::new(id).unwrap()),
@@ -213,18 +235,50 @@ impl Corpus {
             &m.key.value,
         )
         .unwrap();
+        use zeppelin_embed::ingest::{
+            DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+        };
+        let docs = if let Some(oracle::Image::Node { text, vector, .. }) = &m.image {
+            if text.is_some() || vector.is_some() {
+                let mut doc = IngestDocument::new(
+                    DocumentVersion::new(
+                        DocId::new(expected.receipts[0].id),
+                        Revision::new(m.revision),
+                    ),
+                    vector
+                        .as_ref()
+                        .map(|v| v.iter().map(|b| f32::from_bits(*b)).collect())
+                        .unwrap_or(vec![1000.0; 2]),
+                );
+                if let Some(text) = text {
+                    doc = doc.with_text(text)
+                }
+                vec![doc]
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+        let documents = IngestBatch::new(docs).with_epoch(self.graph().epoch_identity().unwrap());
+        let fresh = matches!(
+            m.operation,
+            oracle::Operation::Create | oracle::Operation::Recreate
+        );
         let write = |image| {
-            self.graph()
-                .graph_apply(
-                    &[StructuredWrite {
-                        key,
-                        revision: GraphRevision::new(m.revision).unwrap(),
-                        operation,
-                        image,
-                    }],
-                    &control(),
-                )
-                .unwrap()
+            let writes = [StructuredWrite {
+                key,
+                revision: GraphRevision::new(m.revision).unwrap(),
+                operation,
+                image,
+            }];
+            if fresh || documents.documents().is_empty() {
+                self.graph().graph_apply(&writes, &control()).unwrap()
+            } else {
+                self.graph()
+                    .apply_mixed_for_test(&documents, &writes, &control())
+                    .unwrap()
+            }
         };
         let actual = match &m.image {
             Some(oracle::Image::Node {
@@ -292,6 +346,16 @@ impl Corpus {
                     EntityId::Relationship(RelId::new(expected.receipts[0].id).unwrap()),
             }
         );
+        if fresh && !documents.documents().is_empty() {
+            self.graph().ingest(documents).unwrap();
+            // Binding a document to an existing node is one independent
+            // modeled revision and generation, preserving the canonical image.
+            let mut binding = m.clone();
+            binding.operation = oracle::Operation::Put;
+            binding.revision += 1;
+            binding.expected = oracle::Expectation::Entity(expected.receipts[0].id);
+            self.model.apply(&[binding]).unwrap();
+        }
     }
     pub fn run(&self, q: &str) -> CompletedGraphResult {
         execute(
@@ -517,6 +581,34 @@ impl Corpus {
         assert!(
             matches!(actual.outcome(),GraphWriteOutcome::Committed {generation} if generation.get()==expected.generation)
         );
+        use zeppelin_embed::ingest::{
+            DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+        };
+        let documents = expected
+            .receipts
+            .iter()
+            .zip(&coordinates)
+            .map(|(receipt, v)| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(receipt.id), Revision::new(1)),
+                    v.to_vec(),
+                )
+            })
+            .collect();
+        self.graph()
+            .ingest(IngestBatch::new(documents).with_epoch(self.graph().epoch_identity().unwrap()))
+            .unwrap();
+        let bindings: Vec<_> = mutations
+            .into_iter()
+            .zip(expected.receipts)
+            .map(|(mut m, receipt)| {
+                m.operation = oracle::Operation::Put;
+                m.revision = 2;
+                m.expected = oracle::Expectation::Entity(receipt.id);
+                m
+            })
+            .collect();
+        self.model.apply(&bindings).unwrap();
     }
 }
 /// Exhaustive primitive full-index truth, including members not expanded by
@@ -543,7 +635,14 @@ pub fn check_search_snapshot(c: &Corpus) -> Result<(), String> {
         .collect();
     let actual =
         c.run("CALL ze.vector_search([0,0],4096,'exact') YIELD node,distance RETURN node,distance");
-    oracle::compare_scored_rows(&expected, &observe(&actual), ABSOLUTE, RELATIVE)?;
+    oracle::compare_scored_rows(&expected, &observe(&actual), ABSOLUTE, RELATIVE).map_err(
+        |error| {
+            format!(
+                "search snapshot: {error}; expected={expected:?}; actual={:?}",
+                observe(&actual)
+            )
+        },
+    )?;
     let expected = oracle::query(
         &snapshot,
         &oracle::Query::LexicalEvidence {
@@ -553,7 +652,14 @@ pub fn check_search_snapshot(c: &Corpus) -> Result<(), String> {
         },
     )?;
     let actual=c.run("CALL ze.text_search('amber',4096) YIELD node,score RETURN node,node.name,ze.stored_text(node) IS NOT NULL,ze.stored_text(node),score");
-    oracle::compare_scored_rows(&expected, &observe(&actual), ABSOLUTE, RELATIVE)?;
+    oracle::compare_scored_rows(&expected, &observe(&actual), ABSOLUTE, RELATIVE).map_err(
+        |error| {
+            format!(
+                "search snapshot: {error}; expected={expected:?}; actual={:?}",
+                observe(&actual)
+            )
+        },
+    )?;
     let mut expected: Vec<_> = snapshot
         .nodes
         .iter()

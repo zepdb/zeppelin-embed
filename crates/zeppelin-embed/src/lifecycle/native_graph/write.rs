@@ -23,10 +23,7 @@ use crate::property_graph::storage::participant::BatchCatalog;
 use crate::property_graph::storage::payload::PayloadRef;
 use crate::property_graph::storage::prepared::{PackLimits, PreparedObjects};
 use crate::property_graph::storage::records::{RecordCatalog, verify_record};
-use crate::property_graph::storage::search::{
-    PreparedSparseCheckpoint, SparseCheckpoint, SparseRoots,
-    validate_persisted_maintenance_transition,
-};
+
 use crate::property_graph::storage::stream::PayloadSlice;
 use crate::property_graph::storage::tree::TreeKind;
 use crate::property_graph::storage::tree::directory::{
@@ -104,8 +101,7 @@ pub(super) fn prepare_reclaim_completion_transition<'p, 'a, 'b, S, F, C>(
     shared: &GraphResources,
     lease: &'p NativeReadLease,
     objects: &'p PreparedObjects<'a, 'b, S, F>,
-    sparse_checkpoint: &PreparedSparseCheckpoint,
-    catalog: &C,
+    _catalog: &C,
     roots: GraphRoots,
     binding: crate::property_graph::storage::reclaim::SpillBinding,
     intent: RequiredRef,
@@ -140,16 +136,7 @@ where
         || objects.generation() != generation
         || roots.store() != admitted.base().store
         || roots.generation() != generation
-        || !sparse_checkpoint.matches(
-            SparseRoots {
-                text: admitted.text(),
-                vector: admitted.vector(),
-            },
-            admitted.roots(),
-            roots,
-            sequence,
-            admitted.catalog(),
-        )
+
         || binding.store != admitted.base().store
         // Foreground commits may carry a pending intent forward, so the
         // intent binds its own generation, at or before the admitted base.
@@ -235,27 +222,6 @@ where
         required: inventory_ref,
     };
     verify_prepared_inventory(inventory_artifact, inventory, None, tree_resources)?;
-    let sparse = sparse_checkpoint.finalize(inventory)?;
-
-    validate_persisted_maintenance_transition(
-        objects,
-        SparseCheckpoint {
-            cutoff: admitted.sequence(),
-            roots: SparseRoots {
-                text: admitted.text(),
-                vector: admitted.vector(),
-            },
-        },
-        admitted.roots(),
-        sparse,
-        roots,
-        admitted.catalog(),
-        catalog,
-        admitted.document(),
-        admitted.lexical(),
-        objects.memory(),
-        tree_resources,
-    )?;
 
     let graph = wal_roots(roots, inventory, admitted.wal_roots())?;
     let reference_count = admitted
@@ -272,8 +238,8 @@ where
         sequence,
         graph,
         catalog: admitted.catalog(),
-        vector: sparse.vector,
-        text: sparse.text,
+        vector: None,
+        text: None,
         reclaim: Some(completion),
         high_waters: HighWaters {
             creation_serial: inventory_identity.creation_serial,
@@ -336,8 +302,8 @@ where
             wal_roots: graph,
             sequence,
             catalog: admitted.catalog(),
-            vector: sparse.vector,
-            text: sparse.text,
+            vector: None,
+            text: None,
             reclaim: Some(completion),
             high_waters: state.high_waters,
             prepared_inventories: prepared_refs.as_slice().to_vec(),
@@ -383,8 +349,7 @@ pub(super) fn prepare_reclaim_clear_transition<'p, 'a, 'b, S, F, C>(
     lease: &'p NativeReadLease,
     completed: &ValidatedCompletedReclaim<'_>,
     objects: &'p PreparedObjects<'a, 'b, S, F>,
-    sparse_checkpoint: &PreparedSparseCheckpoint,
-    catalog: &C,
+    _catalog: &C,
     roots: GraphRoots,
     inventory: &'p [InventoryChange],
     inventory_identity: ArtifactIdentity,
@@ -420,16 +385,6 @@ where
         || objects.generation() != generation
         || roots.store() != admitted.base().store
         || roots.generation() != generation
-        || !sparse_checkpoint.matches(
-            SparseRoots {
-                text: admitted.text(),
-                vector: admitted.vector(),
-            },
-            admitted.roots(),
-            roots,
-            sequence,
-            admitted.catalog(),
-        )
         || inventory.len() != objects.len()
         || commit_artifacts.capacity()
             != objects
@@ -491,27 +446,6 @@ where
         required: inventory_ref,
     };
     verify_prepared_inventory(inventory_artifact, inventory, None, tree_resources)?;
-    let sparse = sparse_checkpoint.finalize(inventory)?;
-
-    validate_persisted_maintenance_transition(
-        objects,
-        SparseCheckpoint {
-            cutoff: admitted.sequence(),
-            roots: SparseRoots {
-                text: admitted.text(),
-                vector: admitted.vector(),
-            },
-        },
-        admitted.roots(),
-        sparse,
-        roots,
-        admitted.catalog(),
-        catalog,
-        admitted.document(),
-        admitted.lexical(),
-        objects.memory(),
-        tree_resources,
-    )?;
 
     let graph = wal_roots(roots, inventory, admitted.wal_roots())?;
     let reference_count = admitted
@@ -528,8 +462,8 @@ where
         sequence,
         graph,
         catalog: admitted.catalog(),
-        vector: sparse.vector,
-        text: sparse.text,
+        vector: None,
+        text: None,
         reclaim: None,
         high_waters: HighWaters {
             creation_serial: inventory_identity.creation_serial,
@@ -582,8 +516,8 @@ where
             wal_roots: graph,
             sequence,
             catalog: admitted.catalog(),
-            vector: sparse.vector,
-            text: sparse.text,
+            vector: None,
+            text: None,
             reclaim: None,
             high_waters: state.high_waters,
             prepared_inventories: prepared_refs.as_slice().to_vec(),
@@ -1473,7 +1407,6 @@ where
         .ok_or(NativeGraphError::IdentityExhausted)?;
     if !prepared.matches_base(lease)
         || prepared.expected_fold() != admitted.base().fold
-        || prepared.membership_changes().len() != batch.deltas().len()
         || batch.base() != admitted.base()
         || candidate.expected_base() != admitted.base()
         || candidate.expected_sequence() != admitted.sequence()
@@ -1510,7 +1443,7 @@ where
 
     let roots = final_roots;
     let graph = wal_roots(roots, prepared.inventory(), admitted.wal_roots())?;
-    let sparse = prepared.sparse_roots();
+
     // Until ZE-46 folds allocation inventories, retain every previous inventory
     // in the checked WAL/checkpoint state. A checkpoint cannot forget them.
     let reference_count = admitted
@@ -1531,8 +1464,8 @@ where
         sequence: expected_sequence,
         graph,
         catalog: catalog_ref,
-        vector: sparse.vector,
-        text: sparse.text,
+        vector: None,
+        text: None,
         reclaim: admitted.reclaim(),
         high_waters: HighWaters {
             node: high.node,
@@ -1554,29 +1487,14 @@ where
         .and_then(|count| count.checked_add(2))
         .ok_or(NativeGraphError::Invalid("WAL change count"))?;
     let mut changes = StorageBuffer::new(prepared.objects().memory(), change_capacity)?;
-    for (ordinal, delta) in batch.deltas().iter().enumerate() {
-        let membership = prepared
-            .membership_changes()
-            .get(ordinal)
-            .ok_or(NativeGraphError::Invalid("sparse membership ordinal"))?;
-        if membership.ordinal as usize != ordinal {
-            return Err(NativeGraphError::Invalid("sparse membership order"));
-        }
+    for delta in batch.deltas() {
         let fields = delta.provenance().fields();
-        let membership_value = match fields.incarnation {
-            EntityId::Node(node)
-                if membership.node == Some(node) && membership.membership.is_some() =>
-            {
-                membership.membership.ok_or(NativeGraphError::Invalid(
-                    "node sparse membership is absent",
-                ))?
-            }
-            EntityId::Relationship(_)
-                if membership.node.is_none() && membership.membership.is_none() =>
-            {
-                Membership::default()
-            }
-            _ => return Err(NativeGraphError::Invalid("sparse membership identity")),
+        let (before, after) = delta.membership();
+        let membership_value = Membership {
+            text_before: before.text,
+            text_after: after.text,
+            vector_before: before.vector,
+            vector_after: after.vector,
         };
         let canonical = if delta.canonical().is_some() {
             Some(canonical_required(
@@ -1668,8 +1586,8 @@ where
             wal_roots: graph,
             sequence: expected_sequence,
             catalog: catalog_ref,
-            vector: sparse.vector,
-            text: sparse.text,
+            vector: None,
+            text: None,
             reclaim: admitted.reclaim(),
             high_waters: state.high_waters,
             prepared_inventories: prepared_refs.as_slice().to_vec(),
@@ -1722,9 +1640,8 @@ pub(super) fn prepare_maintenance_transition<'p, 'a, 'b, S, F, C>(
     lease: &'p NativeReadLease,
     objects: &'p PreparedObjects<'a, 'b, S, F>,
     consolidated: &ConsolidationOutcome,
-    sparse_checkpoint: &PreparedSparseCheckpoint,
     durable: Option<PreparedDurableSpill>,
-    catalog: &C,
+    _catalog: &C,
     inventory: &'p [InventoryChange],
     reclaim_pending: &'p [InventoryChange],
     reclaim_candidates: &'p [crate::property_graph::wal::ArtifactDescriptor],
@@ -1822,20 +1739,6 @@ where
             "maintenance reclaim candidates lack durable proof",
         ));
     }
-    if !sparse_checkpoint.matches(
-        SparseRoots {
-            text: admitted.text(),
-            vector: admitted.vector(),
-        },
-        admitted.roots(),
-        roots,
-        sequence,
-        admitted.catalog(),
-    ) {
-        return Err(NativeGraphError::Invalid(
-            "prepared maintenance sparse association",
-        ));
-    }
     let mut greatest_serial = admitted.high_waters().creation_serial;
     for (index, change) in inventory.iter().enumerate() {
         let artifact = objects.artifact(index)?;
@@ -1882,27 +1785,6 @@ where
             "maintenance inventory artifact identity",
         ));
     }
-    let sparse = sparse_checkpoint.finalize(inventory)?;
-
-    validate_persisted_maintenance_transition(
-        objects,
-        SparseCheckpoint {
-            cutoff: admitted.sequence(),
-            roots: SparseRoots {
-                text: admitted.text(),
-                vector: admitted.vector(),
-            },
-        },
-        admitted.roots(),
-        sparse,
-        roots,
-        admitted.catalog(),
-        catalog,
-        admitted.document(),
-        admitted.lexical(),
-        objects.memory(),
-        tree_resources,
-    )?;
 
     consolidated.inventory_fold().validate_candidate(
         objects,
@@ -1951,8 +1833,8 @@ where
         sequence,
         graph,
         catalog: admitted.catalog(),
-        vector: sparse.vector,
-        text: sparse.text,
+        vector: None,
+        text: None,
         reclaim,
         high_waters: HighWaters {
             creation_serial: inventory_identity.creation_serial,
@@ -2033,8 +1915,8 @@ where
             wal_roots: graph,
             sequence,
             catalog: admitted.catalog(),
-            vector: sparse.vector,
-            text: sparse.text,
+            vector: None,
+            text: None,
             reclaim,
             high_waters: state.high_waters,
             prepared_inventories: prepared_refs.as_slice().to_vec(),
@@ -3125,10 +3007,7 @@ impl crate::lifecycle::Store {
                 .ok_or(NativeGraphError::Read(TreeError::Work))?;
             #[cfg(any(test, feature = "test-seams"))]
             let (storage_limit, preparation_work) =
-                crate::property_graph::storage::search::native_vector_index_test_limits(
-                    32 * 1024 * 1024,
-                    default_preparation_work,
-                );
+                super::preparation_limits::limits(32 * 1024 * 1024, default_preparation_work);
             #[cfg(not(any(test, feature = "test-seams")))]
             let (storage_limit, preparation_work) = (32 * 1024 * 1024, default_preparation_work);
             #[cfg(all(feature = "graph-cypher", feature = "test-seams"))]

@@ -37,6 +37,18 @@ use crate::property_graph::{
 };
 use std::mem::size_of;
 
+fn store_epoch(tower: &EmbeddingTower) -> crate::epoch::StoreEpoch {
+    use crate::epoch::{EmbeddingEpoch, StoreEpoch};
+    StoreEpoch {
+        embedding: EmbeddingEpoch {
+            query: tower.clone(),
+            document: tower.clone(),
+            alignment_digest: vec![],
+        },
+        tokenizer: crate::fts::tokenizer::TokenizerConfig::text_default().epoch(),
+    }
+}
+
 fn tower() -> EmbeddingTower {
     EmbeddingTower {
         model_id: "ze64-document".into(),
@@ -61,6 +73,7 @@ fn fixture() -> (Store, tempfile::TempDir, [NodeId; 4]) {
     let store = Store::create_native_graph(
         directory.path().join("native"),
         OpenOptions::new()
+            .with_epoch(store_epoch(&document))
             .with_durability(DurabilityMode::Durable, CommitTier::Durable)
             .with_max_resident_bytes(128 * 1024 * 1024),
         Some(document.clone()),
@@ -100,6 +113,21 @@ fn fixture() -> (Store, tempfile::TempDir, [NodeId; 4]) {
         EntityId::Node(node) => node,
         _ => panic!("fixture receipt kind"),
     });
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let documents = nodes
+        .iter()
+        .zip(points)
+        .map(|(node, (point, text))| {
+            let document = IngestDocument::new(
+                DocumentVersion::new(DocId::new(node.get()), Revision::new(1)),
+                point.unwrap_or([1000.0; 2]).to_vec(),
+            );
+            text.map_or(document.clone(), |text| document.with_text(text))
+        })
+        .collect();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(store.epoch_identity().unwrap()))
+        .unwrap();
     (store, directory, nodes)
 }
 
@@ -683,7 +711,7 @@ fn run_vector(
                 k,
                 mode,
                 empty_eligible,
-                adapter: NativeSearchAdapter::new(&store.tokenizer),
+                adapter: NativeSearchAdapter::new(store),
             },
         )
         .expect("admit ze64 vector read")
@@ -699,7 +727,7 @@ fn run_text(store: &Store, query: &str, k: i64) -> Outcome {
             TextSearch {
                 query: query.to_owned(),
                 k,
-                adapter: NativeSearchAdapter::new(&store.tokenizer),
+                adapter: NativeSearchAdapter::new(store),
             },
         )
         .expect("admit ze64 text read")
@@ -717,7 +745,7 @@ fn run_hybrid(store: &Store, coords: [f32; 2], query: &str, k: i64, mode: Search
                 query: query.to_owned(),
                 k,
                 mode,
-                adapter: NativeSearchAdapter::new(&store.tokenizer),
+                adapter: NativeSearchAdapter::new(store),
             },
         )
         .expect("admit ze64 hybrid read")
@@ -747,8 +775,8 @@ fn ze64_vector_only_call_ranks_by_real_squared_l2() {
     );
     assert_eq!(report.work.get(WorkKind::CandidateWindowPeak), 3);
     // Two query-validation coordinates plus three real two-coordinate scores.
-    assert_eq!(report.work.get(WorkKind::VectorCoordinates), 8);
-    assert_eq!(report.work.get(WorkKind::VectorBytes), 32);
+    assert_eq!(report.work.get(WorkKind::VectorCoordinates), 10);
+    assert_eq!(report.work.get(WorkKind::VectorBytes), 40);
     assert_eq!(report.kind, SearchKind::Vector);
     assert_eq!(report.actual_tier, Some(ActualTier::Exact));
     assert_eq!(report.precision, ScorePrecision::Original);
@@ -834,7 +862,7 @@ fn ze64_two_distinct_search_calls_in_one_statement_keep_separate_reports() {
             16 * 1024 * 1024,
             64,
             Cartesian {
-                adapter: NativeSearchAdapter::new(&store.tokenizer),
+                adapter: NativeSearchAdapter::new(&store),
             },
         )
         .expect("admit ze64 cartesian read")
@@ -891,9 +919,25 @@ fn ze202_same_low64_search_and_eligibility_keep_selected_id() {
     use super::test_support::ze202::{A, B};
     use crate::property_graph::query::plan::{AggregateExpression, BinaryExpression};
     let (store, _dir) = super::test_support::ze202::fixture(Some(tower()));
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    store
+        .ingest(IngestBatch::new(
+            [A, B]
+                .into_iter()
+                .enumerate()
+                .map(|(index, id)| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                        vec![index as f32, 0.0],
+                    )
+                    .with_text("amber")
+                })
+                .collect(),
+        ))
+        .unwrap();
     for kind in [SearchKind::Vector, SearchKind::Lexical, SearchKind::Hybrid] {
         for restriction in [None, Some(vec![0]), Some(vec![1]), Some(vec![1, 0, 1])] {
-            let mut adapter = NativeSearchAdapter::new(&store.tokenizer);
+            let mut adapter = NativeSearchAdapter::new(&store);
             let result = store
                 .execute_graph_query(
                     &control(),
@@ -1064,7 +1108,7 @@ fn ze202_same_low64_search_and_eligibility_keep_selected_id() {
             assert_eq!(result.pools().reports.len(), 1);
             let report = result.pools().reports[0];
             assert_eq!(report.call, SearchCallId(0));
-            assert_eq!(report.generation.get(), 6);
+            assert_eq!(report.generation.get(), 7);
             assert_eq!(report.kind, kind);
             assert_eq!(report.candidate_count, expected.len() as u64);
             assert_eq!(
@@ -1111,7 +1155,7 @@ fn ze64_call_work_includes_preparation() {
             TextSearch {
                 query: "amber".into(),
                 k: 1,
-                adapter: MeasuredSearch(NativeSearchAdapter::new(&store.tokenizer)),
+                adapter: MeasuredSearch(NativeSearchAdapter::new(&store)),
             },
         )
         .unwrap()
@@ -1123,6 +1167,6 @@ fn ze64_seed_expand_and_copy_share_admitted_generation() {
     super::search_probe::same_view(64);
 }
 #[test]
-fn ze64_approximation_report_survives_projection_and_aggregation() {
-    super::search_probe::approximation(64);
+fn ze64_store_report_survives_projection_and_aggregation() {
+    super::search_probe::store_report(64);
 }

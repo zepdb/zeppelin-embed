@@ -1440,106 +1440,7 @@ where
             resources,
         )?;
         if state.text.is_some() || state.vector.is_some() {
-            let mut search = {
-                // Sparse admission touches at most the text root, vector root and
-                // historical interpretation catalog. Drop those borrowed mappings
-                // before the value-owned trace begins its scoped read windows.
-                let search_open_source =
-                    RecoverySource::new_with_capacity(store, directory, state, memory, 3, false)?;
-                crate::property_graph::storage::search::SearchTraceState::for_captured(
-                    &search_open_source,
-                    &catalog,
-                    checkpoint,
-                    state,
-                    document,
-                    store.lexical(),
-                    memory,
-                    resources,
-                )?
-            };
-            let mut verify_row =
-                |row_store: crate::property_graph::StoreInstanceId,
-                 row_generation: crate::property_graph::GraphGeneration,
-                 row_record: PayloadRef,
-                 row_node: crate::property_graph::NodeId,
-                 resources: &mut TreeResources<'m>| {
-                    trace_source.with_artifact_window(
-                        row_record.reference(),
-                        resources,
-                        |window, resources| {
-                            crate::property_graph::storage::search::verify_sparse_trace_record(
-                                PayloadSlice::new(window, row_store, row_generation, row_record),
-                                row_node,
-                                &catalog,
-                                document,
-                                resources,
-                            )
-                        },
-                    )
-                };
-            let mut validate_vectors =
-                |row_store: crate::property_graph::StoreInstanceId,
-                 row_generation: crate::property_graph::GraphGeneration,
-                 row_table: PayloadRef,
-                 rows: u32,
-                 index: &crate::property_graph::storage::search::NativeVectorIndex<'m>,
-                 resources: &mut TreeResources<'m>| {
-                    let mut validate_record =
-                        |record: PayloadRef,
-                         node: crate::property_graph::NodeId,
-                         revision: u64,
-                         ordinal: u32,
-                         resources: &mut TreeResources<'m>| {
-                            trace_source.with_artifact_window(
-                            record.reference(),
-                            resources,
-                            |window, resources| {
-                                crate::property_graph::storage::search::validate_vector_index_row(
-                                    PayloadSlice::new(window, row_store, row_generation, record),
-                                    node,
-                                    revision,
-                                    ordinal,
-                                    &catalog,
-                                    document,
-                                    index,
-                                    resources,
-                                )
-                            },
-                        )
-                        };
-                    crate::property_graph::storage::search::validate_vector_index_rows_with(
-                        &trace_source,
-                        row_store,
-                        row_generation,
-                        row_table,
-                        rows,
-                        index,
-                        &mut validate_record,
-                        resources,
-                    )
-                };
-            let mut output = [None; crate::property_graph::storage::reclaim::TRACE_OUTPUT_LIMIT];
-            loop {
-                let result = search.trace_captured(
-                    &trace_source,
-                    &catalog,
-                    checkpoint,
-                    state,
-                    document,
-                    store.lexical(),
-                    memory,
-                    &mut output,
-                    &mut verify_row,
-                    &mut validate_vectors,
-                    resources,
-                )?;
-                for reference in output.iter().take(result.count).flatten().copied() {
-                    visitor.visit(reference, resources)?;
-                }
-                if result.complete {
-                    break;
-                }
-            }
+            return Err(TreeError::Invalid("retired sparse search roots"));
         }
         Ok(())
     })();
@@ -3685,6 +3586,29 @@ fn validate_lifecycle_transition<'source, 'store, 'source_memory, 'catalog_memor
         }
     };
 
+    let membership = |record: &Option<
+        crate::property_graph::storage::records::RecordView<'_, RecoverySource<'_, '_>>,
+    >| {
+        record.as_ref().map_or((false, false), |record| {
+            (
+                record.canonical().stored_text().is_some(),
+                record.canonical().stored_vector().is_some(),
+            )
+        })
+    };
+    let before = membership(&base_record);
+    let after = membership(&target_record);
+    if mutation.membership
+        != (crate::property_graph::wal::Membership {
+            text_before: before.0,
+            vector_before: before.1,
+            text_after: after.0,
+            vector_after: after.1,
+        })
+    {
+        return Err(TreeError::Invalid("canonical modality transition"));
+    }
+
     let base_fingerprint = base_record
         .as_ref()
         .map(|record| streamed_fingerprint(record.canonical_bytes(), resources))
@@ -4996,28 +4920,8 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                 reclaim,
                 &mut tree,
             )?;
-            if state.sequence == 0 {
-                if state.text.is_some() || state.vector.is_some() {
-                    return Err(TreeError::Invalid("initial sparse checkpoint roots"));
-                }
-            } else {
-                crate::property_graph::storage::search::validate_checkpoint(
-                    &source,
-                    crate::property_graph::storage::search::SparseCheckpoint {
-                        cutoff: state.sequence,
-                        roots: crate::property_graph::storage::search::SparseRoots {
-                            text: state.text,
-                            vector: state.vector,
-                        },
-                    },
-                    roots,
-                    state.catalog,
-                    &catalog,
-                    self.document,
-                    self.store.lexical(),
-                    self.memory,
-                    &mut tree,
-                )?;
+            if state.text.is_some() || state.vector.is_some() {
+                return Err(TreeError::Invalid("retired sparse search roots"));
             }
             let mut checkpoint_descriptors =
                 StorageBuffer::<ArtifactDescriptor>::new(self.memory, self.artifact_capacity)?;
@@ -5773,59 +5677,12 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                 return Err(TreeError::Invalid("unrooted prepared inventory changes"));
             }
 
-            let base_sparse = crate::property_graph::storage::search::SparseCheckpoint {
-                cutoff: base.sequence,
-                roots: crate::property_graph::storage::search::SparseRoots {
-                    text: base.text,
-                    vector: base.vector,
-                },
-            };
-            let target_sparse = crate::property_graph::storage::search::SparseRoots {
-                text: target.text,
-                vector: target.vector,
-            };
-            let empty_graph_noop = base.graph.slots.iter().all(Option::is_none)
-                && target.graph.slots.iter().all(Option::is_none)
-                && base_sparse.roots
-                    == crate::property_graph::storage::search::SparseRoots::default()
-                && target_sparse == crate::property_graph::storage::search::SparseRoots::default()
-                && retained_mutations.as_slice().is_empty();
-            if !empty_graph_noop {
-                match kind {
-                    crate::property_graph::wal::EnvelopeKind::Mutation => {
-                        crate::property_graph::storage::search::validate_persisted_replay_transition(
-                        &source,
-                        base_sparse,
-                        base_native,
-                        target_sparse,
-                        target_native,
-                        target.catalog,
-                        &catalog,
-                        self.document,
-                        self.store.lexical(),
-                        changes,
-                        resources,
-                        &mut replay_error,
-                        self.memory,
-                        &mut tree,
-                    )?;
-                    }
-                    crate::property_graph::wal::EnvelopeKind::Maintenance => {
-                        crate::property_graph::storage::search::validate_persisted_maintenance_transition(
-                        &source,
-                        base_sparse,
-                        base_native,
-                        target_sparse,
-                        target_native,
-                        target.catalog,
-                        &catalog,
-                        self.document,
-                        self.store.lexical(),
-                        self.memory,
-                        &mut tree,
-                    )?;
-                    }
-                }
+            if base.text.is_some()
+                || base.vector.is_some()
+                || target.text.is_some()
+                || target.vector.is_some()
+            {
+                return Err(TreeError::Invalid("retired sparse search roots"));
             }
 
             Ok::<(), TreeError>(())
@@ -6768,10 +6625,8 @@ pub(super) fn manifest_inventory(
     {
         offer(required.object)?;
     }
-    for required in [state.text, state.vector].into_iter().flatten() {
-        let catalog =
-            crate::property_graph::storage::search::root_catalog(&source, required, &mut tree)?;
-        offer(catalog.object)?;
+    if state.text.is_some() || state.vector.is_some() {
+        return Err(TreeError::Invalid("retired sparse search roots").into());
     }
     let root = bundle.roots().directory(TreeKind::ObjectInventory)?;
     let mut cursor =

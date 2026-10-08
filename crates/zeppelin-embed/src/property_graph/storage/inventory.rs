@@ -573,7 +573,7 @@ pub(crate) fn for_each_prepared_descriptor<S: BlockSource>(
     store: StoreInstanceId,
     generation: GraphGeneration,
     resources: &mut TreeResources<'_>,
-    mut visit: impl FnMut(ArtifactDescriptor) -> Result<(), TreeError>,
+    mut visit: impl FnMut(ArtifactDescriptor, &mut TreeResources<'_>) -> Result<(), TreeError>,
 ) -> Result<(), TreeError> {
     if required.object.store != store
         || required.object.generation > generation
@@ -619,7 +619,7 @@ pub(crate) fn for_each_prepared_descriptor<S: BlockSource>(
             resources.step(1)?;
             let descriptor = decode_descriptor(row)?;
             validate(descriptor, store, generation)?;
-            visit(descriptor)?;
+            visit(descriptor, resources)?;
         }
         Ok(())
     })
