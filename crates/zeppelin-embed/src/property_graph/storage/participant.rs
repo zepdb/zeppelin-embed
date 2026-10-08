@@ -391,7 +391,7 @@ impl<'m, C> PrepareState<'_, 'm, C> {
             })
             .transpose()?;
         let (record, new) = if let Some(canonical) = canonical {
-            let reference = prepare_record(
+            let reference = prepare_record_bound(
                 sink,
                 RecordInput {
                     store,
@@ -402,6 +402,7 @@ impl<'m, C> PrepareState<'_, 'm, C> {
                 },
                 self.catalog,
                 self.document,
+                delta.document_version(),
                 self.memory,
                 r,
             )?;
@@ -421,8 +422,14 @@ impl<'m, C> PrepareState<'_, 'm, C> {
             (Some(reference), Some(new))
         } else {
             let reference = match fields.incarnation {
-                EntityId::Node(id) => Some(prepare_node_tombstone(
-                    sink, store, generation, id, provenance, r,
+                EntityId::Node(id) => Some(prepare_node_tombstone_bound(
+                    sink,
+                    store,
+                    generation,
+                    id,
+                    provenance,
+                    delta.document_version(),
+                    r,
                 )?),
                 EntityId::Relationship(_) => None,
             };

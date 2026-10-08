@@ -141,8 +141,9 @@ impl NativeVectorIndex<'_> {
             .checked_add(row as usize * 24)
             .ok_or(TreeError::Memory)?;
         let bytes = section(self.encoded.as_slice(), start, 24)?;
-        let node = NodeId::new(u128::from_le_bytes(array(bytes, 0)?))
-            .map_err(|_| TreeError::Invalid("native vector zero identity"))?;
+        let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(array(
+            bytes, 0,
+        )?)));
         let revision = u64::from_le_bytes(array(bytes, 16)?);
         if revision == 0 {
             return Err(TreeError::Invalid("native vector zero revision"));

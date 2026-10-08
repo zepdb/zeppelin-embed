@@ -36,6 +36,19 @@ pub(super) fn checked_base(
     }
     Ok(())
 }
+pub(super) fn checked_document_base(
+    base: &dyn AdmittedBase,
+    entity: &BaseEntity<'_>,
+    view: BaseIdentity,
+    mut high: HighWaters,
+) -> Result<(), StageError> {
+    if let EntityId::Node(node) = entity.provenance.fields().incarnation
+        && base.document_version(node)?.is_some()
+    {
+        high.node = high.node.max(node.get());
+    }
+    checked_base(entity, view, high)
+}
 fn covered(id: EntityId, high: HighWaters) -> bool {
     match id {
         EntityId::Node(id) => id.get() <= high.node,
@@ -43,21 +56,23 @@ fn covered(id: EntityId, high: HighWaters) -> bool {
     }
 }
 pub(super) fn allocate(
+    base: &dyn AdmittedBase,
     kind: EntityKind,
     high: &mut HighWaters,
     control: &mut WriteControl<'_>,
 ) -> Result<EntityId, StageError> {
     control(WritePhase::Identity)?;
     match kind {
-        EntityKind::Node => {
+        EntityKind::Node => loop {
             high.node = high
                 .node
                 .checked_add(1)
                 .ok_or(StageError::IdentityOverflow)?;
-            Ok(EntityId::Node(
-                NodeId::new(high.node).map_err(|_| StageError::InvalidInput)?,
-            ))
-        }
+            let node = NodeId::new(high.node).map_err(|_| StageError::InvalidInput)?;
+            if !base.node_id_reserved(node, control)? {
+                return Ok(EntityId::Node(node));
+            }
+        },
         EntityKind::Relationship => {
             high.relationship = high
                 .relationship
@@ -267,7 +282,7 @@ pub(super) fn stage_structured_with_preflight<'a>(
         let (meta, current, resolved) = match state {
             BaseKeyState::NeverUsed => (KeyMetadataState::NeverUsed, None, None),
             BaseKeyState::Live(entity) => {
-                checked_base(&entity, identity, high_waters)?;
+                checked_document_base(base, &entity, identity, high_waters)?;
                 let id = entity.provenance.fields().incarnation;
                 (
                     KeyMetadataState::Live(entity.provenance, entity.shape),
@@ -435,12 +450,13 @@ pub(super) fn stage_structured_with_preflight<'a>(
                 control(WritePhase::Validate)?;
                 match endpoint {
                     NodeRef::Existing(id) => {
-                        let entity = base
-                            .entity(EntityId::Node(id), control)?
-                            .ok_or(StageError::Endpoint)?;
-                        checked_base(&entity, identity, high_waters)?;
-                        if entity.provenance.fields().incarnation != EntityId::Node(id) {
-                            return Err(StageError::ViewMismatch);
+                        if let Some(entity) = base.entity(EntityId::Node(id), control)? {
+                            checked_document_base(base, &entity, identity, high_waters)?;
+                            if entity.provenance.fields().incarnation != EntityId::Node(id) {
+                                return Err(StageError::ViewMismatch);
+                            }
+                        } else if base.document_version(id)?.is_none() {
+                            return Err(StageError::Endpoint);
                         }
                         for other in requests {
                             control(WritePhase::Validate)?;
@@ -508,7 +524,7 @@ pub(super) fn stage_structured_with_preflight<'a>(
                 let request = requests.get(index).ok_or(StageError::InvalidInput)?;
                 let id = match change.existing_incarnation() {
                     Some(id) => id,
-                    None => allocate(request.key.kind(), &mut high_waters, control)?,
+                    None => allocate(base, request.key.kind(), &mut high_waters, control)?,
                 };
                 let generation = classification
                     .changed_generation
@@ -580,6 +596,7 @@ pub(super) fn stage_structured_with_preflight<'a>(
                 .current
                 .map_or(Membership::default(), |entity| entity.membership);
             deltas.push(NormalizedDelta {
+                document: None,
                 provenance: p,
                 canonical,
                 shape,
@@ -616,5 +633,6 @@ pub(super) fn stage_structured_with_preflight<'a>(
         symbols,
         disposition: classification.disposition,
     }
-    .enforce_relationship_rules(base, memory, control)
+    .enforce_relationship_rules(base, memory, control)?
+    .bind_document_nodes(base, memory, control)
 }

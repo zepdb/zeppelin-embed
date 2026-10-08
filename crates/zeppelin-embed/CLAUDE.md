@@ -639,9 +639,23 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 
 ## Native property-graph domain (ZE-32)
 
-- `property_graph` is separate from the ANN `graph` module. The historical
-  graph-node-equals-row rules above describe ANN only; native NodeId/RelId
-  preserve distinct, nonzero u128 identities and never convert publicly to DocId.
+- `property_graph` is separate from the ANN `graph` module. ZE-350 / E15
+  decision E.2 supersedes the native node/document identity split: `NodeId`
+  and `DocId` share one u128 identity and convert explicitly. Graph allocation
+  remains positive and monotone, checks live documents, and never recycles an
+  allocated ID. `RelId` remains an independent, nonzero u128 domain.
+- A document-backed node records its `DocumentVersion`. Legacy alive document
+  rows without a node record have the implicit `Document` label and typed
+  column properties. Reads pin active, sealed, and graph state together; open
+  does not migrate rows. The first graph touch adopts the node record.
+- Document deletion and its node tombstone publish in one mixed WAL run.
+  E.6 applies DETACH and incoming Restrict to every document removal path,
+  including delete_matching, retention, and purge. A definite refusal must
+  precede all durable writes and leave the shared writer usable.
+- Arm the shared ManifestPublication fence before durable mutations and
+  complete it after both participants are published. An absent document
+  reference retains the prior node layout; document-bound layouts are explicit
+  and old readers must refuse them. Graph-free v2 bytes remain unchanged.
 - Input constructors borrow caller storage and allocate nothing. Staging must
   reserve and own copies, charge aggregate canonical bytes including framing,
   and validate local-slot existence and vector-space identity before publication.

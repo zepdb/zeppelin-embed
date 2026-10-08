@@ -168,6 +168,47 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "partition retention",
             })?;
+        #[cfg(feature = "graph-cypher")]
+        let mut native_writer = self.native_document_writer()?;
+        #[cfg(feature = "graph-cypher")]
+        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut()) {
+            let ids = {
+                let snapshot = self
+                    .snapshot
+                    .read()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "published snapshot",
+                    })?;
+                let snapshot = snapshot.as_ref().ok_or(StoreError::Closed)?;
+                let mut ids = Vec::new();
+                if key_range.start < key_range.end {
+                    for segment in snapshot.segments() {
+                        if matches!(segment.meta().clustering_key_range,
+                            ClusteringKeyRange::Bounded { min_ts, max_ts }
+                                if min_ts >= key_range.start && max_ts < key_range.end)
+                        {
+                            for row in segment.query_alive()?.alive_bitmap().iter() {
+                                if let Some(version) = segment
+                                    .document_version(row as usize)
+                                    .map_err(StoreError::Segment)?
+                                {
+                                    ids.push(version.doc_id());
+                                }
+                            }
+                        }
+                    }
+                }
+                ids
+            };
+            if !ids.is_empty()
+                && self
+                    .documents_have_native_nodes(&ids)
+                    .map_err(|error| StoreError::DocumentMutation(Box::new(error)))?
+            {
+                self.delete_native_documents_locked(&super::DeleteBatch::new(ids), writer)
+                    .map_err(|error| StoreError::DocumentMutation(Box::new(error)))?;
+            }
+        }
         let state = self
             .state
             .lock()
@@ -261,7 +302,13 @@ impl Store {
             })?;
         let previous = published.replace(Arc::new(remapped));
         active_state.generation = generation;
+        #[cfg(feature = "graph-cypher")]
+        {
+            drop(published);
+            self.publish_native_documents(active_state)?;
+        }
         publication.complete();
+        #[cfg(not(feature = "graph-cypher"))]
         drop(published);
         drop(previous);
 

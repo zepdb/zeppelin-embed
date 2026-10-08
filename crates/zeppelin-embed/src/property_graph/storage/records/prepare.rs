@@ -35,7 +35,25 @@ pub fn prepare_record<S: BlockSink>(
     memory: &StorageMemory<'_>,
     r: &mut TreeResources<'_>,
 ) -> Result<PayloadRef, TreeError> {
+    prepare_record_bound(sink, input, catalog, document, None, memory, r)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_record_bound<S: BlockSink>(
+    sink: &mut S,
+    input: RecordInput,
+    catalog: &impl RecordCatalog<S>,
+    document: Option<&EmbeddingTower>,
+    version: Option<crate::ingest::DocumentVersion>,
+    memory: &StorageMemory<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<PayloadRef, TreeError> {
     r.require_preparation(memory)?;
+    if let Some(version) = version
+        && input.entity != EntityId::Node(crate::property_graph::NodeId::from(version.doc_id()))
+    {
+        return Err(TreeError::Invalid("document node version"));
+    }
     let (shape, revision, properties) = {
         let source = PayloadSlice::new(&*sink, input.store, input.generation, input.canonical);
         let canonical = verify_canonical(source, document, &mut CountOnly, r)?;
@@ -106,6 +124,7 @@ pub fn prepare_record<S: BlockSink>(
         properties.as_slice(),
         input.canonical,
         input.provenance,
+        version,
     )?;
     let result = prepare_stream(
         sink,
@@ -262,7 +281,8 @@ struct RecordEncoding<'a> {
     labels: &'a [u64],
     properties: &'a [IndexRow],
     index_header: [u8; 8],
-    references: [u8; 96],
+    references: [u8; 120],
+    references_len: usize,
 }
 impl<'a> RecordEncoding<'a> {
     fn new(
@@ -272,6 +292,7 @@ impl<'a> RecordEncoding<'a> {
         properties: &'a [IndexRow],
         canonical: PayloadRef,
         provenance: PayloadRef,
+        version: Option<crate::ingest::DocumentVersion>,
     ) -> Result<Self, TreeError> {
         let mut result = Self {
             header: [0; 80],
@@ -279,7 +300,8 @@ impl<'a> RecordEncoding<'a> {
             labels,
             properties,
             index_header: [0; 8],
-            references: [0; 96],
+            references: [0; 120],
+            references_len: if version.is_some() { 120 } else { 96 },
         };
         let property_bytes = 8usize
             .checked_add(properties.len().checked_mul(24).ok_or(TreeError::Memory)?)
@@ -327,7 +349,20 @@ impl<'a> RecordEncoding<'a> {
                 .to_le_bytes(),
         )?;
         canonical.encode_into(result.references.get_mut(..48).ok_or(TreeError::Memory)?)?;
-        provenance.encode_into(result.references.get_mut(48..).ok_or(TreeError::Memory)?)?;
+        provenance.encode_into(result.references.get_mut(48..96).ok_or(TreeError::Memory)?)?;
+        if let Some(version) = version {
+            put(&mut result.header, 24, &2_u32.to_le_bytes())?;
+            put(
+                &mut result.references,
+                96,
+                &version.doc_id().get().to_le_bytes(),
+            )?;
+            put(
+                &mut result.references,
+                112,
+                &version.revision().get().to_le_bytes(),
+            )?;
+        }
         Ok(result)
     }
     fn role(&self) -> BlockKind {
@@ -342,7 +377,7 @@ impl<'a> RecordEncoding<'a> {
             .checked_add(self.labels.len().checked_mul(8).ok_or(TreeError::Memory)?)
             .and_then(|n| n.checked_add(8))
             .and_then(|n| n.checked_add(self.properties.len().checked_mul(24)?))
-            .and_then(|n| n.checked_add(96))
+            .and_then(|n| n.checked_add(self.references_len))
             .ok_or(TreeError::Memory)
     }
     fn read_at(
@@ -387,7 +422,7 @@ impl<'a> RecordEncoding<'a> {
                 temporary.get(offset % 24..).ok_or(TreeError::Memory)?
             } else {
                 self.references
-                    .get(position - references_start..)
+                    .get(position - references_start..self.references_len)
                     .filter(|bytes| !bytes.is_empty())
                     .ok_or(TreeError::Memory)?
             };

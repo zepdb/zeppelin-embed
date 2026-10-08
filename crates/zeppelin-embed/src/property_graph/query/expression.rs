@@ -957,9 +957,37 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         }
         let mut resources = TreeResources::for_query(context)?;
         let payload = if let Some(node) = entity.0 {
-            let record = view
-                .lookup_node(node, &mut resources)?
-                .ok_or(TreeError::Invalid("expression node is absent or deleted"))?;
+            if let Some(value) = view.document_property(node, name.as_str())? {
+                let data = match &value {
+                    crate::meta::PredicateValue::I64(value) => PropertyData::I64(*value),
+                    crate::meta::PredicateValue::U64(value) => {
+                        PropertyData::I64(i64::try_from(*value).map_err(|_| {
+                            TreeError::Invalid("document u64 property exceeds graph integer")
+                        })?)
+                    }
+                    crate::meta::PredicateValue::F64(value) => PropertyData::F64(*value),
+                    crate::meta::PredicateValue::Bool(value) => PropertyData::Bool(*value),
+                    crate::meta::PredicateValue::String(value) => PropertyData::String(value),
+                    crate::meta::PredicateValue::Id128(_) => {
+                        return Err(TreeError::Invalid(
+                            "document id128 property is not a graph scalar",
+                        )
+                        .into());
+                    }
+                };
+                drop(resources);
+                return self.copy_property(
+                    PropertyValue::new(data)
+                        .map_err(|_| TreeError::Invalid("document property"))?,
+                    context,
+                );
+            }
+            let Some(record) = view.lookup_node(node, &mut resources)? else {
+                if view.document_version(node)?.is_some() {
+                    return Ok(ScratchCell::Null);
+                }
+                return Err(TreeError::Invalid("expression node is absent or deleted").into());
+            };
             let Some(Symbol::Property(key)) =
                 view.expression_symbol(SymbolKind::Property, name, &mut resources)?
             else {
@@ -1001,6 +1029,10 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             QueryValue::NodeRef(node) => node.id(),
             _ => return Err(super::QueryError::Type.into()),
         };
+        let document = view.document_version(node)?.is_some();
+        if document && label.as_str() == "Document" {
+            return Ok(ScratchCell::Bool(true));
+        }
         if let Some(overlay) = overlay
             && let Some(staged) = overlay.labels(node)?
         {
@@ -1012,9 +1044,32 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             return Ok(ScratchCell::Bool(false));
         }
         let mut resources = TreeResources::for_query(context)?;
-        let record = view
-            .lookup_node(node, &mut resources)?
-            .ok_or(TreeError::Invalid("expression node is absent or deleted"))?;
+        let Some(record) = view.lookup_node(node, &mut resources)? else {
+            return if document {
+                Ok(ScratchCell::Bool(false))
+            } else {
+                Err(TreeError::Invalid("expression node is absent or deleted").into())
+            };
+        };
+        if label.as_str() == "Document" {
+            let crate::property_graph::storage::records::RecordShape::Node { labels, .. } =
+                record.record().shape()
+            else {
+                return Err(TreeError::Invalid("node expression record role").into());
+            };
+            for index in 0..labels {
+                let name = view
+                    .expression_symbol_name(
+                        Symbol::Label(record.record().label(index, &mut resources)?),
+                        &mut resources,
+                    )?
+                    .ok_or(TreeError::Invalid("native label symbol is unnamed"))?;
+                if name.as_str() == "Document" {
+                    return Ok(ScratchCell::Bool(true));
+                }
+            }
+            return Ok(ScratchCell::Bool(false));
+        }
         let Some(Symbol::Label(label)) =
             view.expression_symbol(SymbolKind::Label, label, &mut resources)?
         else {
@@ -1048,28 +1103,46 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             QueryValue::NodeRef(node) => node.id(),
             _ => return Err(super::QueryError::Type.into()),
         };
+        let document = view.document_version(node)?.is_some();
         if let Some(overlay) = overlay
             && let Some(staged) = overlay.labels(node)?
         {
-            return self.copy_names(staged, context);
+            return self.copy_names(staged, document, context);
         }
         let mut resources = TreeResources::for_query(context)?;
-        let record = view
-            .lookup_node(node, &mut resources)?
-            .ok_or(TreeError::Invalid("expression node is absent or deleted"))?;
-        let crate::property_graph::storage::records::RecordShape::Node { labels, .. } =
-            record.record().shape()
-        else {
-            return Err(TreeError::Invalid("node expression record role").into());
+        let record = view.lookup_node(node, &mut resources)?;
+        let labels = match record.as_ref().map(|node| node.record().shape()) {
+            Some(crate::property_graph::storage::records::RecordShape::Node { labels, .. }) => {
+                labels
+            }
+            None if document => 0,
+            _ => return Err(TreeError::Invalid("expression node is absent or deleted").into()),
         };
-        let len = usize::try_from(labels).map_err(|_| RuntimeError::Batch)?;
+        let mut explicit_document = false;
+        if document && let Some(record) = &record {
+            for index in 0..labels {
+                let symbol = Symbol::Label(record.record().label(index, &mut resources)?);
+                let name = view
+                    .expression_symbol_name(symbol, &mut resources)?
+                    .ok_or(TreeError::Invalid("native label symbol is unnamed"))?;
+                explicit_document |= name.as_str() == "Document";
+            }
+        }
+        let append_document = document && !explicit_document;
+        let len = (labels as usize)
+            .checked_add(usize::from(append_document))
+            .ok_or(RuntimeError::Batch)?;
         let start = self.scratch.reserve_list(len, || {
             self.test_poll.poll();
             resources.step(1)?;
             Ok(())
         })?;
         for index in 0..labels {
-            let label = record.record().label(index, &mut resources)?;
+            let label = record
+                .as_ref()
+                .ok_or(RuntimeError::Batch)?
+                .record()
+                .label(index, &mut resources)?;
             let name = view
                 .expression_symbol_name(Symbol::Label(label), &mut resources)?
                 .ok_or(TreeError::Invalid("native label symbol is unnamed"))?;
@@ -1083,6 +1156,17 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
                 .cells
                 .as_mut_slice()
                 .get_mut(start + index as usize)
+                .ok_or(RuntimeError::Batch)? = value;
+        }
+        if append_document {
+            let value =
+                self.scratch
+                    .copy_native_bytes(b"Document", &mut resources, &mut self.test_poll)?;
+            *self
+                .scratch
+                .cells
+                .as_mut_slice()
+                .get_mut(start + labels as usize)
                 .ok_or(RuntimeError::Batch)? = value;
         }
         self.scratch.finish_list(start, len, || {
@@ -1252,10 +1336,44 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
     fn copy_names(
         &mut self,
         names: &[GraphName<'_>],
+        document: bool,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<ScratchCell, ExpressionFailure> {
-        self.copy_list(names, context, |scratch, poll, name, context| {
-            scratch.copy_bytes(name.as_str().as_bytes(), context, poll)
+        let append = document && !names.iter().any(|name| name.as_str() == "Document");
+        if !append {
+            return self.copy_list(names, context, |scratch, poll, name, context| {
+                scratch.copy_bytes(name.as_str().as_bytes(), context, poll)
+            });
+        }
+        let len = names
+            .len()
+            .checked_add(usize::from(append))
+            .ok_or(RuntimeError::Batch)?;
+        let start = self.scratch.reserve_list(len, || {
+            self.test_poll.poll();
+            context.values().step()?;
+            Ok(())
+        })?;
+        for (index, bytes) in names
+            .iter()
+            .map(|name| name.as_str().as_bytes())
+            .chain(append.then_some(b"Document".as_slice()))
+            .enumerate()
+        {
+            let value = self
+                .scratch
+                .copy_bytes(bytes, context, &mut self.test_poll)?;
+            *self
+                .scratch
+                .cells
+                .as_mut_slice()
+                .get_mut(start + index)
+                .ok_or(RuntimeError::Batch)? = value;
+        }
+        self.scratch.finish_list(start, len, || {
+            self.test_poll.poll();
+            context.values().step()?;
+            Ok(())
         })
     }
 

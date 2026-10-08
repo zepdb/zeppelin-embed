@@ -67,12 +67,23 @@ impl FfiError {
         if let Some(code) = format_version_code(&error) {
             return Self::new(code, message);
         }
-        let code = match &error {
+        Self::new(Self::store_code(&error), message)
+    }
+
+    fn store_code(error: &zeppelin_embed::lifecycle::StoreError) -> ZeErrorCode {
+        if let Some(code) = format_version_code(error) {
+            return code;
+        }
+        match error {
             zeppelin_embed::lifecycle::StoreError::Manifest(
                 zeppelin_embed::manifest::ManifestError::GraphUnsupportedBuild,
             ) => ZeErrorCode::ZeErrGraphUnsupportedBuild,
             zeppelin_embed::lifecycle::StoreError::NativeGraphDirectory { .. } => {
                 ZeErrorCode::ZeErrLegacyGraphDirectory
+            }
+            #[cfg(feature = "graph-cypher")]
+            zeppelin_embed::lifecycle::StoreError::DocumentMutation(error) => {
+                Self::ingest_code(error)
             }
             zeppelin_embed::lifecycle::StoreError::CascadeCycle { .. } => {
                 ZeErrorCode::ZeErrCascadeCycle
@@ -82,8 +93,7 @@ impl FfiError {
             }
             zeppelin_embed::lifecycle::StoreError::ScanStale { .. } => ZeErrorCode::ZeErrScanStale,
             _ => Self::store_kind_code(error.kind()),
-        };
-        Self::new(code, message)
+        }
     }
 
     pub(crate) const fn store_kind_code(
@@ -115,11 +125,32 @@ impl FfiError {
     }
 
     pub(crate) fn ingest(error: zeppelin_embed::ingest::IngestError) -> Self {
-        use zeppelin_embed::ingest::IngestError;
+        Self::new(Self::ingest_code(&error), error.to_string())
+    }
 
-        let message = error.to_string();
-        let code = match error {
-            IngestError::Store(error) => Self::store(error).code,
+    fn ingest_code(error: &zeppelin_embed::ingest::IngestError) -> ZeErrorCode {
+        use zeppelin_embed::ingest::IngestError;
+        match error {
+            #[cfg(feature = "graph-cypher")]
+            IngestError::Graph(error) => {
+                use zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind as Kind;
+                match error.kind() {
+                    Kind::Constraint => ZeErrorCode::ZeErrKeyConflict,
+                    Kind::Limit => ZeErrorCode::ZeErrBudgetExceeded,
+                    Kind::Cancelled => ZeErrorCode::ZeErrCancelled,
+                    Kind::Timeout => ZeErrorCode::ZeErrTimeout,
+                    Kind::Closed => ZeErrorCode::ZeErrClosed,
+                    Kind::Corruption => ZeErrorCode::ZeErrCorrupt,
+                    Kind::Storage => ZeErrorCode::ZeErrIo,
+                    Kind::WriteIndeterminate => ZeErrorCode::ZeErrIndeterminateCommit,
+                    Kind::Unavailable => ZeErrorCode::ZeErrAccessMode,
+                    Kind::InvalidPlan | Kind::Parameter | Kind::Expression => {
+                        ZeErrorCode::ZeErrInvalidArgument
+                    }
+                    _ => ZeErrorCode::ZeErrInternal,
+                }
+            }
+            IngestError::Store(error) => Self::store_code(error),
             IngestError::EmptyBatch => ZeErrorCode::ZeErrEmptyBatch,
             IngestError::EpochMismatch(_) => ZeErrorCode::ZeErrEpochMismatch,
             IngestError::EpochUndeclared => ZeErrorCode::ZeErrEpochUndeclared,
@@ -131,8 +162,7 @@ impl FfiError {
             | IngestError::Tokenizer(_)
             | IngestError::Columns(_)
             | IngestError::Payload(_) => ZeErrorCode::ZeErrInvalidArgument,
-        };
-        Self::new(code, message)
+        }
     }
 
     pub(crate) fn query(error: zeppelin_embed::lifecycle::QueryError) -> Self {
@@ -180,6 +210,8 @@ impl FfiError {
         let message = error.to_string();
         let code = match error {
             PurgeError::Store(error) => Self::store(error).code,
+            #[cfg(feature = "graph-cypher")]
+            PurgeError::Delete(error) => Self::ingest(error).code,
             PurgeError::InsufficientTempSpace { .. } => ZeErrorCode::ZeErrBudgetExceeded,
             PurgeError::PurgeInProgress => ZeErrorCode::ZeErrBusy,
             PurgeError::UnknownToken { .. } => ZeErrorCode::ZeErrInvalidArgument,

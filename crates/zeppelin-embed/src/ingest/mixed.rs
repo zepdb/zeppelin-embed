@@ -3,7 +3,9 @@ use super::*;
 
 pub(crate) struct PreparedMixedDocuments {
     pub(crate) generation: u64,
+    pub(crate) replay_seq: Option<LogSeq>,
     next: Option<ActiveSegment>,
+    delete_rows: Option<Vec<usize>>,
     published_next: Option<Arc<ActiveSegment>>,
     pub(crate) records: Vec<(usize, u16, Vec<u8>)>,
     snapshot: Arc<PublishedSnapshot>,
@@ -91,7 +93,9 @@ impl Store {
         }
         Ok(PreparedMixedDocuments {
             generation: current.generation,
+            replay_seq: progress.replay_seq,
             next: progress.working,
+            delete_rows: None,
             published_next: None,
             records: progress.records,
             snapshot,
@@ -102,16 +106,35 @@ impl Store {
 }
 
 impl PreparedMixedDocuments {
+    pub(crate) fn version(&self, id: DocId) -> Option<DocumentVersion> {
+        self.next
+            .as_ref()?
+            .existing(id)
+            .filter(|(row, _, _)| {
+                !self
+                    .next
+                    .as_ref()
+                    .is_some_and(|next| next.is_tombstoned(*row))
+            })
+            .map(|(_, version, _)| version)
+    }
+
     pub(crate) fn prepare_active_publication(
         &mut self,
         first_seq: LogSeq,
     ) -> Result<(), StoreError> {
         if let Some(mut next) = self.next.take() {
-            for (index, (row, _, _)) in self.records.iter().enumerate() {
-                next.set_sequence(
-                    *row,
-                    LogSeq::new(first_seq.get().saturating_add(index as u64)),
-                )?;
+            if let Some(rows) = &self.delete_rows {
+                for row in rows {
+                    next.set_sequence(*row, first_seq)?;
+                }
+            } else {
+                for (index, (row, _, _)) in self.records.iter().enumerate() {
+                    next.set_sequence(
+                        *row,
+                        LogSeq::new(first_seq.get().saturating_add(index as u64)),
+                    )?;
+                }
             }
             self.published_next = Some(Arc::new(next));
         }
@@ -191,4 +214,47 @@ pub(crate) fn unlink_replaced(store: &Store, paths: &[PathBuf]) {
         paths,
         store.durability_policy,
     );
+}
+
+impl Store {
+    pub(crate) fn prepare_mixed_delete(
+        &self,
+        batch: &DeleteBatch,
+        current: &ActiveState,
+    ) -> Result<PreparedMixedDocuments, IngestError> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or(StoreError::Closed)?;
+        check_revision_conditions(
+            &current.segment,
+            &snapshot,
+            batch
+                .doc_ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| (index, *id, batch.expected.get(index).copied().flatten())),
+        )?;
+        let sealed = purge::sealed_document_matches(&snapshot, &batch.doc_ids)?;
+        let (next, rows) = current
+            .segment
+            .tombstone(&batch.doc_ids, &self.accounting)?;
+        let payload = wal_payload::encode_delete(&batch.doc_ids).map_err(IngestError::Payload)?;
+        Ok(PreparedMixedDocuments {
+            generation: current.generation,
+            replay_seq: None,
+            next: Some(next),
+            delete_rows: Some(rows),
+            published_next: None,
+            records: vec![(0, wal_payload::DELETE_V1, payload)],
+            snapshot,
+            sealed,
+            tombstones: batch.doc_ids.clone(),
+        })
+    }
 }

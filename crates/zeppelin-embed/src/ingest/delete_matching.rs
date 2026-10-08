@@ -98,6 +98,52 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "delete matching",
             })?;
+        #[cfg(feature = "graph-cypher")]
+        let mut native_writer = self.native_document_writer()?;
+        #[cfg(feature = "graph-cypher")]
+        let native_deleted = if let Some(writer) =
+            native_writer.as_mut().and_then(|slot| slot.as_mut())
+        {
+            let ids = {
+                let active = self
+                    .active
+                    .lock()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "active segment",
+                    })?;
+                let current = active.as_ref().ok_or(StoreError::Closed)?;
+                let snapshot = self
+                    .snapshot
+                    .read()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "published snapshot",
+                    })?;
+                let snapshot = snapshot.as_ref().ok_or(StoreError::Closed)?;
+                self.live_document_ids_matching(&current.segment, snapshot.segments(), predicate)
+                    .map_err(DeleteMatchingError::Query)?
+            };
+            // Release the snapshot read guard before the mixed writer publishes.
+            if !ids.is_empty()
+                && self
+                    .documents_have_native_nodes(&ids)
+                    .map_err(DeleteMatchingError::Delete)?
+            {
+                self.prepare_purge_intent(
+                    &ids,
+                    self.available_purge_bytes()
+                        .map_err(DeleteMatchingError::Purge)?,
+                    self.vfs.as_ref(),
+                )
+                .map_err(DeleteMatchingError::Purge)?;
+                self.delete_native_documents_locked(&super::DeleteBatch::new(ids.clone()), writer)
+                    .map_err(DeleteMatchingError::Delete)?;
+                Some(ids)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let state = self
             .state
             .lock()
@@ -146,6 +192,13 @@ impl Store {
         let ids = self
             .live_document_ids_matching(&active, snapshot.segments(), predicate)
             .map_err(DeleteMatchingError::Query)?;
+        #[cfg(feature = "graph-cypher")]
+        let (ids, already_deleted) = match native_deleted {
+            Some(ids) => (ids, true),
+            None => (ids, false),
+        };
+        #[cfg(not(feature = "graph-cypher"))]
+        let already_deleted = false;
         drop(snapshot);
         drop(active);
         let report = if ids.is_empty() {
@@ -154,7 +207,7 @@ impl Store {
                 generation,
             }
         } else {
-            self.delete_and_purge_locked(writer, ids)?
+            self.delete_and_purge_locked(writer, ids, already_deleted)?
         };
         drop(wal);
         drop(writer_lock);
@@ -169,6 +222,7 @@ impl Store {
         &self,
         writer: &mut super::StoreWal,
         ids: Vec<DocId>,
+        already_deleted: bool,
     ) -> Result<DeleteMatchingReport, DeleteMatchingError> {
         let vfs = self.vfs.as_ref();
         let available = self
@@ -177,7 +231,7 @@ impl Store {
         let token = self
             .schedule_purge_locked(&ids, available, vfs, writer)
             .map_err(DeleteMatchingError::Purge)?;
-        if let Err(error) = self.delete_with_writer(writer, &ids, &[]) {
+        if !already_deleted && let Err(error) = self.delete_with_writer(writer, &ids, &[]) {
             // The tombstones did not commit, so the intent must not purge
             // these documents at the next open.
             self.abandon_scheduled_purge_locked(vfs, writer)

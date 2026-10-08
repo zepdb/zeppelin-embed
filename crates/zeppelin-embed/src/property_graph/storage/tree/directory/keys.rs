@@ -191,18 +191,15 @@ fn validate_numeric_key(kind: TreeKind, key: Key<'_>) -> Result<(), TreeError> {
             .is_some_and(|part| part.iter().any(|byte| *byte != 0))
     };
     let valid = match kind {
-        TreeKind::Nodes
-        | TreeKind::Relationships
-        | TreeKind::ObjectInventory
-        | TreeKind::SparseMembership => nonzero(0, 16),
+        TreeKind::Nodes | TreeKind::SparseMembership => true,
+        TreeKind::Relationships | TreeKind::ObjectInventory => nonzero(0, 16),
         TreeKind::SparseSources => {
             let reference = crate::property_graph::storage::artifact::decode_reference(bytes)?;
             reference.kind == BlockKind::CommitParticipant && reference.version == 1
         }
-        TreeKind::Labels | TreeKind::RelationshipTypes => nonzero(0, 8) && nonzero(8, 16),
-        TreeKind::OutRanges | TreeKind::InRanges => {
-            nonzero(0, 16) && nonzero(16, 8) && nonzero(24, 16)
-        }
+        TreeKind::Labels => nonzero(0, 8),
+        TreeKind::RelationshipTypes => nonzero(0, 8) && nonzero(8, 16),
+        TreeKind::OutRanges | TreeKind::InRanges => nonzero(16, 8) && nonzero(24, 16),
         TreeKind::KeyFences => false,
     };
     if valid {

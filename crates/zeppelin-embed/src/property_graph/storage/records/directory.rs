@@ -43,7 +43,7 @@ impl<S: BlockSource, C: RecordCatalog<S>> LeafValidator<S> for NativeDirectoryVa
                 if root.kind() == TreeKind::Nodes {
                     verify_node_state(
                         bytes,
-                        NodeId::new(id).map_err(|_| TreeError::Invalid("zero node identity"))?,
+                        NodeId::from(crate::ingest::DocId::new(id)),
                         self.catalog,
                         self.document,
                         r,

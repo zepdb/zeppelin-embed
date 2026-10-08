@@ -561,8 +561,9 @@ impl RangeDescriptor {
             _ => return Err(invalid("adjacency upper tag/reserved")),
         };
         let key = RangeKey {
-            node: NodeId::new(u128::from_le_bytes(read(key, 0)?))
-                .map_err(|_| invalid("adjacency node identity"))?,
+            node: NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(read(
+                key, 0,
+            )?))),
             rel_type: RelTypeId::new(u64::from_le_bytes(read(key, 16)?))
                 .map_err(|_| invalid("adjacency type identity"))?,
             lower: RelId::new(u128::from_le_bytes(read(key, 24)?))

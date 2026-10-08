@@ -193,7 +193,21 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     }
     let clean = clean.map_err(|e| e.to_string())?;
     let observation = observe(&clean)?;
-    let generation = clean.metadata().generation;
+    let generation = zeppelin_embed::property_graph::GraphGeneration::new(
+        store
+            .statement_store()
+            .snapshot()
+            .map_err(|error| error.to_string())?
+            .generation(),
+    );
+    if clean.metadata().generation != generation
+        || observation
+            .reports
+            .iter()
+            .any(|(_, actual, _)| *actual != generation.get())
+    {
+        return Err("retrieval does not report the admitted store generation".into());
+    }
     let postings = clean.metadata().counters.get(WorkKind::LexicalPostings);
     // Every text has tf=1, df=N=64, len=avgdl=2: BM25 equals IDF.
     let expected = (1.0_f64 + 0.5 / 64.5).ln();
@@ -461,6 +475,18 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         None,
     )
     .map_err(|e| e.to_string())?;
+    // Close folds the WAL through a manifest-only generation bump. The
+    // coherent lease reports that store generation, independently of whether
+    // graph roots changed. Keep every durable value/report comparison below.
+    let reopened_generation = reopened
+        .statement_store()
+        .snapshot()
+        .map_err(|error| error.to_string())?
+        .generation();
+    let mut expected_reopened = perturbed;
+    for (_, generation, _) in &mut expected_reopened.reports {
+        *generation = reopened_generation;
+    }
     let again = run(
         &reopened,
         &QueryControl::Cancel(CancelToken::new()),
@@ -470,9 +496,14 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let mut expected_observation = observe(&again)?;
     check(&expected_observation, expected)?;
+    if again.metadata().generation.get() != reopened_generation {
+        return Err("reopened retrieval does not report the store generation".into());
+    }
     expected_observation.scores[0] = 0;
-    if expected_observation != perturbed {
-        return Err("close cancellation mutated durable observations".into());
+    if expected_observation != expected_reopened {
+        return Err(format!(
+            "close cancellation mutated durable observations: {expected_observation:?} != {expected_reopened:?}"
+        ));
     }
     drop(again);
     reopened.close().map_err(|e| e.to_string())?;

@@ -77,7 +77,7 @@ macro_rules! identity {
 
 identity!(
     NodeId,
-    "Stable store-local node identity, unrelated to a physical row.\n\n```compile_fail\nuse zeppelin_embed::property_graph::{NodeId, RelId};\nlet node: NodeId = RelId::new(1).unwrap();\n```\n\n```compile_fail\nuse zeppelin_embed::{ingest::DocId, property_graph::NodeId};\nlet node: NodeId = DocId::new(1).into();\n```"
+    "Stable store-local node identity, unrelated to a physical row.\n\n```compile_fail\nuse zeppelin_embed::property_graph::{NodeId, RelId};\nlet node: NodeId = RelId::new(1).unwrap();\n```\n\n```\nuse zeppelin_embed::{ingest::DocId, property_graph::NodeId};\nlet node: NodeId = DocId::new(0).into();\nassert_eq!(node.get(), 0);\n```"
 );
 identity!(
     RelId,
@@ -115,5 +115,16 @@ impl GraphRevision {
             Some(value) => Ok(Self(value)),
             None => Err(DomainError::RevisionOverflow),
         }
+    }
+}
+
+impl From<crate::ingest::DocId> for NodeId {
+    fn from(document: crate::ingest::DocId) -> Self {
+        Self(document.get())
+    }
+}
+impl From<NodeId> for crate::ingest::DocId {
+    fn from(node: NodeId) -> Self {
+        Self::new(node.get())
     }
 }

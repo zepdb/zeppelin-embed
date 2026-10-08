@@ -274,8 +274,7 @@ impl SparseRow {
         if bytes.len() != ROW_BYTES || read_u32(bytes, 76)? != 0 {
             return Err(TreeError::Invalid("sparse row width or reserved"));
         }
-        let node = NodeId::new(read_u128(bytes, 0)?)
-            .map_err(|_| TreeError::Invalid("zero sparse node"))?;
+        let node = NodeId::from(crate::ingest::DocId::new(read_u128(bytes, 0)?));
         let revision = read_u64(bytes, 16)?;
         let record = PayloadRef::decode(range(bytes, 24, 48)?)?;
         if revision == 0 || record.role() != BlockKind::NodeRecord {

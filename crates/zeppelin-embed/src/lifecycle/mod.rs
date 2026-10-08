@@ -1961,6 +1961,9 @@ pub const MAX_DOCUMENT_SCAN_LIMIT: usize = 1 << 20;
 /// An open, lifecycle, or close operation was rejected.
 #[derive(Debug)]
 pub enum StoreError {
+    /// A graph rule or coordinated document mutation refused retention.
+    #[cfg(feature = "graph-cypher")]
+    DocumentMutation(Box<crate::ingest::IngestError>),
     /// A declaration would introduce a namespace ownership cycle.
     CascadeCycle {
         /// Closed path of namespace names, in traversal order.
@@ -2205,6 +2208,8 @@ pub enum StoreError {
 impl std::fmt::Display for StoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(feature = "graph-cypher")]
+            Self::DocumentMutation(error) => error.fmt(formatter),
             Self::CascadeCycle { cycle } => {
                 write!(formatter, "cascade cycle: {}", cycle.join(" -> "))
             }
@@ -2469,6 +2474,11 @@ impl StoreError {
     #[must_use]
     pub fn kind(&self) -> StoreErrorKind {
         match self {
+            #[cfg(feature = "graph-cypher")]
+            Self::DocumentMutation(error) => match error.as_ref() {
+                crate::ingest::IngestError::Store(error) => error.kind(),
+                _ => StoreErrorKind::InvalidArgument,
+            },
             Self::Io { .. }
             // A failed manifest publication is I/O, not damaged persisted bytes.
             | Self::Manifest(crate::manifest::ManifestError::Io { .. })
@@ -2534,6 +2544,8 @@ impl StoreError {
 impl std::error::Error for StoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "graph-cypher")]
+            Self::DocumentMutation(error) => Some(error.as_ref()),
             Self::Io { source, .. } => Some(source),
             Self::Lock(error) => Some(error),
             Self::Durability(error) => Some(error),

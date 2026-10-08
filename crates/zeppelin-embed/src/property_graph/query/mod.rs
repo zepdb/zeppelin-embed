@@ -120,3 +120,6 @@ pub mod native_result_test_support {
 pub mod query_entry_test_support {
     pub use super::completed::native::entry_probe::{ProbeReport, run_actual_probe};
 }
+
+#[cfg(all(test, feature = "graph-cypher"))]
+pub(crate) use completed::native::entry_probe;

@@ -890,8 +890,7 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
             if key_len != member_key.len() || value_len != member_value.len() {
                 return Err(TreeError::Invalid("sparse membership entry width"));
             }
-            let node = NodeId::new(u128::from_le_bytes(member_key))
-                .map_err(|_| TreeError::Invalid("zero sparse member node"))?;
+            let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(member_key)));
             let observed = self
                 .lookup(modality, node, resources)?
                 .ok_or(TreeError::Invalid("scanned sparse member disappeared"))?;
@@ -1076,8 +1075,7 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
             } else {
                 base_key
             };
-            let node = NodeId::new(u128::from_le_bytes(node_bytes))
-                .map_err(|_| TreeError::Invalid("zero sparse replay member"))?;
+            let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(node_bytes)));
             let changed = changes.iter().any(|change| change.node == Some(node));
             if !changed && (order != std::cmp::Ordering::Equal || base_value != active_value) {
                 return Err(TreeError::Invalid(

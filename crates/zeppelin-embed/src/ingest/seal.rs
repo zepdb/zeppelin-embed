@@ -319,6 +319,8 @@ impl Store {
         if let Some(fold) = graph_fold {
             fold.publish(self).map_err(seal_graph_error)?;
         }
+        #[cfg(feature = "graph-cypher")]
+        self.publish_native_documents(active.as_ref().ok_or(StoreError::Closed)?)?;
         publication.complete();
         writer.retire_visible_through(LogSeq::new(absorbed_through))?;
         // Both watermarks above are at the durable end, so the log can

@@ -16,8 +16,8 @@ pub use provenance::{StoredKey, StoredProvenance, verify_provenance};
 mod native;
 pub use native::{RecordCatalog, RecordShape, RecordView, verify_record};
 mod prepare;
-pub(crate) use prepare::sort_by_symbol;
 pub use prepare::{RecordInput, prepare_record};
+pub(crate) use prepare::{prepare_record_bound, sort_by_symbol};
 mod fence;
 pub use fence::{FenceInput, FenceView, prepare_fence, verify_fence_entry};
 pub(crate) use fence::{endpoint_present, fence_window_reference, swept_delete};
@@ -266,8 +266,9 @@ fn node<S: BlockSource>(
     c: &mut PayloadCursor<'_, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<NodeId, TreeError> {
-    NodeId::new(u128::from_le_bytes(c.read_array(r)?))
-        .map_err(|_| TreeError::Invalid("zero canonical endpoint"))
+    Ok(NodeId::from(crate::ingest::DocId::new(
+        u128::from_le_bytes(c.read_array(r)?),
+    )))
 }
 fn text<'a, S: BlockSource>(
     c: &mut PayloadCursor<'a, '_, S>,
@@ -410,3 +411,5 @@ fn vector<'a, S: BlockSource>(
         dimensions,
     })
 }
+
+pub(crate) use tombstone::prepare_node_tombstone_bound;

@@ -59,6 +59,17 @@ impl<'a, R> MaterializedBatch<'a, R> {
         self.batch.disposition = crate::property_graph::BatchDisposition::Changed;
     }
 
+    pub(crate) fn include_document_versions(
+        &mut self,
+        base: &'a dyn AdmittedBase,
+        versions: &[crate::ingest::DocumentVersion],
+        memory: &'a WriteMemory<'a>,
+        control: &mut WriteControl<'_>,
+    ) -> Result<(), StageError> {
+        self.batch
+            .bind_updated_documents(base, versions, memory, control)
+    }
+
     /// Private graph/search delta awaiting coordinator publication.
     pub const fn batch(&self) -> &StagedBatch<'_> {
         &self.batch

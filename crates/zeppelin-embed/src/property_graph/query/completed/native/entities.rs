@@ -160,6 +160,24 @@ pub(super) fn measure_entities(
                 sizes.names = sizes.names.checked_add(1).ok_or_else(limit)?;
             }
             measure_staged_properties(properties, sizes, &mut resources)?;
+            if view
+                .document_version(*id)
+                .map_err(NativeExecutionError::from)
+                .map_err(NativeResultError::Native)?
+                .is_some()
+            {
+                measure_document_node(view, *id, sizes, &mut resources)?;
+            }
+            continue;
+        }
+        if node.is_none()
+            && view
+                .document_version(*id)
+                .map_err(NativeExecutionError::from)
+                .map_err(NativeResultError::Native)?
+                .is_some()
+        {
+            measure_document_node(view, *id, sizes, &mut resources)?;
             continue;
         }
         let node = node.ok_or(NativeResultError::Completed(CompletedError::Source(
@@ -184,6 +202,9 @@ pub(super) fn measure_entities(
             sizes.names = sizes.names.checked_add(1).ok_or_else(limit)?;
         }
         measure_properties(view, record, sizes, &mut resources)?;
+        if record.document_version().is_some() {
+            measure_document_node(view, *id, sizes, &mut resources)?;
+        }
     }
     for id in relationship_ids {
         let pending = match overlay.as_deref_mut() {
@@ -586,6 +607,14 @@ pub(super) fn fill_entities(
                     .map_err(NativeResultError::Completed)?;
             }
             let properties = fill_staged_properties(properties, order, staging, &mut resources)?;
+            let (labels, properties) = merge_document_node(
+                view,
+                *id,
+                label_start,
+                properties.start,
+                staging,
+                &mut resources,
+            )?;
             staging
                 .nodes
                 .push(Node {
@@ -593,16 +622,23 @@ pub(super) fn fill_entities(
                     revision,
                     generation,
                     key,
-                    labels: Span::new(
-                        label_start,
-                        u32::try_from(labels.len()).map_err(|_| limit())?,
-                    ),
+                    labels,
                     properties,
                     text: None,
                     vector: None,
                 })
                 .map_err(CompletedError::from)
                 .map_err(NativeResultError::Completed)?;
+            continue;
+        }
+        if node.is_none()
+            && view
+                .document_version(*id)
+                .map_err(NativeExecutionError::from)
+                .map_err(NativeResultError::Native)?
+                .is_some()
+        {
+            fill_document_node(view, *id, admitted, staging, &mut resources)?;
             continue;
         }
         let node = node.ok_or(NativeResultError::Completed(CompletedError::Source(
@@ -642,6 +678,14 @@ pub(super) fn fill_entities(
                 .map_err(NativeResultError::Completed)?;
         }
         let properties = fill_properties(view, record, &mut scratch, staging, &mut resources)?;
+        let (labels, properties) = merge_document_node(
+            view,
+            *id,
+            label_start,
+            properties.start,
+            staging,
+            &mut resources,
+        )?;
         staging
             .nodes
             .push(Node {
@@ -649,7 +693,7 @@ pub(super) fn fill_entities(
                 revision: record.revision(),
                 generation: record.provenance().original_generation(),
                 key,
-                labels: Span::new(label_start, labels),
+                labels,
                 properties,
                 text: None,
                 vector: None,
@@ -1046,3 +1090,280 @@ fn fill_staged_value(
 }
 
 use crate::property_graph::query::runtime::NativeExecutionError;
+
+fn document_value(
+    value: &crate::meta::PredicateValue,
+) -> Result<PropertyValue<'_>, crate::property_graph::storage::tree::directory::TreeError> {
+    use crate::meta::PredicateValue as V;
+    use crate::property_graph::storage::tree::directory::TreeError;
+    let data = match value {
+        V::I64(value) => PropertyData::I64(*value),
+        V::U64(value) => PropertyData::I64(
+            i64::try_from(*value)
+                .map_err(|_| TreeError::Invalid("document integer exceeds Cypher i64"))?,
+        ),
+        V::F64(value) => PropertyData::F64(*value),
+        V::Bool(value) => PropertyData::Bool(*value),
+        V::String(value) => PropertyData::String(value),
+        V::Id128(_) => {
+            return Err(TreeError::Invalid(
+                "document Id128 has no Cypher scalar representation",
+            ));
+        }
+    };
+    PropertyValue::new(data).map_err(|_| TreeError::Invalid("document scalar"))
+}
+fn measure_document_node(
+    view: &GraphReadView<'_, '_, '_, '_>,
+    id: NodeId,
+    sizes: &mut Sizes,
+    resources: &mut TreeResources<'_>,
+) -> Result<(), NativeResultError> {
+    sizes.names = sizes.names.checked_add(1).ok_or_else(limit)?;
+    add_bytes(sizes, "Document".len())?;
+    let mut failure = None;
+    view.visit_document_properties(id, |name, value| {
+        let result = (|| {
+            let property = GraphProperty::new(
+                GraphName::new(name)
+                    .map_err(|_| NativeResultError::Completed(CompletedError::Shape))?,
+                document_value(value)
+                    .map_err(NativeExecutionError::from)
+                    .map_err(NativeResultError::Native)?,
+            );
+            measure_staged_properties(&[property], sizes, resources)
+        })();
+        if let Err(error) = result {
+            failure = Some(error);
+            return Err(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "document projection measurement",
+                ),
+            );
+        }
+        Ok(())
+    })
+    .map_err(|error| failure.unwrap_or_else(|| NativeResultError::Native(error.into())))?;
+    Ok(())
+}
+fn fill_document_node(
+    view: &GraphReadView<'_, '_, '_, '_>,
+    id: NodeId,
+    admitted: crate::property_graph::GraphGeneration,
+    staging: &mut NativeStaging<'_, '_, '_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(), NativeResultError> {
+    let label_start = u32::try_from(staging.names.len()).map_err(|_| limit())?;
+    let label = append_text("Document", staging, resources)?;
+    staging
+        .names
+        .push(label)
+        .map_err(CompletedError::from)
+        .map_err(NativeResultError::Completed)?;
+    let property_start = u32::try_from(staging.properties.len()).map_err(|_| limit())?;
+    let mut failure = None;
+    view.visit_document_properties(id, |name, value| {
+        let result = (|| {
+            let name = append_text(name, staging, resources)?;
+            let value = fill_staged_value(
+                document_value(value)
+                    .map_err(NativeExecutionError::from)
+                    .map_err(NativeResultError::Native)?,
+                staging,
+                resources,
+            )?;
+            staging
+                .properties
+                .push(Property { name, value })
+                .map_err(CompletedError::from)
+                .map_err(NativeResultError::Completed)
+        })();
+        if let Err(error) = result {
+            failure = Some(error);
+            return Err(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "document projection copy",
+                ),
+            );
+        }
+        Ok(())
+    })
+    .map_err(|error| failure.unwrap_or_else(|| NativeResultError::Native(error.into())))?;
+    sort_copied_names(
+        staging
+            .properties
+            .as_mut_slice()
+            .get_mut(property_start as usize..)
+            .ok_or_else(limit)?,
+        staging.bytes.as_slice(),
+        |property| property.name,
+        resources,
+    )?;
+    let count = u32::try_from(staging.properties.len())
+        .map_err(|_| limit())?
+        .checked_sub(property_start)
+        .ok_or_else(limit)?;
+    staging
+        .nodes
+        .push(Node {
+            id,
+            revision: created_revision()?,
+            generation: admitted,
+            key: None,
+            labels: Span::new(label_start, 1),
+            properties: Span::new(property_start, count),
+            text: None,
+            vector: None,
+        })
+        .map_err(CompletedError::from)
+        .map_err(NativeResultError::Completed)
+}
+
+// The existing pools own the merged label/property description. Document columns
+// replace same-named graph properties; sorted pools retain their public contract.
+fn merge_document_node(
+    view: &GraphReadView<'_, '_, '_, '_>,
+    id: NodeId,
+    label_start: u32,
+    property_start: u32,
+    staging: &mut NativeStaging<'_, '_, '_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(Span, Span), NativeResultError> {
+    if view
+        .document_version(id)
+        .map_err(NativeExecutionError::from)
+        .map_err(NativeResultError::Native)?
+        .is_some()
+    {
+        let mut has_document = false;
+        for name in staging.names.as_slice().iter().skip(label_start as usize) {
+            step(resources, 1)?;
+            if copied_name(staging.bytes.as_slice(), *name)? == b"Document" {
+                has_document = true;
+            }
+        }
+        if !has_document {
+            let name = append_text("Document", staging, resources)?;
+            staging
+                .names
+                .push(name)
+                .map_err(CompletedError::from)
+                .map_err(NativeResultError::Completed)?;
+        }
+        let mut failure = None;
+        view.visit_document_properties(id, |name, value| {
+            let result = (|| {
+                let mut previous = None;
+                for (index, property) in staging
+                    .properties
+                    .as_slice()
+                    .iter()
+                    .enumerate()
+                    .skip(property_start as usize)
+                {
+                    step(resources, 1)?;
+                    if copied_name(staging.bytes.as_slice(), property.name)? == name.as_bytes() {
+                        previous = Some(index);
+                        break;
+                    }
+                }
+                let value = fill_staged_value(
+                    document_value(value)
+                        .map_err(NativeExecutionError::from)
+                        .map_err(NativeResultError::Native)?,
+                    staging,
+                    resources,
+                )?;
+                if let Some(index) = previous {
+                    staging
+                        .properties
+                        .as_mut_slice()
+                        .get_mut(index)
+                        .ok_or_else(limit)?
+                        .value = value;
+                } else {
+                    let name = append_text(name, staging, resources)?;
+                    staging
+                        .properties
+                        .push(Property { name, value })
+                        .map_err(CompletedError::from)
+                        .map_err(NativeResultError::Completed)?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                failure = Some(error);
+                return Err(
+                    crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                        "document projection merge",
+                    ),
+                );
+            }
+            Ok(())
+        })
+        .map_err(|error| failure.unwrap_or_else(|| NativeResultError::Native(error.into())))?;
+        sort_copied_names(
+            staging
+                .names
+                .as_mut_slice()
+                .get_mut(label_start as usize..)
+                .ok_or_else(limit)?,
+            staging.bytes.as_slice(),
+            |span| span,
+            resources,
+        )?;
+        sort_copied_names(
+            staging
+                .properties
+                .as_mut_slice()
+                .get_mut(property_start as usize..)
+                .ok_or_else(limit)?,
+            staging.bytes.as_slice(),
+            |property| property.name,
+            resources,
+        )?;
+    }
+    let labels = u32::try_from(staging.names.len())
+        .map_err(|_| limit())?
+        .checked_sub(label_start)
+        .ok_or_else(limit)?;
+    let properties = u32::try_from(staging.properties.len())
+        .map_err(|_| limit())?
+        .checked_sub(property_start)
+        .ok_or_else(limit)?;
+    Ok((
+        Span::new(label_start, labels),
+        Span::new(property_start, properties),
+    ))
+}
+fn copied_name(bytes: &[u8], span: Span) -> Result<&[u8], NativeResultError> {
+    bytes
+        .get(
+            span.start as usize
+                ..(span.start as usize)
+                    .checked_add(span.len as usize)
+                    .ok_or_else(limit)?,
+        )
+        .ok_or_else(limit)
+}
+fn sort_copied_names<T: Copy>(
+    values: &mut [T],
+    bytes: &[u8],
+    name: impl Fn(T) -> Span,
+    resources: &mut TreeResources<'_>,
+) -> Result<(), NativeResultError> {
+    for index in 1..values.len() {
+        let mut cursor = index;
+        while cursor > 0 {
+            step(resources, 1)?;
+            let left = copied_name(bytes, name(*values.get(cursor - 1).ok_or_else(limit)?))?;
+            let right = copied_name(bytes, name(*values.get(cursor).ok_or_else(limit)?))?;
+            if left <= right {
+                break;
+            }
+            values.swap(cursor - 1, cursor);
+            cursor -= 1;
+        }
+    }
+    Ok(())
+}

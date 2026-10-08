@@ -361,6 +361,10 @@ pub struct IngestAck {
 }
 
 impl IngestAck {
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) const fn mixed(seq: LogSeq, generation: u64) -> Self {
+        Self { seq, generation }
+    }
     /// Returns the last WAL sequence covered by this acknowledgement.
     #[must_use]
     pub const fn seq(self) -> LogSeq {
@@ -379,6 +383,9 @@ impl IngestAck {
 pub enum IngestError {
     /// Lifecycle, access-mode, budget, or synchronization failure.
     Store(StoreError),
+    /// The graph participant refused or could not complete the shared mutation.
+    #[cfg(feature = "graph-cypher")]
+    Graph(Box<crate::property_graph::query::completed::GraphQueryError>),
     /// The caller supplied no document mutation.
     EmptyBatch,
     /// The batch's declared interpretation differs from the store identity.
@@ -424,6 +431,8 @@ impl std::fmt::Display for IngestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(error) => error.fmt(formatter),
+            #[cfg(feature = "graph-cypher")]
+            Self::Graph(error) => error.fmt(formatter),
             Self::EmptyBatch => formatter.write_str("ingest batch is empty"),
             Self::EpochMismatch(error) => error.fmt(formatter),
             Self::EpochUndeclared => formatter.write_str("ingest epoch is required by this store"),
@@ -476,6 +485,8 @@ impl std::error::Error for IngestError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Store(error) => Some(error),
+            #[cfg(feature = "graph-cypher")]
+            Self::Graph(error) => Some(error.as_ref()),
             Self::EpochMismatch(error) => Some(error),
             Self::Vector(error) => Some(error),
             Self::Lexical(error) => Some(error),
@@ -1278,6 +1289,32 @@ impl Store {
         for document in &batch.documents {
             validate_document_columns(&self.schema, document)?;
         }
+        #[cfg(feature = "graph-cypher")]
+        let mut native_writer = self.native_document_writer()?;
+        #[cfg(feature = "graph-cypher")]
+        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
+            && self.documents_have_native_nodes(
+                &batch
+                    .documents
+                    .iter()
+                    .map(|document| document.version().doc_id())
+                    .collect::<Vec<_>>(),
+            )?
+        {
+            let result =
+                self.apply_native_mixed_locked(&batch, writer)
+                    .map_err(|error| match error {
+                        crate::lifecycle::native_graph::NativeGraphError::Ingest(error) => error,
+                        error => IngestError::Graph(Box::new(
+                            crate::property_graph::query::completed::GraphQueryError::from(error),
+                        )),
+                    })?;
+            let generation = result
+                .changed_generation()
+                .unwrap_or(result.admitted_generation())
+                .get();
+            return Ok(IngestAck::mixed(result.seq, generation));
+        }
         let mut wal = self
             .wal_writer
             .lock()
@@ -1457,6 +1494,8 @@ impl Store {
         validate_republish_generation(current_generation, actual_generation)?;
         let replaced_paths =
             self.publish_committed_active(&mut active, committed, generation, next)?;
+        #[cfg(feature = "graph-cypher")]
+        self.publish_native_documents(active.as_ref().ok_or(StoreError::Closed)?)?;
         publication.complete();
         drop(active);
         purge::unlink_replaced_segments(
@@ -1474,6 +1513,14 @@ impl Store {
     pub fn delete(&self, batch: DeleteBatch) -> Result<IngestAck, IngestError> {
         if batch.doc_ids.is_empty() {
             return Err(IngestError::EmptyBatch);
+        }
+        #[cfg(feature = "graph-cypher")]
+        let mut native_writer = self.native_document_writer()?;
+        #[cfg(feature = "graph-cypher")]
+        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
+            && self.documents_have_native_nodes(batch.doc_ids())?
+        {
+            return self.delete_native_documents_locked(&batch, writer);
         }
         let state = self
             .state
@@ -1593,6 +1640,8 @@ impl Store {
         validate_republish_generation(current_generation, actual_generation)?;
         let replaced_paths =
             self.publish_committed_active(&mut active, committed, generation, next)?;
+        #[cfg(feature = "graph-cypher")]
+        self.publish_native_documents(active.as_ref().ok_or(StoreError::Closed)?)?;
         publication.complete();
         drop(active);
         purge::unlink_replaced_segments(

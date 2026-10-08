@@ -36,6 +36,13 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         name: GraphName<'_>,
         resources: &mut TreeResources<'_>,
     ) -> Result<Option<Symbol>, TreeError> {
+        if kind == SymbolKind::Label && name.as_str() == "Document" {
+            resources.step(1)?;
+            return Ok(Some(Symbol::Label(
+                crate::property_graph::catalog::LabelId::new(u64::MAX)
+                    .map_err(|_| TreeError::Invalid("Document label identity"))?,
+            )));
+        }
         self.catalog.lookup(kind, name, resources)
     }
 

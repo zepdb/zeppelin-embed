@@ -280,6 +280,7 @@ impl<'source, 'resources, 'm> LazyTargets<'source, 'resources, 'm> {
 
 pub(super) struct NativeAdmittedBase<'source, 'lease, 'resources, 'm> {
     lease: &'lease NativeReadLease,
+    documents: StorageBuffer<'m, crate::ingest::DocumentVersion>,
     interpretation: GraphInterpretation<'lease>,
     relationship_rules: crate::property_graph::catalog::RelationshipRules<'source>,
     source: &'source NativePreparationSource<'lease, 'm>,
@@ -687,6 +688,29 @@ where
             resources_cell,
             first_error,
             None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn for_documents(
+        lease: &'lease NativeReadLease,
+        source: &'source NativePreparationSource<'lease, 'm>,
+        memory: &'m StorageMemory<'m>,
+        requests: &[StructuredWrite<'_, '_>],
+        resources_cell: &'resources RefCell<&'resources mut TreeResources<'m>>,
+        first_error: &'resources Cell<Option<TreeError>>,
+        documents: Option<&crate::ingest::IngestBatch>,
+    ) -> Result<Self, NativeGraphError> {
+        Self::build(
+            lease,
+            source,
+            memory,
+            requests,
+            resources_cell,
+            first_error,
+            None,
+            documents,
         )
     }
 
@@ -711,6 +735,7 @@ where
             resources_cell,
             first_error,
             Some(lazy_capacity),
+            None,
         )
     }
 
@@ -726,6 +751,7 @@ where
         resources_cell: &'resources RefCell<&'resources mut TreeResources<'m>>,
         first_error: &'resources Cell<Option<TreeError>>,
         lazy_capacity: Option<usize>,
+        documents: Option<&crate::ingest::IngestBatch>,
     ) -> Result<Self, NativeGraphError> {
         lease
             .check_active()
@@ -753,6 +779,9 @@ where
         let capacity = requests
             .len()
             .checked_mul(3)
+            .and_then(|capacity| {
+                capacity.checked_add(documents.map_or(0, |documents| documents.documents().len()))
+            })
             .ok_or(NativeGraphError::Invalid("native base cache capacity"))?;
         let mut cache =
             StorageBuffer::<CachedEntity<'source, 'resources, 'm>>::new(memory, capacity)?;
@@ -891,6 +920,13 @@ where
             }
 
             let mut wanted = StorageBuffer::new(memory, capacity)?;
+            if let Some(documents) = documents {
+                for document in documents.documents() {
+                    let node = NodeId::from(document.version().doc_id());
+                    wanted.push(EntityId::Node(node))?;
+                }
+            }
+
             for request in requests {
                 match request.operation {
                     StructuredOperation::Put(entity) | StructuredOperation::Delete(entity, _) => {
@@ -937,8 +973,16 @@ where
             }
         }
 
+        let mut document_versions =
+            StorageBuffer::new(memory, documents.map_or(0, |batch| batch.documents().len()))?;
+        if let Some(batch) = documents {
+            for document in batch.documents() {
+                document_versions.push(document.version())?;
+            }
+        }
         Ok(Self {
             lease,
+            documents: document_versions,
             interpretation,
             relationship_rules,
             source,
@@ -1074,6 +1118,60 @@ where
 }
 
 impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
+    fn document_version(
+        &self,
+        node: NodeId,
+    ) -> Result<Option<crate::ingest::DocumentVersion>, StageError> {
+        if let Some(version) = self
+            .documents
+            .as_slice()
+            .iter()
+            .find(|version| version.doc_id().get() == node.get())
+        {
+            return Ok(Some(*version));
+        }
+        self.lease.document_version(node).map_err(StageError::from)
+    }
+    fn has_node_record(
+        &self,
+        node: NodeId,
+        control: &mut WriteControl<'_>,
+    ) -> Result<bool, StageError> {
+        control(crate::property_graph::staging::WritePhase::Identity)?;
+        let mut resources = self
+            .resources
+            .try_borrow_mut()
+            .map_err(|_| StageError::InvalidInput)?;
+        Ok(lookup_entry(
+            self.source,
+            self.lease.bundle().roots().directory(TreeKind::Nodes)?,
+            &node.get().to_le_bytes(),
+            &mut resources,
+        )?
+        .is_some())
+    }
+    fn node_id_reserved(
+        &self,
+        node: NodeId,
+        control: &mut WriteControl<'_>,
+    ) -> Result<bool, StageError> {
+        control(crate::property_graph::staging::WritePhase::Identity)?;
+        if self.document_version(node)?.is_some() {
+            return Ok(true);
+        }
+        let mut resources = self
+            .resources
+            .try_borrow_mut()
+            .map_err(|_| StageError::InvalidInput)?;
+        Ok(lookup_entry(
+            self.source,
+            self.lease.bundle().roots().directory(TreeKind::Nodes)?,
+            &node.get().to_le_bytes(),
+            &mut resources,
+        )?
+        .is_some())
+    }
+
     fn has_relationship_rules(&self) -> bool {
         !self.relationship_rules.is_empty()
     }

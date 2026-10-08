@@ -776,7 +776,11 @@ fn rebuild<'s, 'v, 'm, 'g>(
                 None => {
                     let mut resources = TreeResources::for_query(context)?;
                     let node = view.lookup_node(id, &mut resources)?;
-                    NodeSource::Base(node.ok_or(StageError::MissingEntity)?)
+                    match node {
+                        Some(node) => NodeSource::Base(node),
+                        None if view.document_version(id)?.is_some() => NodeSource::Implicit,
+                        None => return Err(StageError::MissingEntity.into()),
+                    }
                 }
             };
             let mut budget = NodeImageBudget::default();
@@ -866,6 +870,7 @@ fn rebuild<'s, 'v, 'm, 'g>(
     reason = "one short-lived stack value per mutation item, never stored"
 )]
 enum NodeSource<'s, 'v, 'm, 'g> {
+    Implicit,
     /// An image an earlier item of this statement staged.
     Pending(&'s CanonicalContents<'s>),
     /// The node as the admitted read view holds it.
@@ -1068,6 +1073,7 @@ fn walk_node<'s, 'v, 'm, 'g>(
 ) -> Result<(), NativeExecutionError> {
     let mut matched_label = false;
     match source {
+        NodeSource::Implicit => {}
         NodeSource::Pending(image) => {
             let (labels, properties, text, embedding) =
                 image.staging_node_parts().ok_or(StageError::InvalidInput)?;

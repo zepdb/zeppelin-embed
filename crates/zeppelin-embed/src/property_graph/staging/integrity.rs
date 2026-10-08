@@ -102,7 +102,7 @@ impl<'a> StagedBatch<'a> {
             let entity = base
                 .entity(EntityId::Node(*id), control)?
                 .ok_or(StageError::Endpoint)?;
-            structured::checked_base(&entity, self.base, self.high_waters)?;
+            structured::checked_document_base(base, &entity, self.base, self.high_waters)?;
             let fields = entity.provenance.fields();
             let revision = fields
                 .installed_revision
@@ -125,6 +125,7 @@ impl<'a> StagedBatch<'a> {
                 &mut || structured::canonical_poll(control),
             )?;
             deltas.push(NormalizedDelta {
+                document: None,
                 provenance,
                 canonical: None,
                 shape: None,

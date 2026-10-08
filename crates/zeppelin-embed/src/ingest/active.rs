@@ -519,6 +519,8 @@ fn recovery_apply_error(seq: LogSeq, op: u16, error: IngestError) -> StoreError 
             op,
             source: wal_payload::PayloadError::Columns(source.to_string()),
         },
+        #[cfg(feature = "graph-cypher")]
+        IngestError::Graph(_) => StoreError::UnsupportedWalMutation { seq, op },
         IngestError::Payload(source) => StoreError::WalMutation { seq, op, source },
     }
 }

@@ -33,7 +33,7 @@ fn read_entity(rd: &mut Reader<'_>, r: &mut WalResources<'_>) -> Result<EntityId
     let kind = read_kind(rd.u8(r)?)?;
     let id = rd.u128(r)?;
     match kind {
-        EntityKind::Node => NodeId::new(id).map(EntityId::Node),
+        EntityKind::Node => Ok(EntityId::Node(NodeId::from(crate::ingest::DocId::new(id)))),
         EntityKind::Relationship => RelId::new(id).map(EntityId::Relationship),
     }
     .map_err(|_| WalError::Malformed)
@@ -123,7 +123,7 @@ fn read_provenance<'a>(
         return Err(WalError::Malformed);
     }
     let version = rd.u16(r)?;
-    if version != 1 {
+    if !matches!(version, 1 | 2) {
         return Err(WalError::Unsupported);
     }
     let operation = match rd.u8(r)? {
@@ -179,7 +179,7 @@ fn read_provenance<'a>(
 }
 pub(super) fn validate_mutation(v: Mutation<'_>, state: CommitState<'_>) -> Result<(), WalError> {
     let p = v.provenance;
-    if v.provenance_version != 1 {
+    if !matches!(v.provenance_version, 1 | 2) {
         return Err(WalError::Unsupported);
     }
     if p.key.is_some_and(|k| k.kind() != p.incarnation.kind())
@@ -193,7 +193,10 @@ pub(super) fn validate_mutation(v: Mutation<'_>, state: CommitState<'_>) -> Resu
         EntityId::Node(id) => (id.get(), state.high_waters.node),
         EntityId::Relationship(id) => (id.get(), state.high_waters.relationship),
     };
-    if id > high {
+    if v.provenance_version == 2 && p.incarnation.kind() != EntityKind::Node {
+        return Err(WalError::Participant);
+    }
+    if v.provenance_version == 1 && (id == 0 || id > high) {
         return Err(WalError::HighWater);
     }
     if v.live != v.canonical.is_some()

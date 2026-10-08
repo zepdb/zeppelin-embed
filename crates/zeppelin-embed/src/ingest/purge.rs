@@ -352,6 +352,9 @@ impl PurgeReport {
 pub enum PurgeError {
     /// Store lifecycle, format, filesystem, or synchronization failure.
     Store(StoreError),
+    /// A graph delete rule refused removal of a document node.
+    #[cfg(feature = "graph-cypher")]
+    Delete(super::IngestError),
     /// Rewriting one immutable segment would exceed available temporary disk.
     InsufficientTempSpace {
         /// Exact immutable segment bytes that would be duplicated temporarily.
@@ -385,6 +388,8 @@ impl std::fmt::Display for PurgeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(error) => error.fmt(formatter),
+            #[cfg(feature = "graph-cypher")]
+            Self::Delete(error) => error.fmt(formatter),
             Self::InsufficientTempSpace {
                 segment_bytes,
                 available_bytes,
@@ -413,6 +418,8 @@ impl std::error::Error for PurgeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Store(error) => Some(error),
+            #[cfg(feature = "graph-cypher")]
+            Self::Delete(error) => Some(error),
             Self::IntentFormat(error) => Some(error),
             Self::WalPayload(error) => Some(error),
             Self::InsufficientTempSpace { .. }
@@ -661,6 +668,18 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "physical purge",
             })?;
+        #[cfg(feature = "graph-cypher")]
+        let mut native_writer = self.native_document_writer()?;
+        #[cfg(feature = "graph-cypher")]
+        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
+            && self
+                .documents_have_native_nodes(ids)
+                .map_err(PurgeError::Delete)?
+        {
+            self.prepare_purge_intent(ids, available_bytes, vfs)?;
+            self.delete_native_documents_locked(&super::DeleteBatch::new(ids.to_vec()), writer)
+                .map_err(PurgeError::Delete)?;
+        }
         let state = self
             .state
             .lock()
@@ -717,6 +736,57 @@ impl Store {
         writer: &super::StoreWal,
     ) -> Result<PurgeToken, PurgeError> {
         let publication = writer.manifest_publication()?;
+        let (token, intent) = self.prepare_purge_intent(ids, available_bytes, vfs)?;
+        if token.no_op {
+            return Ok(token);
+        }
+        let token_id = intent.token_id;
+        let known = intent.ids;
+        #[cfg(any(test, feature = "test-seams"))]
+        let crash_target_ids = known.iter().map(|id| id.get()).collect::<Vec<_>>();
+        let publication = publication.arm();
+        write_intent(
+            vfs,
+            &self.directory,
+            &PurgeIntent {
+                token_id,
+                ids: known,
+            },
+            self.durability_policy,
+        )?;
+        #[cfg(any(test, feature = "test-seams"))]
+        if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
+            let plan = controller.take_purge_crash_boundary_plan().map_err(|_| {
+                StoreError::Synchronization {
+                    component: "ingest-retention controller",
+                }
+            })?;
+            if let Some((invocation_id, receipt_sink)) = plan {
+                let receipt = super::IngestRetentionFaultReceiptV1::purge_crash_boundary(
+                    invocation_id,
+                    crash_target_ids,
+                    token_id,
+                );
+                receipt
+                    .write_purge_crash_test_evidence(vfs, &receipt_sink)
+                    .map_err(|source| StoreError::Io {
+                        path: receipt_sink,
+                        source,
+                    })?;
+                std::process::abort();
+            }
+        }
+        publication.complete();
+        Ok(token)
+    }
+
+    /// Performs every definite purge refusal before a document/node deletion.
+    pub(crate) fn prepare_purge_intent(
+        &self,
+        ids: &[DocId],
+        available_bytes: u64,
+        vfs: &dyn Vfs,
+    ) -> Result<(PurgeToken, PurgeIntent), PurgeError> {
         self.require_no_snapshot_views()?;
         let intent_path = self.directory.join(PURGE_INTENT_FILE);
         match vfs.open(&intent_path) {
@@ -760,47 +830,13 @@ impl Store {
             unknown_ids: unknown,
             no_op,
         };
-        if no_op {
-            return Ok(token);
-        }
-        #[cfg(any(test, feature = "test-seams"))]
-        let crash_target_ids = known.iter().map(|id| id.get()).collect::<Vec<_>>();
-        let publication = publication.arm();
-        write_intent(
-            vfs,
-            &self.directory,
-            &PurgeIntent {
+        Ok((
+            token,
+            PurgeIntent {
                 token_id,
                 ids: known,
             },
-            self.durability_policy,
-        )?;
-        #[cfg(any(test, feature = "test-seams"))]
-        if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
-            let plan = controller.take_purge_crash_boundary_plan().map_err(|_| {
-                StoreError::Synchronization {
-                    component: "ingest-retention controller",
-                }
-            })?;
-            if let Some((invocation_id, receipt_sink)) = plan {
-                let receipt = super::IngestRetentionFaultReceiptV1::purge_crash_boundary(
-                    invocation_id,
-                    crash_target_ids,
-                    token_id,
-                );
-                receipt
-                    .write_purge_crash_test_evidence(vfs, &receipt_sink)
-                    .map_err(|source| StoreError::Io {
-                        path: receipt_sink,
-                        source,
-                    })?;
-                std::process::abort();
-            }
-        }
-        drop(snapshot);
-        drop(active);
-        publication.complete();
-        Ok(token)
+        ))
     }
 
     /// Removes the intent written by [`Self::schedule_purge_locked`] when the
@@ -1314,6 +1350,8 @@ impl Store {
             )?;
         }
         active_state.segment = Arc::new(next_active);
+        #[cfg(feature = "graph-cypher")]
+        self.publish_native_documents(active_state)?;
         remove_intent(vfs, &self.directory, policy)?;
         publication.complete();
         let generation = active_state.generation;
@@ -2205,6 +2243,10 @@ fn delete_is_covered_by_manifest(
 
 fn purge_ingest_error(error: super::IngestError) -> PurgeError {
     match error {
+        #[cfg(feature = "graph-cypher")]
+        super::IngestError::Graph(error) => PurgeError::IntentDecode(format!(
+            "active WAL rewrite rejected a graph mutation: {error}"
+        )),
         super::IngestError::Store(error) => PurgeError::Store(error),
         super::IngestError::EpochMismatch(error) => {
             PurgeError::Store(StoreError::EpochMismatch(error))

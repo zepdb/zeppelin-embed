@@ -306,7 +306,19 @@ fn visible(store: &Store, documents: &BTreeSet<u128>) -> Model {
 }
 
 fn same_visibility(actual: &Model, expected: &Model) -> bool {
-    actual.documents == expected.documents && actual.nodes == expected.nodes
+    let expected_nodes = expected
+        .nodes
+        .iter()
+        .copied()
+        .chain(
+            expected
+                .documents
+                .iter()
+                .copied()
+                .map(|id| NodeId::from(DocId::new(id))),
+        )
+        .collect::<BTreeSet<_>>();
+    actual.documents == expected.documents && actual.nodes == expected_nodes
 }
 
 pub(super) fn run() {
@@ -345,9 +357,10 @@ pub(super) fn run() {
         "schema-admission",
         "graph-noop",
         "namespace-noop",
+        "document-node-delete",
     ];
     fault_publishers.shuffle(&mut rng);
-    let mut fault_counts = [0_usize; 17];
+    let mut fault_counts = [0_usize; 18];
     for sequence in 0..sequences {
         let length = rng.random_range(6..=12);
         let mut operations = Vec::new();
@@ -381,12 +394,16 @@ pub(super) fn run() {
                 Some(sequence % 8),
                 (sequence < 8).then_some(sequence + 8),
                 (sequence == 0).then_some(16),
+                (sequence == 0).then_some(17),
             ]
             .into_iter()
             .flatten()
             {
                 let publisher = fault_publishers[fault_index];
                 match publisher {
+                    "document-node-delete" => {
+                        super::super::documents_are_nodes::shared_document_delete_faults()
+                    }
                     "seal-rotation" => ze390_seal_rotation_fault(),
                     "upsert-manifest-write" => ze390_upsert_manifest_fault(),
                     "schema-admission" => {

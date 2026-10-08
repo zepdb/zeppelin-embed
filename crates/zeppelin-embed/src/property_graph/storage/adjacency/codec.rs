@@ -24,8 +24,10 @@ impl Run<'_> {
             .ok_or(Error::Format(FormatIssue::Length))?;
         let rel = RelId::new(u128::from_le_bytes(read(self.bytes, offset)?))
             .map_err(|_| Error::Format(FormatIssue::Identity))?;
-        let neighbor = NodeId::new(u128::from_le_bytes(read(self.bytes, offset + 16)?))
-            .map_err(|_| Error::Format(FormatIssue::Identity))?;
+        let neighbor = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(read(
+            self.bytes,
+            offset + 16,
+        )?)));
         let action = if self.delta {
             let tail = read::<8, E>(self.bytes, offset + 32)?;
             if tail.iter().skip(1).any(|&b| b != 0) {
@@ -63,8 +65,9 @@ pub(super) fn decode<'a, E>(
     if header.iter().skip(78).any(|&b| b != 0) {
         return Err(Error::Format(FormatIssue::Reserved));
     }
-    let node = NodeId::new(u128::from_le_bytes(read(&header, 8)?))
-        .map_err(|_| Error::Format(FormatIssue::Identity))?;
+    let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(read(
+        &header, 8,
+    )?)));
     let rel_type = RelTypeId::new(u64::from_le_bytes(read(&header, 24)?))
         .map_err(|_| Error::Format(FormatIssue::Identity))?;
     let lower = RelId::new(u128::from_le_bytes(read(&header, 32)?))

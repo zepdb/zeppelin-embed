@@ -218,7 +218,9 @@ fn entity<S: BlockSource>(
     let kind = kind(cursor, resources)?;
     let bits = u128::from_le_bytes(cursor.read_array(resources)?);
     match kind {
-        EntityKind::Node => NodeId::new(bits).map(EntityId::Node),
+        EntityKind::Node => Ok(EntityId::Node(NodeId::from(crate::ingest::DocId::new(
+            bits,
+        )))),
         EntityKind::Relationship => RelId::new(bits).map(EntityId::Relationship),
     }
     .map_err(|_| TreeError::Invalid("zero provenance incarnation"))

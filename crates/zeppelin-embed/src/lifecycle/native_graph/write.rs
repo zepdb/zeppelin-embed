@@ -86,7 +86,7 @@ pub(super) fn assigned_generation(
         .ok_or(NativeGraphError::IdentityExhausted)
 }
 
-pub(super) struct NativeWriter {
+pub(crate) struct NativeWriter {
     pub(super) last_graph_seq: u64,
     pub(super) envelope_bytes: usize,
     pub(super) complete_envelopes: u64,
@@ -1007,13 +1007,16 @@ pub(crate) struct NativePreparedResult<R> {
     disposition: BatchDisposition,
     admitted: GraphGeneration,
     changed: Option<GraphGeneration>,
+    pub(crate) seq: crate::wal::LogSeq,
 }
 impl<R> NativePreparedResult<R> {
     /// `changed` is the generation the commit tail published, `None` when
     /// nothing committed.
     fn from_materialized(
         value: crate::property_graph::staging::MaterializedBatch<'_, R>,
+        admitted: GraphGeneration,
         changed: Option<GraphGeneration>,
+        seq: crate::wal::LogSeq,
     ) -> Self {
         let (batch, registration, core, abi, charges) = value.into_prepared_parts();
         Self {
@@ -1022,8 +1025,9 @@ impl<R> NativePreparedResult<R> {
             abi,
             _charges: charges,
             disposition: batch.disposition(),
-            admitted: batch.base().generation,
+            admitted,
             changed,
+            seq,
         }
     }
     /// The staged batch's logical disposition.
@@ -1588,7 +1592,11 @@ where
             None
         };
         changes.push(Change::Mutation(Mutation {
-            provenance_version: 1,
+            provenance_version: if delta.document_version().is_some() {
+                2
+            } else {
+                1
+            },
             provenance: fields,
             live: canonical.is_some(),
             canonical,
@@ -2438,7 +2446,14 @@ fn protect_and_commit_with_documents(
             .generation = generation;
         if store
             .native_graph
-            .publish_committed_transition(transition)
+            .publish_committed_transition(
+                transition,
+                store.native_documents(
+                    active_slot
+                        .as_ref()
+                        .ok_or(crate::lifecycle::StoreError::Closed)?,
+                )?,
+            )
             .is_err()
         {
             writer.stopped = true;
@@ -2536,7 +2551,7 @@ pub(super) fn commit_staged_batch<'m>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn commit_staged_batch_with_documents<'m>(
+pub(super) fn commit_staged_batch_with_documents<'m>(
     store: &crate::lifecycle::Store,
     writer: &mut NativeWriter,
     lease: &NativeReadLease,
@@ -2877,6 +2892,22 @@ impl crate::lifecycle::Store {
             &mut materializer,
             true,
             Some(documents),
+            None,
+        )
+    }
+
+    pub(crate) fn apply_native_mixed_locked(
+        &self,
+        documents: &crate::ingest::IngestBatch,
+        writer: &mut NativeWriter,
+    ) -> Result<NativePreparedResult<ReceiptRegistration>, NativeGraphError> {
+        self.apply_native_graph_with_materializer_inner(
+            &[],
+            &crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()),
+            &mut ReceiptMaterializer,
+            true,
+            Some(documents),
+            Some(writer),
         )
     }
 
@@ -2895,7 +2926,14 @@ impl crate::lifecycle::Store {
         control: &crate::lifecycle::QueryControl,
         materializer: &mut M,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
-        self.apply_native_graph_with_materializer_inner(requests, control, materializer, true, None)
+        self.apply_native_graph_with_materializer_inner(
+            requests,
+            control,
+            materializer,
+            true,
+            None,
+            None,
+        )
     }
 
     /// Test-only durable monotone jump; ordinary writes still allocate IDs.
@@ -2986,6 +3024,10 @@ impl crate::lifecycle::Store {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one shared tail accepts an already held document writer"
+    )]
     fn apply_native_graph_with_materializer_inner<M: ResultMaterializer>(
         &self,
         requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
@@ -2993,25 +3035,34 @@ impl crate::lifecycle::Store {
         materializer: &mut M,
         mut allow_pending_checkpoint: bool,
         documents: Option<&crate::ingest::IngestBatch>,
+        mut held_writer: Option<&mut NativeWriter>,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
         let request_resources = GraphResources::from_store(self)?;
         let _request_work = request_resources.begin_work();
         self.native_graph.require_writable()?;
-        let mut maintenance_checked = false;
+        let mut maintenance_checked = held_writer.is_some();
         let mut run_maintenance = false;
         loop {
             if run_maintenance {
                 self.auto_maintain_native_graph(control)?;
                 run_maintenance = false;
             }
-            let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
-                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
-                    component: "native graph writer",
-                })
-            })?;
-            let writer = writer_slot
-                .as_mut()
-                .ok_or_else(|| self.absent_native_graph_writer())?;
+            let mut writer_slot = if held_writer.is_none() {
+                Some(self.native_graph.writer.lock().map_err(|_| {
+                    NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                        component: "native graph writer",
+                    })
+                })?)
+            } else {
+                None
+            };
+            let writer = match held_writer.as_deref_mut() {
+                Some(writer) => writer,
+                None => writer_slot
+                    .as_mut()
+                    .and_then(|slot| slot.as_mut())
+                    .ok_or_else(|| self.absent_native_graph_writer())?,
+            };
             if writer.stopped {
                 return Err(NativeGraphError::WritesStopped);
             }
@@ -3043,6 +3094,7 @@ impl crate::lifecycle::Store {
                 None
             };
             let lease = self.admit_native_read()?;
+            let admitted_generation = lease.owner.view.generation();
             let admitted = Arc::clone(lease.bundle());
             let shared = GraphResources::from_store(self)?;
             let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
@@ -3089,13 +3141,14 @@ impl crate::lifecycle::Store {
                 .with_preparation_checkpoint(&preparation_checkpoint)?;
             let resources_cell = RefCell::new(&mut base_resources);
             let first_storage_error = Cell::new(None);
-            let base = NativeAdmittedBase::new(
+            let base = NativeAdmittedBase::for_documents(
                 &lease,
                 &source,
                 &storage,
                 requests,
                 &resources_cell,
                 &first_storage_error,
+                documents,
             )?;
             let mut write_control = |phase| checkpoint(control, phase);
             let staged = stage_structured_with_results_at_generation(
@@ -3115,6 +3168,29 @@ impl crate::lifecycle::Store {
                 resources_cell.borrow().work(),
             );
             let mut materialized = staged?;
+            let versions = documents
+                .map(|batch| {
+                    batch
+                        .documents()
+                        .iter()
+                        .filter_map(|document| {
+                            prepared_documents
+                                .as_ref()?
+                                .version(document.version().doc_id())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            materialized.include_document_versions(
+                &base,
+                &versions,
+                &write_memory,
+                &mut write_control,
+            )?;
+            let replay_seq = prepared_documents
+                .as_ref()
+                .and_then(|documents| documents.replay_seq);
+
             if prepared_documents
                 .as_ref()
                 .is_some_and(|docs| !docs.records.is_empty())
@@ -3147,7 +3223,12 @@ impl crate::lifecycle::Store {
             )?;
             let (commit_audit, changed) = match step {
                 CommitStep::NoOp => {
-                    return Ok(NativePreparedResult::from_materialized(materialized, None));
+                    return Ok(NativePreparedResult::from_materialized(
+                        materialized,
+                        admitted_generation,
+                        None,
+                        replay_seq.unwrap_or(crate::wal::LogSeq::new(writer.last_graph_seq)),
+                    ));
                 }
                 CommitStep::Checkpointed => continue,
                 CommitStep::Committed { audit, generation } => (audit, generation),
@@ -3157,7 +3238,12 @@ impl crate::lifecycle::Store {
                 let ((result, handoff_denied), handoff) =
                     crate::allocation_audit::audit_engine_path(|| {
                         crate::allocation_audit::fail_attributed_allocation(1, || {
-                            NativePreparedResult::from_materialized(materialized, Some(changed))
+                            NativePreparedResult::from_materialized(
+                                materialized,
+                                admitted_generation,
+                                Some(changed),
+                                crate::wal::LogSeq::new(writer.last_graph_seq),
+                            )
                         })
                     });
                 self.native_graph.commit_allocations.store(
@@ -3175,7 +3261,9 @@ impl crate::lifecycle::Store {
                 let _ = commit_audit;
                 return Ok(NativePreparedResult::from_materialized(
                     materialized,
+                    admitted_generation,
                     Some(changed),
+                    crate::wal::LogSeq::new(writer.last_graph_seq),
                 ));
             }
         }

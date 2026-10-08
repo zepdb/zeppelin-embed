@@ -236,6 +236,7 @@ fn compare_retry(
     admitted_generation: u64,
     receipts: &[zeppelin_embed::property_graph::staging::ItemReceipt],
     present: bool,
+    expected_admitted_generation: u64,
 ) -> Result<(), String> {
     use zeppelin_embed_adversarial_oracle::graph_key_lifecycle::{
         Action, Observation, Record, predict,
@@ -247,10 +248,10 @@ fn compare_retry(
         GraphWriteOutcome::Replayed
     } else {
         GraphWriteOutcome::Committed {
-            generation: GraphGeneration::new(2),
+            generation: GraphGeneration::new(expected_admitted_generation + 1),
         }
     };
-    if outcome != expected_outcome || admitted_generation != 1 + u64::from(present) {
+    if outcome != expected_outcome || admitted_generation != expected_admitted_generation {
         return Err("retry disposition/admitted generation differs".into());
     }
     for (index, receipt) in receipts.iter().enumerate() {
@@ -401,8 +402,9 @@ pub fn run_boundary_pair(
         clean.retry.admitted_generation().get(),
         clean.retry.receipts(),
         true,
+        clean.generation_before_retry,
     )?;
-    retry_comparator_mutations(&clean.retry, true)?;
+    retry_comparator_mutations(&clean.retry, true, clean.generation_before_retry)?;
     let present = matches!(
         boundary,
         Boundary::WalSync
@@ -423,8 +425,9 @@ pub fn run_boundary_pair(
         actual.retry.admitted_generation().get(),
         actual.retry.receipts(),
         present,
+        actual.generation_before_retry,
     )?;
-    retry_comparator_mutations(&actual.retry, present)?;
+    retry_comparator_mutations(&actual.retry, present, actual.generation_before_retry)?;
     // A stopped outer WAL retains its staged frame for visibility. Charge
     // exactly the same frame as the independent clean control, and require
     // every non-WAL owner to stay at its pre-operation baseline.
@@ -915,12 +918,19 @@ fn run_after_boundary_pair(
     if let Some(observation) = observation {
         compare_batch(fixture, &observation)?;
     }
+    let expected_admitted_generation = reopened
+        .graph()
+        .statement_store()
+        .snapshot()
+        .map_err(|error| error.to_string())?
+        .generation();
     let retry = reopened.apply(fixture).expect("post-operation exact retry");
     compare_retry(
         retry.outcome(),
         retry.admitted_generation().get(),
         retry.receipts(),
         present,
+        expected_admitted_generation,
     )?;
     if reopened.close() != 0 {
         return Err("post-operation recovered owner leaked".into());
@@ -945,10 +955,18 @@ fn run_after_boundary_pair(
 pub fn retry_comparator_mutations(
     retry: &zeppelin_embed::property_graph::GraphWriteResult,
     present: bool,
+    expected_admitted_generation: u64,
 ) -> Result<usize, String> {
     use zeppelin_embed::property_graph::{GraphRevision, NodeId, RelId};
-    let compare =
-        |outcome, generation, receipts: &[_]| compare_retry(outcome, generation, receipts, present);
+    let compare = |outcome, generation, receipts: &[_]| {
+        compare_retry(
+            outcome,
+            generation,
+            receipts,
+            present,
+            expected_admitted_generation,
+        )
+    };
     compare(
         retry.outcome(),
         retry.admitted_generation().get(),

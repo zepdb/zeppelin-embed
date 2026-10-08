@@ -2,6 +2,7 @@ use super::persistence::artifact_descriptor;
 use super::{NativeGraphBundleInput, NativeGraphError};
 use crate::epoch::EmbeddingTower;
 use crate::lifecycle::{AccessMode, CancelToken, MonotonicClock, OpenOptions, QueryControl, Store};
+use crate::property_graph::NodeId;
 use crate::property_graph::catalog::{
     CatalogError, CatalogImage, GraphInterpretation, Symbol, SymbolEntry, SymbolHighWaters,
     SymbolKind,
@@ -2674,7 +2675,26 @@ fn validate_native_checkpoint(
                         .map_err(|_| TreeError::Invalid("recovery node key width"))?,
                 );
                 if id == 0 || id > high_waters.node {
-                    return Err(TreeError::Invalid("recovery node high-water"));
+                    let payload = PayloadRef::decode(entry.value())?;
+                    let record = verify_node_state(
+                        PayloadSlice::new(
+                            source,
+                            roots.store(),
+                            entry.creation_generation(),
+                            payload,
+                        ),
+                        NodeId::from(crate::ingest::DocId::new(id)),
+                        catalog,
+                        document,
+                        resources,
+                    )?;
+                    let bound = match record {
+                        NodeRecordState::Live(record) => record.document_version(),
+                        NodeRecordState::Tombstone(record) => record.document_version(),
+                    };
+                    if bound.is_none() {
+                        return Err(TreeError::Invalid("recovery node high-water"));
+                    }
                 }
             }
             values.verify(source, root, entry, resources)
@@ -2693,11 +2713,10 @@ fn validate_native_checkpoint(
         let crate::property_graph::storage::tree::Key::Inline(key) = entry.key() else {
             return Err(TreeError::Invalid("recovery node key role"));
         };
-        let node = crate::property_graph::NodeId::new(u128::from_le_bytes(
+        let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(
             key.try_into()
                 .map_err(|_| TreeError::Invalid("recovery node key width"))?,
-        ))
-        .map_err(|_| TreeError::Invalid("recovery node identity"))?;
+        )));
         let payload = PayloadRef::decode(entry.value())?;
         if let NodeRecordState::Live(record) = verify_node_state(
             PayloadSlice::new(source, roots.store(), entry.creation_generation(), payload),
@@ -2742,12 +2761,11 @@ fn validate_native_checkpoint(
                 .ok_or(TreeError::Invalid("recovery label key width"))?,
         ))
         .map_err(|_| TreeError::Invalid("recovery label identity"))?;
-        let node = crate::property_graph::NodeId::new(u128::from_le_bytes(
+        let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(
             key.get(8..)
                 .and_then(|bytes| bytes.try_into().ok())
                 .ok_or(TreeError::Invalid("recovery label node width"))?,
-        ))
-        .map_err(|_| TreeError::Invalid("recovery label node identity"))?;
+        )));
         let node_entry = lookup_entry(source, node_root, &node.get().to_le_bytes(), resources)?
             .ok_or(TreeError::Invalid("recovery label node is absent"))?;
         let payload = PayloadRef::decode(node_entry.value())?;
@@ -3017,6 +3035,7 @@ fn records_equal<S: BlockSource>(
 ) -> Result<bool, TreeError> {
     Ok(left.shape() == right.shape()
         && left.revision() == right.revision()
+        && left.document_version() == right.document_version()
         && stored_provenance_equal(left.provenance(), right.provenance(), resources)?
         && left
             .canonical_bytes()
@@ -3165,9 +3184,7 @@ fn reconcile_entity_directory(
             (Some(left), Some(right)) if left > right => (right, true, false, true),
             (Some(id), Some(_)) => {
                 let entity = match kind {
-                    TreeKind::Nodes => crate::property_graph::NodeId::new(id)
-                        .map(EntityId::Node)
-                        .map_err(|_| TreeError::Invalid("recovery node identity"))?,
+                    TreeKind::Nodes => EntityId::Node(NodeId::from(crate::ingest::DocId::new(id))),
                     TreeKind::Relationships => crate::property_graph::RelId::new(id)
                         .map(EntityId::Relationship)
                         .map_err(|_| TreeError::Invalid("recovery relationship identity"))?,
@@ -3187,9 +3204,7 @@ fn reconcile_entity_directory(
             (None, None) => break,
         };
         let entity = match kind {
-            TreeKind::Nodes => crate::property_graph::NodeId::new(id)
-                .map(EntityId::Node)
-                .map_err(|_| TreeError::Invalid("recovery node identity"))?,
+            TreeKind::Nodes => EntityId::Node(NodeId::from(crate::ingest::DocId::new(id))),
             TreeKind::Relationships => crate::property_graph::RelId::new(id)
                 .map(EntityId::Relationship)
                 .map_err(|_| TreeError::Invalid("recovery relationship identity"))?,
@@ -3216,9 +3231,14 @@ fn reconcile_entity_directory(
             ));
         }
         if advance_right && !advance_left && id <= base_high {
-            return Err(TreeError::Invalid(
-                "recovery fresh identity below high-water",
-            ));
+            let adoption = kind == TreeKind::Nodes
+                && live_record(source, catalog, document, target, entity, resources)?
+                    .is_some_and(|record| record.document_version().is_some());
+            if !adoption {
+                return Err(TreeError::Invalid(
+                    "recovery fresh identity below high-water",
+                ));
+            }
         }
         if advance_left {
             left_row = left.next(&mut left_key, &mut left_value, resources)?;
@@ -3494,7 +3514,7 @@ fn validate_lifecycle_transition<'source, 'store, 'source_memory, 'catalog_memor
     resources: &mut TreeResources<'tree_memory>,
 ) -> Result<(), TreeError> {
     let fields = mutation.provenance;
-    if mutation.provenance_version != 1
+    if !matches!(mutation.provenance_version, 1 | 2)
         || fields.requested_revision != fields.installed_revision
         || fields.original_generation != target_roots.generation()
     {
@@ -3511,9 +3531,33 @@ fn validate_lifecycle_transition<'source, 'store, 'source_memory, 'catalog_memor
             || !mutation.live
             || fields.delete_mode.is_some()
             || fields.requested_revision.get() != 1
-            || fresh_high.0 <= fresh_high.1
+            || (fresh_high.0 <= fresh_high.1 && !matches!(fields.incarnation, EntityId::Node(_)))
         {
             return Err(TreeError::Invalid("recovery fresh Cypher lifecycle"));
+        }
+        if fresh_high.0 <= fresh_high.1 {
+            let record = live_record(
+                source,
+                catalog,
+                document,
+                target_roots,
+                fields.incarnation,
+                resources,
+            )?
+            .ok_or(TreeError::Invalid("recovery document adoption record"))?;
+            if record.document_version().is_none()
+                || live_record(
+                    source,
+                    catalog,
+                    document,
+                    base_roots,
+                    fields.incarnation,
+                    resources,
+                )?
+                .is_some()
+            {
+                return Err(TreeError::Invalid("recovery document adoption identity"));
+            }
         }
         return Ok(());
     }
@@ -3657,6 +3701,30 @@ fn validate_lifecycle_transition<'source, 'store, 'source_memory, 'catalog_memor
         .as_ref()
         .map(|record| recovery_entity_shape(record.shape(), catalog, resources))
         .transpose()?;
+
+    if fields.operation == GraphOperation::CypherEdit
+        && mutation.live
+        && fields.delete_mode.is_none()
+        && let (Some(before), Some(after)) = (&base_record, &target_record)
+        && before.document_version() != after.document_version()
+        && after.document_version().is_some()
+        && before.shape() == after.shape()
+        && before
+            .canonical_bytes()
+            .compare(after.canonical_bytes(), resources)?
+            .is_eq()
+    {
+        if fields.installed_revision.get()
+            != before
+                .revision()
+                .get()
+                .checked_add(1)
+                .ok_or(TreeError::Invalid("document binding revision overflow"))?
+        {
+            return Err(TreeError::Invalid("document binding revision transition"));
+        }
+        return Ok(());
+    }
 
     let first_error = Cell::new(None);
     let resources_cell = RefCell::new(resources);
@@ -3822,7 +3890,7 @@ fn validate_mutation_state(
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     let fields = mutation.provenance;
-    if mutation.provenance_version != 1
+    if !matches!(mutation.provenance_version, 1 | 2)
         || fields.requested_revision != fields.installed_revision
         || fields.original_generation != target_roots.generation()
         || target_sequence != base_sequence.checked_add(1).ok_or(TreeError::Work)?
@@ -3869,6 +3937,13 @@ fn validate_mutation_state(
                 document,
                 resources,
             )?;
+            let bound = match &state {
+                NodeRecordState::Live(record) => record.document_version(),
+                NodeRecordState::Tombstone(record) => record.document_version(),
+            };
+            if bound.is_some() != (mutation.provenance_version == 2) {
+                return Err(TreeError::Invalid("recovery document mutation version"));
+            }
             match state {
                 NodeRecordState::Live(record) => {
                     if record.revision() != fields.installed_revision

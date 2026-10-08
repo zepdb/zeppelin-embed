@@ -264,9 +264,7 @@ fn verify_value<'a, S: BlockSource>(
     };
     let raw = u128::from_le_bytes(read(bytes, 8)?);
     let incarnation = match kind {
-        EntityKind::Node => {
-            EntityId::Node(NodeId::new(raw).map_err(|_| TreeError::Invalid("zero fence node"))?)
-        }
+        EntityKind::Node => EntityId::Node(NodeId::from(crate::ingest::DocId::new(raw))),
         EntityKind::Relationship => EntityId::Relationship(
             RelId::new(raw).map_err(|_| TreeError::Invalid("zero fence relationship"))?,
         ),

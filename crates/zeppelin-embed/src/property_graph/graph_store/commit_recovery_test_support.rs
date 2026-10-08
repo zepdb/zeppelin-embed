@@ -570,6 +570,7 @@ pub struct BoundaryReport {
     pub clean_controls: u64,
     pub observation: Option<BatchObservation>,
     pub retry: GraphWriteResult,
+    pub generation_before_retry: u64,
     pub reservation_before: u64,
     pub reservation_after: u64,
     pub wal_bytes_before: u64,
@@ -699,6 +700,7 @@ fn run_boundary_inner(
     let mut remaining = store.release();
     let reopened = ProbeStore::open(path).expect("ZE41 permitted complete recovery");
     let observation = reopened.observe();
+    let generation_before_retry = reopened.graph.store.snapshot().unwrap().generation();
     let retry = reopened
         .apply(fixture)
         .expect("ZE41 exact retry after recovery");
@@ -733,6 +735,7 @@ fn run_boundary_inner(
         clean_controls: u64::from(!fault),
         observation,
         retry,
+        generation_before_retry,
         reservation_before: before,
         reservation_after: after,
         wal_bytes_before,

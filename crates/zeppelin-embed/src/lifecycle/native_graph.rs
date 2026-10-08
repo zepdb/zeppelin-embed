@@ -26,6 +26,7 @@ use std::time::Instant;
 
 pub(crate) mod automatic;
 mod base;
+mod documents;
 pub(crate) mod maintenance;
 mod mutate;
 mod persistence;
@@ -646,6 +647,7 @@ struct NativeSpillEntry {
 }
 
 struct PublicationState {
+    documents: Option<documents::NativeDocuments>,
     current: Option<Arc<NativeGraphBundle>>,
     /// Exact accounting for the four fixed-capacity registries below. It lives
     /// beside the vectors it charges so that close releases both together.
@@ -732,6 +734,7 @@ impl NativeGraphPublication {
             #[cfg(test)]
             assigned_generation: std::sync::atomic::AtomicU64::new(0),
             state: Mutex::new(PublicationState {
+                documents: None,
                 current: None,
                 charge,
                 leases,
@@ -1179,12 +1182,42 @@ impl NativeGraphPublication {
         Ok(())
     }
 
+    fn publish_transition_with_documents(
+        &self,
+        admitted: &Arc<NativeGraphBundle>,
+        next: Arc<NativeGraphBundle>,
+        documents: documents::NativeDocuments,
+    ) -> Result<(), NativeGraphError> {
+        #[cfg(any(test, feature = "test-seams"))]
+        if self.fail_next_publication.swap(false, Ordering::AcqRel) {
+            return Err(NativeGraphError::Invalid(
+                "scheduled native graph publication failure",
+            ));
+        }
+        let mut state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        if !state
+            .current
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, admitted))
+        {
+            return Err(NativeGraphError::Invalid(
+                "stale native committed transition",
+            ));
+        }
+        state.documents = Some(documents);
+        state.current = Some(next);
+        Ok(())
+    }
+
     fn publish_committed_transition(
         &self,
         transition: write::NativeCommittedTransition<'_>,
+        documents: documents::NativeDocuments,
     ) -> Result<(), NativeGraphError> {
         let (admitted, next) = transition.into_publication();
-        self.publish_transition(&admitted, next)
+        self.publish_transition_with_documents(&admitted, next, documents)
     }
 
     fn stop_admissions(&self) -> Result<(), NativeGraphError> {
@@ -1243,7 +1276,17 @@ impl NativeGraphPublication {
             .checked_add(1)
             .ok_or(NativeGraphError::IdentityExhausted)?;
         let owner = Arc::new(NativeReadOwner {
-            view: QueryView::new(bundle.base.store, bundle.base.generation),
+            view: QueryView::new(
+                bundle.base.store,
+                state
+                    .documents
+                    .as_ref()
+                    .map_or(bundle.base.generation, |documents| {
+                        crate::property_graph::GraphGeneration::new(
+                            documents.generation.max(bundle.base.generation.get()),
+                        )
+                    }),
+            ),
             bundle,
             objects,
             _charge: charge,
@@ -1262,7 +1305,10 @@ impl NativeGraphPublication {
             retention_only,
             owner: Arc::downgrade(&owner),
         });
-        Ok(NativeReadLease { owner })
+        Ok(NativeReadLease {
+            owner,
+            documents: state.documents.clone(),
+        })
     }
 
     fn capture(
@@ -1426,7 +1472,10 @@ impl NativeGraphPublication {
                 {
                     bundles.push(Arc::clone(&owner.bundle));
                 }
-                leases.push(NativeReadLease { owner });
+                leases.push(NativeReadLease {
+                    owner,
+                    documents: None,
+                });
             }
         }
         for entry in state.preparations.iter().flatten() {
@@ -1544,6 +1593,7 @@ impl NativeGraphPublication {
                 })?;
         }
         drop(state.current.take());
+        drop(state.documents.take());
         if state.leases.iter().all(Option::is_none) {
             state.release_registries()?;
         }
@@ -1586,6 +1636,7 @@ impl NativeGraphPublication {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         drop(state.current.take());
+        drop(state.documents.take());
         // The registries are deliberately retained here. This path runs from
         // `Store::drop`, which cancels but never drains: a survivor read
         // registration must still find its slot to release. The whole
@@ -1929,12 +1980,14 @@ struct NativeReadOwner {
 
 pub(crate) struct NativeReadLease {
     owner: Arc<NativeReadOwner>,
+    documents: Option<documents::NativeDocuments>,
 }
 
 impl Clone for NativeReadLease {
     fn clone(&self) -> Self {
         Self {
             owner: Arc::clone(&self.owner),
+            documents: self.documents.clone(),
         }
     }
 }
@@ -2199,7 +2252,19 @@ impl Store {
         let resources = GraphResources::from_store(self)?;
         let charge = resources
             .reserve(std::mem::size_of::<NativeReadOwner>() + 2 * std::mem::size_of::<usize>())?;
-        self.native_graph.admit(charge)
+        // The graph publication retains the document half too. A reader may
+        // pin the old publication while WAL sync holds the active writer lock.
+        match self.active.try_lock() {
+            Ok(active) => {
+                self.publish_native_documents(active.as_ref().ok_or(StoreError::Closed)?)?;
+                self.native_graph.admit(charge)
+            }
+            Err(std::sync::TryLockError::WouldBlock) => self.native_graph.admit(charge),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(StoreError::Synchronization {
+                component: "active segment",
+            }
+            .into()),
+        }
     }
 
     pub(crate) fn capture_native_read_roots(
@@ -2272,6 +2337,8 @@ pub(crate) mod tests {
     mod base_lazy;
     mod close_owner;
     pub(crate) mod consolidation;
+    #[cfg(test)]
+    mod documents_are_nodes;
     mod expression_tests;
     mod hybrid_ranking;
     mod identity;

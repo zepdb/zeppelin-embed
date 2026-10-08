@@ -140,6 +140,33 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         })
     }
 
+    pub(crate) fn document_version(
+        &self,
+        node: NodeId,
+    ) -> Result<Option<crate::ingest::DocumentVersion>, TreeError> {
+        self.lease
+            .document_version(node)
+            .map_err(|error| TreeError::Control(crate::lifecycle::QueryError::Store(error)))
+    }
+
+    pub(crate) fn visit_document_properties(
+        &self,
+        node: NodeId,
+        visit: impl FnMut(&str, &crate::meta::PredicateValue) -> Result<(), TreeError>,
+    ) -> Result<(), TreeError> {
+        self.lease.visit_document_properties(node, visit)
+    }
+
+    pub(crate) fn document_property(
+        &self,
+        node: NodeId,
+        name: &str,
+    ) -> Result<Option<crate::meta::PredicateValue>, TreeError> {
+        self.lease
+            .document_property(node, name)
+            .map_err(|error| TreeError::Control(crate::lifecycle::QueryError::Store(error)))
+    }
+
     pub(crate) fn sequence(&self) -> u64 {
         self.lease.bundle().sequence()
     }
@@ -363,15 +390,18 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
     roots: GraphRoots,
     after: Option<NodeId>,
     labels: &[crate::property_graph::catalog::LabelId],
-    catalog: &impl RecordCatalog<NativeQuerySource<'lease, 'm, 'g>>,
+    catalog: &NativeCatalog<'a, 'm, 'g>,
     document: Option<&EmbeddingTower>,
     output: &mut crate::property_graph::query::resources::QueryArena<'m, 'g, NodeId>,
     r: &mut TreeResources<'_>,
 ) -> Result<usize, TreeError> {
     use super::tree::{Key, directory::DirectoryCursor};
-    let node_lower = after.map(|node| node.get().to_le_bytes());
+    let node_lower = after
+        .filter(|node| node.get() != 0)
+        .map(|node| node.get().to_le_bytes());
     let mut label_lower = [0_u8; 24];
-    let (root, lower) = if let Some(label) = labels.first() {
+    let (root, lower) = if let Some(label) = labels.first().filter(|label| label.get() != u64::MAX)
+    {
         label_lower[..8].copy_from_slice(&label.get().to_le_bytes());
         label_lower[8..].copy_from_slice(&after.map_or(1, NodeId::get).to_le_bytes());
         (
@@ -389,7 +419,7 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
         let Key::Inline(key) = entry.key() else {
             return Err(TreeError::Invalid("overflow node identity"));
         };
-        let node_key = if let Some(label) = labels.first() {
+        let node_key = if let Some(label) = labels.first().filter(|label| label.get() != u64::MAX) {
             if !entry.value().is_empty() {
                 return Err(TreeError::Invalid("label membership value is not empty"));
             }
@@ -406,12 +436,11 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
         } else {
             key
         };
-        let node = NodeId::new(u128::from_le_bytes(
+        let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(
             node_key
                 .try_into()
                 .map_err(|_| TreeError::Invalid("node identity width"))?,
-        ))
-        .map_err(|_| TreeError::Invalid("zero node identity"))?;
+        )));
         if after == Some(node) {
             continue;
         }
@@ -425,9 +454,22 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
         };
         let mut matched = true;
         for wanted in labels {
-            let mut found = false;
+            let mut found = wanted.get() == u64::MAX
+                && source
+                    .lease()
+                    .document_version(node)
+                    .map_err(|error| {
+                        TreeError::Control(crate::lifecycle::QueryError::Store(error))
+                    })?
+                    .is_some();
             for index in 0..count {
-                if record.label(index, r)? == *wanted {
+                let label = record.label(index, r)?;
+                if label == *wanted
+                    || (wanted.get() == u64::MAX
+                        && catalog
+                            .name(crate::property_graph::catalog::Symbol::Label(label), r)?
+                            .is_some_and(|name| name.as_str() == "Document"))
+                {
                     found = true;
                     break;
                 }
@@ -443,6 +485,34 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
                 break;
             }
         }
+    }
+    if labels.is_empty() || labels.iter().all(|label| label.get() == u64::MAX) {
+        source.lease().visit_documents(r, |version, r| {
+            let node = NodeId::from(version.doc_id());
+            if after.is_some_and(|after| node.get().to_le_bytes() <= after.get().to_le_bytes()) {
+                return Ok(());
+            }
+            if matches!(
+                lookup_node_state(source, roots, node, catalog, document, r)?,
+                Some(NodeRecordState::Tombstone(_))
+            ) {
+                return Ok(());
+            }
+            if output.as_slice().contains(&node) {
+                return Ok(());
+            }
+            if output.len() < output.capacity() {
+                output.push(node).map_err(|_| TreeError::Memory)?;
+            } else if let Some(last) = output.as_mut_slice().last_mut()
+                && node.get().to_le_bytes() < last.get().to_le_bytes()
+            {
+                *last = node;
+            }
+            output
+                .as_mut_slice()
+                .sort_unstable_by_key(|node| node.get().to_le_bytes());
+            Ok(())
+        })?;
     }
     Ok(output.len())
 }

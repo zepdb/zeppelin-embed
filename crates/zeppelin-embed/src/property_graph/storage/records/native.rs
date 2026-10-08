@@ -53,6 +53,7 @@ impl RecordShape {
 /// This is not store-wide endpoint liveness or GraphReadView admission proof.
 pub struct RecordView<'a, S: BlockSource> {
     shape: RecordShape,
+    document_version: Option<crate::ingest::DocumentVersion>,
     revision: GraphRevision,
     labels: PayloadSlice<'a, S>,
     properties: PayloadSlice<'a, S>,
@@ -63,6 +64,10 @@ pub struct RecordView<'a, S: BlockSource> {
     provenance: StoredProvenance<'a, S>,
 }
 impl<'a, S: BlockSource> RecordView<'a, S> {
+    /// Backing document identity; payloads are read from the pinned document store.
+    pub const fn document_version(&self) -> Option<crate::ingest::DocumentVersion> {
+        self.document_version
+    }
     /// Correlated native identity and topology.
     pub const fn shape(&self) -> RecordShape {
         self.shape
@@ -149,11 +154,20 @@ pub fn verify_record<'a, S: BlockSource>(
     let created = source.creation_generation(r)?;
     let mut c = PayloadCursor::new_with_resources(source, r)?;
     let id = u128::from_le_bytes(c.read_array(r)?);
+    let mut document_bound = false;
     let (shape, revision, property_bytes) = match source.role() {
         BlockKind::NodeRecord => {
-            let id = NodeId::new(id).map_err(|_| TreeError::Invalid("zero native node"))?;
             let revision = revision(&mut c, r)?;
-            zero_u32(&mut c, r)?;
+            document_bound = match u32::from_le_bytes(c.read_array(r)?) {
+                0 => false,
+                2 => true,
+                _ => return Err(TreeError::Invalid("unknown live node record flags")),
+            };
+            let id = if document_bound {
+                NodeId::from(crate::ingest::DocId::new(id))
+            } else {
+                NodeId::new(id).map_err(|_| TreeError::Invalid("zero native node"))?
+            };
             let labels = u32::from_le_bytes(c.read_array(r)?);
             (
                 RecordShape::Node { id, labels },
@@ -201,6 +215,16 @@ pub fn verify_record<'a, S: BlockSource>(
     let properties = c.take(u64::from(property_count) * 24, r)?;
     let canonical_ref = PayloadRef::decode(&c.read_array::<48>(r)?)?;
     let provenance_ref = PayloadRef::decode(&c.read_array::<48>(r)?)?;
+    let document_version = if document_bound {
+        let document_id = crate::ingest::DocId::new(u128::from_le_bytes(c.read_array(r)?));
+        let revision = crate::ingest::Revision::new(u64::from_le_bytes(c.read_array(r)?));
+        if expected != EntityId::Node(NodeId::from(document_id)) {
+            return Err(TreeError::Invalid("node document identity or revision"));
+        }
+        Some(crate::ingest::DocumentVersion::new(document_id, revision))
+    } else {
+        None
+    };
     c.finish(r)?;
     let canonical_bytes = source.linked(canonical_ref, r)?;
     let provenance_bytes = source.linked(provenance_ref, r)?;
@@ -256,6 +280,7 @@ pub fn verify_record<'a, S: BlockSource>(
     r.step(0)?;
     Ok(RecordView {
         shape,
+        document_version,
         revision,
         labels,
         properties,

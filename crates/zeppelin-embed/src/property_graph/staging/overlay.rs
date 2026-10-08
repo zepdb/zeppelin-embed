@@ -146,7 +146,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             WriteImage::Relationship { .. } => EntityKind::Relationship,
         };
         let mut high_waters = self.high_waters;
-        let id = structured::allocate(kind, &mut high_waters, control)?;
+        let id = structured::allocate(self.base, kind, &mut high_waters, control)?;
         let target = match id {
             EntityId::Node(id) => BatchEntityRef::Node(NodeRef::Existing(id)),
             EntityId::Relationship(id) => BatchEntityRef::Relationship(RelRef::Existing(id)),
@@ -236,11 +236,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             }
         }
         let id = target.existing().ok_or(StageError::MissingEntity)?;
-        let entity = self
-            .base
-            .entity(id, control)?
-            .ok_or(StageError::MissingEntity)?;
-        structured::checked_base(&entity, self.identity, self.base.high_waters())?;
+        self.check_existing(id, control)?;
         self.entries.push(Entry {
             target,
             image: Some(image),
@@ -268,7 +264,12 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             .base
             .entity(id, control)?
             .ok_or(StageError::MissingEntity)?;
-        structured::checked_base(&entity, self.identity, self.base.high_waters())?;
+        structured::checked_document_base(
+            self.base,
+            &entity,
+            self.identity,
+            self.base.high_waters(),
+        )?;
         self.entries.push(Entry {
             target,
             image: None,
@@ -479,16 +480,35 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             Ok(())
         }
     }
+    fn is_implicit_document(
+        &self,
+        id: EntityId,
+        control: &mut WriteControl<'_>,
+    ) -> Result<bool, StageError> {
+        let EntityId::Node(node) = id else {
+            return Ok(false);
+        };
+        Ok(self.base.document_version(node)?.is_some()
+            && !self.base.has_node_record(node, control)?)
+    }
     fn check_existing(
         &self,
         id: EntityId,
         control: &mut WriteControl<'_>,
     ) -> Result<(), StageError> {
+        if self.is_implicit_document(id, control)? {
+            return Ok(());
+        }
         let entity = self
             .base
             .entity(id, control)?
             .ok_or(StageError::MissingEntity)?;
-        structured::checked_base(&entity, self.identity, self.base.high_waters())?;
+        structured::checked_document_base(
+            self.base,
+            &entity,
+            self.identity,
+            self.base.high_waters(),
+        )?;
         if entity.provenance.fields().incarnation != id {
             return Err(StageError::ViewMismatch);
         }
@@ -649,10 +669,23 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                 _ => None,
             };
             let current = existing
-                .map(|id| base.entity(id, control)?.ok_or(StageError::MissingEntity))
-                .transpose()?;
+                .map(|id| {
+                    let entity = base.entity(id, control)?;
+                    if entity.is_none() && !self.is_implicit_document(id, control)? {
+                        return Err(StageError::MissingEntity);
+                    }
+                    Ok(entity)
+                })
+                .transpose()?
+                .flatten();
+            let adoption = current.is_none() && existing.is_some();
             if let Some(current) = &current {
-                structured::checked_base(current, self.identity, base.high_waters())?;
+                structured::checked_document_base(
+                    base,
+                    current,
+                    self.identity,
+                    base.high_waters(),
+                )?;
                 if Some(current.provenance.fields().incarnation) != existing {
                     return Err(StageError::ViewMismatch);
                 }
@@ -711,7 +744,9 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                 Some(KeyDecision::Replay(_)) => return Err(StageError::InvalidInput),
             };
             let expected = if is_changed {
-                existing.map_or(ExpectedGraphState::Absent, ExpectedGraphState::Entity)
+                existing
+                    .filter(|_| !adoption)
+                    .map_or(ExpectedGraphState::Absent, ExpectedGraphState::Entity)
             } else {
                 previous.ok_or(StageError::InvalidInput)?.fields().expected
             };
@@ -813,8 +848,13 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                     Some(KeyDecision::Replay(_)) => return Err(StageError::InvalidInput),
                     None => {
                         let id = match entry.target.existing() {
+                            Some(EntityId::Node(node))
+                                if self.is_implicit_document(EntityId::Node(node), control)? =>
+                            {
+                                EntityId::Node(node)
+                            }
                             Some(id) if entry.fresh => id,
-                            _ => allocate(kind, &mut high_waters, control)?,
+                            _ => allocate(base, kind, &mut high_waters, control)?,
                         };
                         let revision =
                             GraphRevision::new(1).map_err(|_| StageError::InvalidInput)?;
@@ -859,6 +899,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                         (Some(encoded.bytes), Some(encoded.shape), encoded.membership)
                     };
                     deltas.push(NormalizedDelta {
+                        document: None,
                         provenance,
                         canonical,
                         shape,
@@ -909,6 +950,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             symbols,
             disposition,
         }
-        .enforce_relationship_rules(base, self.memory, control)
+        .enforce_relationship_rules(base, self.memory, control)?
+        .bind_document_nodes(base, self.memory, control)
     }
 }

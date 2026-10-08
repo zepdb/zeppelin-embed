@@ -11,7 +11,7 @@
 
 use super::NativeGraphError;
 use super::base::NativeAdmittedBase;
-use super::write::{CommitStep, commit_staged_batch};
+use super::write::{CommitStep, commit_staged_batch_with_documents};
 use crate::property_graph::query::completed::CompletedError;
 use crate::property_graph::query::resources::QueryMemory;
 use crate::property_graph::query::runtime::{
@@ -73,6 +73,9 @@ impl crate::property_graph::query::runtime::RetainedView for WriterRetainedView<
 /// consumer that copies the statement's completed result also rejects with
 /// that result's typed error, so it reports `NativeMutationError` directly.
 pub(crate) trait NativeMutationConsumer<T, E = NativeExecutionError> {
+    fn document_delete(&self) -> Option<&crate::ingest::DeleteBatch> {
+        None
+    }
     fn consume<'lease, 'm, 'g, 'w, 'i>(
         &mut self,
         view: &'w GraphReadView<'w, 'lease, 'm, 'g>,
@@ -88,6 +91,7 @@ pub(crate) trait NativeMutationConsumer<T, E = NativeExecutionError> {
 pub(crate) struct NativeMutationReport {
     /// Logical disposition of the staged batch before publication.
     pub(crate) disposition: BatchDisposition,
+    pub(crate) seq: crate::wal::LogSeq,
     /// The generation the read view and overlay were admitted against.
     pub(crate) admitted: GraphGeneration,
     /// The published generation, present only for a committed change.
@@ -198,11 +202,37 @@ impl crate::lifecycle::Store {
             image_capacity,
             consumer,
             |value, _, _| value,
+            None,
         ) {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => Err(error.into()),
             Err(error) => Err(error),
         }
+    }
+
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep the existing typed mutation failure at the shared tail"
+    )]
+    pub(super) fn with_native_document_mutation<C: NativeMutationConsumer<()>>(
+        &self,
+        capacity: usize,
+        consumer: C,
+        writer: &mut super::write::NativeWriter,
+    ) -> Result<((), NativeMutationReport), NativeMutationError> {
+        self.native_mutation_attempts(
+            &crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()),
+            RuntimeLimits::default(),
+            24 * 1024 * 1024,
+            crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+            capacity.max(1),
+            capacity.max(1),
+            1,
+            consumer,
+            |value, _, _| value,
+            Some(writer),
+        )?
+        .map_err(NativeMutationError::from)
     }
 
     /// `with_native_mutation`, whose consumer produces an `S` that is only
@@ -249,6 +279,7 @@ impl crate::lifecycle::Store {
             image_capacity,
             consumer,
             settle,
+            None,
         )
         .unwrap_or_else(|error| Err(error.into()))
     }
@@ -275,13 +306,14 @@ impl crate::lifecycle::Store {
         image_capacity: usize,
         mut consumer: C,
         settle: F,
+        mut held_writer: Option<&mut super::write::NativeWriter>,
     ) -> Result<Result<(T, NativeMutationReport), E>, NativeMutationError>
     where
         C: NativeMutationConsumer<S, E>,
         F: FnOnce(S, &[ItemReceipt], Option<GraphGeneration>) -> T,
     {
         self.native_graph.require_writable()?;
-        let mut maintenance_checked = false;
+        let mut maintenance_checked = held_writer.is_some();
         let mut run_maintenance = false;
         let mut allow_pending_checkpoint = true;
         loop {
@@ -289,20 +321,55 @@ impl crate::lifecycle::Store {
                 self.auto_maintain_native_graph(control)?;
                 run_maintenance = false;
             }
-            let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
-                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
-                    component: "native graph writer",
-                })
-            })?;
-            let writer = writer_slot
-                .as_mut()
-                .ok_or_else(|| self.absent_native_graph_writer())?;
+            let mut writer_slot = if held_writer.is_none() {
+                Some(self.native_graph.writer.lock().map_err(|_| {
+                    NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                        component: "native graph writer",
+                    })
+                })?)
+            } else {
+                None
+            };
+            let writer = match held_writer.as_deref_mut() {
+                Some(writer) => writer,
+                None => writer_slot
+                    .as_mut()
+                    .and_then(|slot| slot.as_mut())
+                    .ok_or_else(|| self.absent_native_graph_writer())?,
+            };
             if writer.stopped {
                 return Err(NativeGraphError::WritesStopped.into());
             }
 
             let lease = self.admit_native_read()?;
             let admitted = Arc::clone(lease.bundle());
+            let documents = if let Some(batch) = consumer.document_delete() {
+                let wal = self.wal_writer.lock().map_err(|_| {
+                    crate::lifecycle::StoreError::Synchronization {
+                        component: "WAL writer",
+                    }
+                })?;
+                wal.as_ref()
+                    .ok_or(crate::lifecycle::StoreError::ReadOnly)?
+                    .manifest_publication()?
+                    .complete();
+                let active = self.active.lock().map_err(|_| {
+                    crate::lifecycle::StoreError::Synchronization {
+                        component: "active segment",
+                    }
+                })?;
+                Some(
+                    self.prepare_mixed_delete(
+                        batch,
+                        active
+                            .as_ref()
+                            .ok_or(crate::lifecycle::StoreError::Closed)?,
+                    )
+                    .map_err(NativeGraphError::from)?,
+                )
+            } else {
+                None
+            };
             self.active_queries.fetch_add(1, Ordering::Relaxed);
             let _active_query = crate::lifecycle::ActiveQuery {
                 count: &self.active_queries,
@@ -406,7 +473,16 @@ impl crate::lifecycle::Store {
             if let Some(error) = base.take_error() {
                 return Err(NativeGraphError::Stage(StageError::NativeStorage(error)).into());
             }
-            let staged = staged?;
+            let mut staged = staged?;
+            if documents
+                .as_ref()
+                .is_some_and(|documents| !documents.records.is_empty())
+            {
+                staged.include_document_change(super::write::assigned_generation(
+                    self,
+                    admitted.base().generation,
+                )?);
+            }
             let disposition = staged.disposition();
             let admitted_generation = admitted.base().generation;
 
@@ -420,7 +496,7 @@ impl crate::lifecycle::Store {
                 }
             }
 
-            let step = commit_staged_batch(
+            let step = commit_staged_batch_with_documents(
                 self,
                 writer,
                 &lease,
@@ -431,6 +507,7 @@ impl crate::lifecycle::Store {
                 &base,
                 &staged,
                 &mut allow_pending_checkpoint,
+                documents,
             )?;
             let changed = match step {
                 CommitStep::NoOp => None,
@@ -444,6 +521,7 @@ impl crate::lifecycle::Store {
                 settle(value, staged.receipts(), changed),
                 NativeMutationReport {
                     disposition,
+                    seq: crate::wal::LogSeq::new(writer.last_graph_seq),
                     admitted: admitted_generation,
                     changed,
                     counters,

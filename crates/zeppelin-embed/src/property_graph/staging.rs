@@ -260,6 +260,31 @@ pub enum BaseKeyState<'a> {
 /// must stream/page their bounded probes and honor the supplied checkpoint;
 /// this trait has no mutation, traversal-overlay or publication method.
 pub trait AdmittedBase {
+    /// Live document identity sharing this node ID, in the same admission.
+    fn document_version(
+        &self,
+        _node: NodeId,
+    ) -> Result<Option<crate::ingest::DocumentVersion>, StageError> {
+        Ok(None)
+    }
+    /// A directory record, including a retained node tombstone.
+    fn has_node_record(
+        &self,
+        node: NodeId,
+        control: &mut WriteControl<'_>,
+    ) -> Result<bool, StageError> {
+        Ok(self.entity(EntityId::Node(node), control)?.is_some())
+    }
+
+    /// Whether a candidate identity is already occupied in this admitted store.
+    fn node_id_reserved(
+        &self,
+        node: NodeId,
+        control: &mut WriteControl<'_>,
+    ) -> Result<bool, StageError> {
+        Ok(self.entity(EntityId::Node(node), control)?.is_some())
+    }
+
     /// Whether this admitted catalog declares any incoming-reference policies.
     fn has_relationship_rules(&self) -> bool {
         false
@@ -378,6 +403,7 @@ pub struct ItemReceipt {
 }
 /// One finalized changed entity; exact replays never enter this participant list.
 pub struct NormalizedDelta<'a> {
+    document: Option<crate::ingest::DocumentVersion>,
     provenance: OperationProvenance<'a>,
     canonical: Option<memory::Arena<'a, u8>>,
     shape: Option<EntityShape<'a>>,
@@ -385,6 +411,10 @@ pub struct NormalizedDelta<'a> {
     after: Membership,
 }
 impl<'a> NormalizedDelta<'a> {
+    /// Exact backing document version, when this node is document-backed.
+    pub const fn document_version(&self) -> Option<crate::ingest::DocumentVersion> {
+        self.document
+    }
     /// Complete installing operation and key-fence evidence.
     pub const fn provenance(&self) -> OperationProvenance<'a> {
         self.provenance
@@ -413,6 +443,11 @@ pub struct StagedBatch<'a> {
     symbols: memory::Arena<'a, catalog::SymbolEntry<'a>>,
 }
 impl StagedBatch<'_> {
+    pub(crate) fn include_document_change(&mut self, generation: GraphGeneration) {
+        self.disposition = BatchDisposition::Changed;
+        self.target_generation = generation;
+    }
+
     /// Advances inclusive logical fences on an otherwise empty test batch.
     #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn jump_allocators_for_test(
@@ -477,6 +512,7 @@ impl StagedBatch<'_> {
         &self.receipts
     }
 }
+mod documents;
 mod structured;
 pub use structured::{stage_structured, stage_structured_at_generation};
 
