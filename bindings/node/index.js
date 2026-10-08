@@ -235,6 +235,7 @@ async function withSignal(signal, run) {
 }
 
 async function attachAsync(storePath, options, name, spec) {
+  if (options.relationshipTypes !== undefined) graphInvalid('relationshipTypes requires synchronous Store creation');
   const autoSealRows = autoSealRowsOption(options);
   const autoMerge = autoMergeOption(options);
   let native;
@@ -271,6 +272,115 @@ async function openNamespaceAsync(root, name, spec, options = {}) {
 }
 
 class Store {
+  graphSetMaintenancePolicy(options) {
+    requireGraph(); graphObject(options, ['autoReclaim', 'reclaimAfterBytes'], 'maintenance policy');
+    const automatic = options.autoReclaim === undefined ? true : options.autoReclaim;
+    const bytes = options.reclaimAfterBytes === undefined ? 67108864 : options.reclaimAfterBytes;
+    if (typeof automatic !== 'boolean' || !Number.isSafeInteger(bytes) || bytes < 1048576) graphInvalid('invalid maintenance policy');
+    return callNative(() => this._native.graphSetMaintenancePolicy(automatic, bytes));
+  }
+  graphMaintain(options = {}) { requireGraph(); graphObject(options, ['cancelToken', 'deadlineNs'], 'maintenance options'); return callNative(() => this._native.graphMaintain(graphControl(options))); }
+  async graphMaintainAsync(options = {}) { requireGraph(); graphObject(options, ['signal', 'cancelToken', 'deadlineNs'], 'maintenance options'); try { return await withSignal(options.signal, token => this._native.graphMaintainAsync(graphControl(options, token))); } catch (error) { throw translateError(error); } }
+  static graphSupported() { return binding.graphSupported === true && (process.platform !== 'darwin' || Number.parseInt(os.release(), 10) >= 23); }
+  enableGraph() { requireGraph(); return callNative(() => this._native.enableGraph()); }
+  graphResources() { requireGraph(); return callNative(() => this._native.graphResources()); }
+  graphApply(items, options = {}) { graphObject(options, ['cancelToken', 'deadlineNs'], 'apply options'); return this._graphApply(items, false, graphControl(options)); }
+  async graphApplyAsync(items, options = {}) {
+    requireGraph();
+    graphObject(options, ['signal', 'cancelToken', 'deadlineNs'], 'apply options');
+    try { return await withSignal(options.signal, token => this._graphApply(items, true, graphControl(options, token))); }
+    catch (error) { throw translateError(error); }
+  }
+  _graphApply(items, async, token = {}) {
+    requireGraph();
+    if (!Array.isArray(items) || items.length > 16384) graphInvalid('items must be an array of at most 16384 mutations');
+    for (const item of items) {
+      graphObject(item, ['kind', 'operation', 'namespace', 'key', 'revision', 'expectedId', 'expectedDeletionRevision', 'detach', 'labels', 'properties', 'text', 'vector', 'id', 'timestamp', 'attributes', 'metadata', 'type', 'source', 'target'], 'item');
+      if (!['node', 'relationship'].includes(item.kind)) graphInvalid('kind must be node or relationship');
+      if (!['create', 'put', 'delete', 'recreate'].includes(item.operation)) graphInvalid('unknown operation');
+      graphString(item.namespace, 'namespace'); graphString(item.key, 'key'); graphUnsigned(item.revision, 64, 'revision');
+      if (['put', 'delete'].includes(item.operation)) graphUnsigned(item.expectedId, 128, 'expectedId');
+      else if (item.expectedId !== undefined) graphInvalid('expectedId is only valid for put/delete');
+      if (item.operation === 'recreate') graphUnsigned(item.expectedDeletionRevision, 64, 'expectedDeletionRevision');
+      else if (item.expectedDeletionRevision !== undefined) graphInvalid('expectedDeletionRevision is only valid for recreate');
+      if (item.detach !== undefined && (item.operation !== 'delete' || item.kind !== 'node' || typeof item.detach !== 'boolean')) graphInvalid('detach is only valid for node delete');
+      if (item.operation === 'delete') {
+        for (const key of ['labels', 'properties', 'text', 'vector', 'id', 'timestamp', 'attributes', 'metadata', 'type', 'source', 'target']) if (item[key] !== undefined) graphInvalid(`delete does not accept ${key}`);
+        continue;
+      }
+      graphProperties(item.properties);
+      if (item.kind === 'node') {
+        if (item.type !== undefined || item.source !== undefined || item.target !== undefined) graphInvalid('node cannot have relationship fields');
+        if (item.labels !== undefined) {
+          if (!Array.isArray(item.labels)) graphInvalid('labels must be an array');
+          for (const label of item.labels) graphString(label, 'label');
+        }
+        if (item.text !== undefined) graphString(item.text, 'text');
+        if (item.id !== undefined) { graphUnsigned(item.id, 128, 'id'); if (item.operation !== 'create') graphInvalid('id is only valid for create'); }
+        if (item.timestamp !== undefined && (typeof item.timestamp !== 'bigint' || item.timestamp < -(1n << 63n) || item.timestamp >= (1n << 63n))) graphInvalid('timestamp must be signed I64');
+        if (item.vector !== undefined && (!(item.vector instanceof Float32Array) || !item.vector.every(Number.isFinite))) graphInvalid('vector must be a finite Float32Array');
+        if (item.metadata !== undefined && !(item.metadata instanceof Uint8Array)) graphInvalid('metadata must be Uint8Array');
+        if (item.attributes !== undefined && !Array.isArray(item.attributes)) graphInvalid('attributes must be an array of AttributeValue');
+      } else {
+        if (['labels', 'text', 'vector', 'id', 'timestamp', 'attributes', 'metadata'].some(name => item[name] !== undefined)) graphInvalid('relationship cannot have node fields');
+        graphString(item.type, 'type'); graphEndpoint(item.source); graphEndpoint(item.target);
+      }
+    }
+    return callNative(() => (async ? this._native.graphApplyAsync(items, token) : this._native.graphApply(items, token)));
+  }
+  cypher(text, params = {}, options = {}) { return this._cypher(text, params, options, false, graphControl(options)); }
+  async cypherAsync(text, params = {}, options = {}) {
+    requireGraph();
+    try {
+      return await withSignal(options.signal, token => this._cypher(text, params, options, true, graphControl(options, token)));
+    } catch (error) { throw translateError(error); }
+  }
+  _cypher(text, params, options, async, token = {}) {
+    requireGraph();
+    graphString(text, 'query'); graphObject(params, null, 'parameters');
+    const state = { elements: 0 };
+    for (const [name, value] of Object.entries(params)) { graphString(name, 'parameter name'); graphParameter(value, state); }
+    graphObject(options, async ? ['maxRows', 'signal', 'cancelToken', 'deadlineNs'] : ['maxRows', 'cancelToken', 'deadlineNs'], 'query options');
+    const maxRows = options.maxRows ?? 0;
+    if (!Number.isInteger(maxRows) || maxRows < 0 || maxRows > 65536) graphInvalid('maxRows must be in 0..65536');
+    return callNative(() => async ? this._native.cypherAsync(text, params, maxRows, token) : this._native.cypher(text, params, maxRows, token));
+  }
+  graphQuery(plan, options = {}) { return this._graphQuery(plan, options.parameters ?? {}, options, false, graphControl(options)); }
+  async graphQueryAsync(plan, options = {}) {
+    requireGraph();
+    try { return await withSignal(options.signal, token => this._graphQuery(plan, options.parameters ?? {}, options, true, graphControl(options, token))); }
+    catch (error) { throw translateError(error); }
+  }
+  _graphQuery(plan, params, options, async, token = {}) {
+    requireGraph();
+    graphObject(plan, ['root', 'operators', 'expressions', 'parameters', 'searches', 'eagerSearches'], 'plan');
+    graphObject(params, null, 'parameters'); graphObject(options, async ? ['parameters', 'signal', 'cancelToken', 'deadlineNs'] : ['parameters', 'cancelToken', 'deadlineNs'], 'query options');
+    const state = {elements: 0};
+    for (const [name, value] of Object.entries(params)) { graphString(name, 'parameter name'); graphParameter(value, state); }
+    return callNative(() => async ? this._native.graphQueryAsync(plan, params, token) : this._native.graphQuery(plan, params, token));
+  }
+  graphGetNodes(ids, options = {}) { return this._graphGet(ids, options, true, false, graphControl(options)); }
+  graphGetRelationships(ids, options = {}) { return this._graphGet(ids, options, false, false, graphControl(options)); }
+  async graphGetNodesAsync(ids, options = {}) {
+    requireGraph();
+    try { return await withSignal(options.signal, token => this._graphGet(ids, options, true, true, graphControl(options, token))); } catch (error) { throw translateError(error); }
+  }
+  async graphGetRelationshipsAsync(ids, options = {}) {
+    requireGraph();
+    try { return await withSignal(options.signal, token => this._graphGet(ids, options, false, true, graphControl(options, token))); } catch (error) { throw translateError(error); }
+  }
+  _graphGet(ids, options, nodes, async, token = {}) {
+    requireGraph();
+    if (!Array.isArray(ids) || ids.length > 16384) graphInvalid('ids must be an array of at most 16384 IDs');
+    for (const id of ids) graphUnsigned(id, 128, 'id');
+    graphObject(options, [...(nodes ? ['text', 'vector'] : []), 'cancelToken', 'deadlineNs', ...(async ? ['signal'] : [])], 'getter options');
+    for (const name of ['text', 'vector']) if (options[name] !== undefined && typeof options[name] !== 'boolean') graphInvalid(`${name} must be boolean`);
+    const name = nodes ? 'graphGetNodes' : 'graphGetRelationships';
+    const result = callNative(() => this._native[name + (async ? 'Async' : '')](ids, options.text ?? false, options.vector ?? false, token));
+    const copy = result => result.rows.map(row => row[0]);
+    return async ? result.then(copy) : copy(result);
+  }
+
   static async openAsync(storePath, options = {}) {
     return attachAsync(storePath, options);
   }
@@ -344,6 +454,19 @@ class Store {
   async backupAsync(target) { return this.snapshot(target); }
 
   constructor(storePath, options = {}) {
+    if (options.relationshipTypes !== undefined) {
+      requireGraph();
+      graphObject(options, ['relationshipTypes', 'maxResidentBytes', 'readerDrainTimeoutMs'], 'relationship store creation options');
+      if (!Array.isArray(options.relationshipTypes) || options.relationshipTypes.length > 16384) graphInvalid('relationshipTypes must be an array of at most 16384 rules');
+      const names = new Set();
+      for (const rule of options.relationshipTypes) {
+        graphObject(rule, ['type', 'onDelete'], 'relationship type'); graphString(rule.type, 'relationship type');
+        if (!['restrict', 'cascade'].includes(rule.onDelete) || names.has(rule.type)) graphInvalid('invalid or duplicate relationship type');
+        names.add(rule.type);
+      }
+      options = {...options, maxResidentBytes: options.maxResidentBytes ?? 268435456n};
+    }
+
     attach(
       this,
       () => new binding.NativeStore(storePath, options),
@@ -660,118 +783,11 @@ function graphEndpoint(value) {
   graphObject(value, ['local'], 'endpoint');
   if (!Number.isInteger(value.local) || value.local < 0 || value.local > 0xffffffff) graphInvalid('local endpoint must be an unsigned item index');
 }
-const graphConstruction = Symbol('graph construction');
-class GraphStore {
-  #native;
-  constructor(token, native) {
-    if (token !== graphConstruction) throw new TypeError('use GraphStore.open(path, options)');
-    this.#native = native;
-  }
-  static isSupported() {
-    // Darwin 23 is macOS 14; the Rust constructors enforce the same floor.
-    return binding.graphSupported === true &&
-      (process.platform !== 'darwin' || Number.parseInt(os.release(), 10) >= 23);
-  }
-  static open(storePath, options = {}) {
-    if (!GraphStore.isSupported()) throw new ZeppelinError('graph requires macOS 14 or newer, or Windows x64', 'ZE_ERR_UNSUPPORTED', 11);
-    graphString(storePath, 'path');
-    graphObject(options, ['mode', 'maxResidentBytes', 'readerDrainTimeoutMs', 'relationshipTypes', 'autoReclaim', 'reclaimAfterBytes'], 'open options');
-    const mode = options.mode ?? 'create';
-    if (!['create', 'readWrite', 'readOnly'].includes(mode)) graphInvalid('unknown graph open mode');
-    const autoReclaim = options.autoReclaim === undefined ? true : options.autoReclaim;
-    const reclaimAfterBytes = options.reclaimAfterBytes === undefined ? 67108864 : options.reclaimAfterBytes;
-    if (typeof autoReclaim !== 'boolean') graphInvalid('autoReclaim must be boolean');
-    if (!Number.isSafeInteger(reclaimAfterBytes) || reclaimAfterBytes < 1048576) graphInvalid('reclaimAfterBytes must be a safe integer of at least 1048576');
-    if (mode === 'readOnly' && (options.autoReclaim !== undefined || options.reclaimAfterBytes !== undefined)) graphInvalid('maintenance options require a writable graph');
-    const relationshipTypes = options.relationshipTypes === undefined ? [] : options.relationshipTypes;
-    if (options.relationshipTypes !== undefined && mode !== 'create') graphInvalid('relationshipTypes can only be declared at creation');
-    if (!Array.isArray(relationshipTypes) || relationshipTypes.length > 16384) graphInvalid('relationshipTypes must be an array of at most 16384 rules');
-    const names = new Set();
-    for (const rule of relationshipTypes) {
-      graphObject(rule, ['type', 'onDelete'], 'relationship type');
-      graphString(rule.type, 'relationship type');
-      if (!['restrict', 'cascade'].includes(rule.onDelete)) graphInvalid('onDelete must be restrict or cascade');
-      if (names.has(rule.type)) graphInvalid('duplicate relationship type declaration');
-      names.add(rule.type);
-    }
-    const maxResidentBytes = options.maxResidentBytes ?? 268435456;
-    const readerDrainTimeoutMs = options.readerDrainTimeoutMs ?? 250;
-    if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 1 || maxResidentBytes > 268435456) graphInvalid('maxResidentBytes must be in 1..268435456');
-    if (!Number.isSafeInteger(readerDrainTimeoutMs) || readerDrainTimeoutMs < 0) graphInvalid('readerDrainTimeoutMs must be a nonnegative safe integer');
-    // Construct through a private token so the native handle cannot be supplied by a caller.
-    const native = callNative(() => binding.graphOpen(storePath, ['create', 'readWrite', 'readOnly'].indexOf(mode), maxResidentBytes, readerDrainTimeoutMs, relationshipTypes));
-    try {
-      if (mode !== 'readOnly') callNative(() => binding.graphSetMaintenancePolicy(native, autoReclaim, reclaimAfterBytes));
-      return GraphStore.#create(native);
-    } catch (error) {
-      callNative(() => binding.graphClose(native));
-      throw error;
-    }
-  }
-  static #create(native) {
-    return new GraphStore(graphConstruction, native);
-  }
-  // Native close consumes the handle even when its final checkpoint reports an error.
-  close() { return callNative(() => binding.graphClose(this.#native)); }
-  maintain() { return callNative(() => binding.graphMaintain(this.#native)); }
-  async maintainAsync() {
-    try { return await binding.graphMaintainAsync(this.#native); } catch (error) { throw translateError(error); }
-  }
-  apply(items) { return this.#apply(items, false); }
-  async applyAsync(items) {
-    try { return await this.#apply(items, true); } catch (error) { throw translateError(error); }
-  }
-  #apply(items, async) {
-    if (!Array.isArray(items) || items.length > 16384) graphInvalid('items must be an array of at most 16384 mutations');
-    for (const item of items) {
-      graphObject(item, ['kind', 'operation', 'namespace', 'key', 'revision', 'expectedId', 'expectedDeletionRevision', 'detach', 'labels', 'properties', 'text', 'type', 'source', 'target'], 'item');
-      if (!['node', 'relationship'].includes(item.kind)) graphInvalid('kind must be node or relationship');
-      if (!['create', 'put', 'delete', 'recreate'].includes(item.operation)) graphInvalid('unknown operation');
-      graphString(item.namespace, 'namespace'); graphString(item.key, 'key'); graphUnsigned(item.revision, 64, 'revision');
-      if (['put', 'delete'].includes(item.operation)) graphUnsigned(item.expectedId, 128, 'expectedId');
-      else if (item.expectedId !== undefined) graphInvalid('expectedId is only valid for put/delete');
-      if (item.operation === 'recreate') graphUnsigned(item.expectedDeletionRevision, 64, 'expectedDeletionRevision');
-      else if (item.expectedDeletionRevision !== undefined) graphInvalid('expectedDeletionRevision is only valid for recreate');
-      if (item.detach !== undefined && (item.operation !== 'delete' || item.kind !== 'node' || typeof item.detach !== 'boolean')) graphInvalid('detach is only valid for node delete');
-      if (item.operation === 'delete') {
-        for (const key of ['labels', 'properties', 'text', 'type', 'source', 'target']) if (item[key] !== undefined) graphInvalid(`delete does not accept ${key}`);
-        continue;
-      }
-      graphProperties(item.properties);
-      if (item.kind === 'node') {
-        if (item.type !== undefined || item.source !== undefined || item.target !== undefined) graphInvalid('node cannot have relationship fields');
-        if (item.labels !== undefined) {
-          if (!Array.isArray(item.labels)) graphInvalid('labels must be an array');
-          for (const label of item.labels) graphString(label, 'label');
-        }
-        if (item.text !== undefined) graphString(item.text, 'text');
-      } else {
-        if (item.labels !== undefined || item.text !== undefined) graphInvalid('relationship cannot have node fields');
-        graphString(item.type, 'type'); graphEndpoint(item.source); graphEndpoint(item.target);
-      }
-    }
-    return callNative(() => (async ? binding.graphApplyAsync : binding.graphApply)(this.#native, items));
-  }
-  cypher(text, params = {}, options = {}) { return this.#cypher(text, params, options, false); }
-  async cypherAsync(text, params = {}, options = {}) {
-    try {
-      return await withSignal(options.signal, token => this.#cypher(text, params, options, true, token ?? 0n));
-    } catch (error) { throw translateError(error); }
-  }
-  #cypher(text, params, options, async, token) {
-    graphString(text, 'query'); graphObject(params, null, 'parameters');
-    const state = { elements: 0 };
-    for (const [name, value] of Object.entries(params)) { graphString(name, 'parameter name'); graphParameter(value, state); }
-    graphObject(options, async ? ['maxRows', 'signal'] : ['maxRows'], 'query options');
-    const maxRows = options.maxRows ?? 0;
-    if (!Number.isInteger(maxRows) || maxRows < 0 || maxRows > 65536) graphInvalid('maxRows must be in 0..65536');
-    return callNative(() => async ? binding.graphCypherAsync(this.#native, text, params, maxRows, token) : binding.graphCypher(this.#native, text, params, maxRows));
-  }
+function requireGraph() {
+  if (!Store.graphSupported()) throw new ZeppelinError('graph is unavailable in this build', 'ZE_ERR_GRAPH_UNSUPPORTED_BUILD', 59);
 }
 
 module.exports = {
-  GraphStore,
-  ABI_VERSION: binding.abiVersion,
   CancellationToken,
   Store,
   UnsupportedPlatformError,
@@ -788,4 +804,12 @@ module.exports = {
   openInspection,
   uuidToId,
   verify,
+  ABI_VERSION: binding.abiVersion,
 };
+
+function graphControl(options, token) {
+  if ([options.signal, options.cancelToken, options.deadlineNs].filter(v => v !== undefined).length > 1) graphInvalid('use one interruption source');
+  if (options.cancelToken !== undefined && !(options.cancelToken instanceof CancellationToken)) graphInvalid('cancelToken must be a CancellationToken');
+  if (options.deadlineNs !== undefined && (typeof options.deadlineNs !== 'bigint' || options.deadlineNs <= 0n || options.deadlineNs >= (1n << 64n))) graphInvalid('deadlineNs must be a positive U64');
+  return {cancelToken: token ?? options.cancelToken?.[nativeToken] ?? 0n, deadlineNs: options.deadlineNs ?? 0n};
+}

@@ -1450,6 +1450,13 @@ napi_value WrapStore(napi_env env, napi_value receiver, ze_handle handle) {
   return receiver;
 }
 
+#ifdef ZE_GRAPH
+ze_error_code CreateStoreWithRelationshipTypes(napi_env env,
+                                               const std::string &path,
+                                               const ZeOpenRequest &open,
+                                               napi_value types,
+                                               ze_handle *out);
+#endif
 napi_value ConstructStore(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 4;
@@ -1513,10 +1520,29 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
       bool inspection = false;
       if (!GetOptionalBool(env, options, "inspection", false, &inspection))
         return nullptr;
-      status = inspection ? ze_open_inspection(
-                                reinterpret_cast<const uint8_t *>(path.data()),
-                                path.size(), &handle)
-                          : ze_open(&request, &handle);
+#ifdef ZE_GRAPH
+      napi_value types;
+      bool has_types;
+      if (!GetNamed(env, options, "relationshipTypes", &types, &has_types))
+        return nullptr;
+      if (has_types) {
+        if (inspection) {
+          napi_throw_type_error(
+              env, "ERR_INVALID_ARG_VALUE",
+              "relationshipTypes cannot be used for inspection");
+          return nullptr;
+        }
+        status = CreateStoreWithRelationshipTypes(env, path, request, types,
+                                                  &handle);
+        if (status == ZE_OK && handle == 0)
+          return nullptr;
+      } else
+#endif
+        status = inspection
+                     ? ze_open_inspection(
+                           reinterpret_cast<const uint8_t *>(path.data()),
+                           path.size(), &handle)
+                     : ze_open(&request, &handle);
     } else {
       std::string name;
       if (!GetUtf8(env, args[2], "name", &name))
@@ -4812,6 +4838,40 @@ napi_value Initialize(napi_env env, napi_value exports) {
       !SetNamed(env, exports, "graphSupported", graph_supported))
     return nullptr;
   napi_property_descriptor methods[] = {
+#ifdef ZE_GRAPH
+      {"graphSetMaintenancePolicy", nullptr, GraphSetMaintenancePolicy, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"graphMaintain", nullptr, GraphMaintain<false>, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"graphMaintainAsync", nullptr, GraphMaintain<true>, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+
+      {"enableGraph", nullptr, StoreEnableGraph, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"graphApply", nullptr, GraphApply<false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"graphApplyAsync", nullptr, GraphApply<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"cypher", nullptr, GraphCypher<false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"cypherAsync", nullptr, GraphCypher<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"graphQuery", nullptr, GraphQuery<false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"graphQueryAsync", nullptr, GraphQuery<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"graphGetNodes", nullptr, GraphGet<true, false>, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"graphGetNodesAsync", nullptr, GraphGet<true, true>, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"graphGetRelationships", nullptr, GraphGet<false, false>, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"graphGetRelationshipsAsync", nullptr, GraphGet<false, true>, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"graphResources", nullptr, GraphResources, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+#endif
+
       {"ingest", nullptr, Ingest, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"upsertAsync", nullptr, Upsert<true>, nullptr, nullptr, nullptr,
@@ -4900,17 +4960,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"cancelToken", CancelToken},
       {"freeCancelToken", FreeCancelToken},
       {"verify", VerifyStore},
-#ifdef ZE_GRAPH
-      {"graphOpen", GraphOpen},
-      {"graphClose", GraphClose},
-      {"graphMaintain", GraphMaintain<false>},
-      {"graphMaintainAsync", GraphMaintain<true>},
-      {"graphSetMaintenancePolicy", GraphSetMaintenancePolicy},
-      {"graphApply", GraphApply<false>},
-      {"graphApplyAsync", GraphApply<true>},
-      {"graphCypher", GraphCypher<false>},
-      {"graphCypherAsync", GraphCypher<true>},
-#endif
+
       {"namespaceBatch", NamespaceBatch},
       {"namespaceBatchLive", NamespaceBatchLive},
       {"declareCascade", DeclareCascade},

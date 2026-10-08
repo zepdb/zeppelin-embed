@@ -1,9 +1,10 @@
+import { openGraph } from './graph-fixture.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { GraphStore } from '../index.js';
+import { Store } from '../index.js';
 
 function roundTrip(count) {
   const batchSize = 100;
@@ -22,7 +23,7 @@ function roundTrip(count) {
       storeBytes += statSync(join(path, file.name)).size;
     }
     const begin = performance.now();
-    store = GraphStore.open(path, { mode: 'readWrite' });
+    store = openGraph(path, {});
     const reopenMs = performance.now() - begin;
     assert.deepEqual(store.cypher('MATCH (n:Segment) RETURN count(n)').rows, [[BigInt(built)]]);
     assert.deepEqual(store.cypher('MATCH ()-[r:NEXT]->() RETURN count(r)').rows,
@@ -32,7 +33,7 @@ function roundTrip(count) {
     console.log(JSON.stringify({ nodes: built, buildMs, closeMs, reopenMs, storeBytes, storeFiles: files.length, maxRssKiB: process.resourceUsage().maxRSS }));
   }
   try {
-    store = GraphStore.open(path);
+    store = openGraph(path);
     for (let start = 0; start < count; start += batchSize) {
       const batchBegin = performance.now();
       const size = Math.min(batchSize, count - start);
@@ -45,7 +46,7 @@ function roundTrip(count) {
         kind: 'relationship', operation: 'create', namespace: 'edges', key: String(start),
         revision: 1n, type: 'NEXT', source: { local: 0 }, target: { local: 1 },
       };
-      try { assert.equal(store.apply([...nodes, edge]).disposition, 'Committed'); }
+      try { assert.equal(store.graphApply([...nodes, edge]).disposition, 'Committed'); }
       catch (error) { error.message += ` at batch ${start}`; throw error; }
       buildMs += performance.now() - batchBegin;
     }
@@ -58,9 +59,9 @@ function roundTrip(count) {
 }
 
 test('graph scale: 20000 documents and edges reopen under default budgets',
-  { skip: !GraphStore.isSupported() }, () => roundTrip(20_000));
+  { skip: !Store.graphSupported() }, () => roundTrip(20_000));
 test('graph scale: configurable large store reopens under default budgets',
-  { skip: !GraphStore.isSupported() || process.env.ZE_GRAPH_SCALE !== '1' },
+  { skip: !Store.graphSupported() || process.env.ZE_GRAPH_SCALE !== '1' },
   () => {
     const count = Number(process.env.ZE_GRAPH_SCALE_COUNT ?? '150000');
     assert.ok(Number.isSafeInteger(count) && count >= 100 && count % 100 === 0,

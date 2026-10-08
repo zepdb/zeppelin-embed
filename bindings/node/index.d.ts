@@ -610,7 +610,24 @@ export declare class UnsupportedRuntimeError extends Error {
  * it throws `ZE_ERR_CORRUPT`. Any other damage to the log fails every open.
  */
 export declare class Store {
-  constructor(path: string, options?: OpenOptions);
+  graphSetMaintenancePolicy(options: {readonly autoReclaim?: boolean; readonly reclaimAfterBytes?: number}): void;
+  graphMaintain(options?: GraphControlOptions): GraphMaintenanceReport;
+  graphMaintainAsync(options?: GraphAsyncOptions): Promise<GraphMaintenanceReport>;
+  static graphSupported(): boolean;
+  enableGraph(): { readonly generation: bigint };
+  graphResources(): GraphResources;
+  graphApply(items: readonly GraphMutation[], options?: GraphControlOptions): GraphResult;
+  graphApplyAsync(items: readonly GraphMutation[], options?: GraphAsyncOptions): Promise<GraphResult>;
+  cypher(text: string, parameters?: Readonly<Record<string, GraphParameter>>, options?: GraphQueryOptions): GraphResult;
+  cypherAsync(text: string, parameters?: Readonly<Record<string, GraphParameter>>, options?: GraphQueryOptions & GraphAsyncOptions): Promise<GraphResult>;
+  graphQuery(plan: GraphPlan, options?: GraphPlanQueryOptions): GraphResult;
+  graphQueryAsync(plan: GraphPlan, options?: GraphPlanQueryOptions & GraphAsyncOptions): Promise<GraphResult>;
+  graphGetNodes(ids: readonly bigint[], options?: GraphNodeFields & GraphControlOptions): (GraphNode | null)[];
+  graphGetNodesAsync(ids: readonly bigint[], options?: GraphNodeFields & GraphAsyncOptions): Promise<(GraphNode | null)[]>;
+  graphGetRelationships(ids: readonly bigint[], options?: GraphControlOptions): (GraphRelationship | null)[];
+  graphGetRelationshipsAsync(ids: readonly bigint[], options?: GraphAsyncOptions): Promise<(GraphRelationship | null)[]>;
+
+  constructor(path: string, options?: OpenOptions | StoreRelationshipOptions);
   /** Opens on a native worker, including recovery and auto-seal/auto-merge. */
   static openAsync(path: string, options?: OpenOptions): Promise<Store>;
   /** Async variants run engine work on native workers. Input parsing and result
@@ -962,6 +979,7 @@ export type GraphProperties = Readonly<Record<string, GraphProperty>>;
 export type GraphDisposition = 'NotApplicable' | 'NotCommitted' | 'Committed' | 'Replayed' | 'NoOp' | 'Indeterminate';
 
 export interface GraphNode {
+  readonly vector?: Float32Array;
   readonly kind: 'node';
   /** Store-local unsigned 128-bit identity. */
   readonly id: bigint;
@@ -1031,26 +1049,7 @@ export interface GraphMaintenanceReport {
   readonly removedBytes: bigint;
   readonly cycleComplete: boolean;
 }
-export interface GraphOpenOptions {
-  /** Automatic reclamation before writes; default true. Refused with readOnly. */
-  readonly autoReclaim?: boolean;
-  /** Safe integer >= 1048576; default 67108864 (64 MiB). Refused with readOnly. */
-  readonly reclaimAfterBytes?: number;
-  /**
-   * Creation only: at most 16384 unique declarations, persisted in the catalog.
-   * Omit on reopen; supplying this option for readWrite/readOnly is an error.
-   * Undeclared types retain ordinary DELETE/DETACH DELETE behavior.
-   * Cascade work is bounded by engine limits; exceeding them rejects the batch.
-   */
-  readonly relationshipTypes?: readonly GraphRelationshipType[];
-  /** Default create: creates a new store. Reopen explicitly; no legacy Store conversion. */
-  readonly mode?: 'create' | 'readWrite' | 'readOnly';
-  /** Resident budget in bytes, integer 1..268435456; default 268435456. */
-  readonly maxResidentBytes?: number;
-  /** Nonnegative safe integer milliseconds; default 250. */
-  readonly readerDrainTimeoutMs?: number;
-}
-export interface GraphQueryOptions {
+export type GraphQueryOptions = GraphControlOptions & {
   /**
    * Returned-row cap: integer 0..65536. Omitted or 0 selects 1024.
    * Exceeding it throws ZeppelinError with ZE_ERR_BUDGET_EXCEEDED; never truncates.
@@ -1070,12 +1069,20 @@ type GraphWriteOperation =
   | { readonly operation: 'create' }
   | { readonly operation: 'put'; readonly expectedId: bigint }
   | { readonly operation: 'recreate'; readonly expectedDeletionRevision: bigint };
-/** Full replacement image: omitted labels/properties/text become empty/absent. No vectors. */
-export type GraphNodeWrite = GraphKeyedMutation & GraphWriteOperation & {
+/** Full replacement image: omitted labels/properties/text become empty/absent. Vectors and document fields use the Store epoch. */
+export type GraphNodeWrite = GraphKeyedMutation & (
+  | { readonly operation: 'create'; readonly id?: bigint }
+  | { readonly operation: 'put'; readonly expectedId: bigint; readonly id?: never }
+  | { readonly operation: 'recreate'; readonly expectedDeletionRevision: bigint; readonly id?: never }
+) & {
   readonly kind: 'node';
   readonly labels?: readonly string[];
   readonly properties?: GraphProperties;
   readonly text?: string;
+  readonly vector?: Float32Array;
+  readonly timestamp?: bigint;
+  readonly attributes?: readonly AttributeValue[];
+  readonly metadata?: Uint8Array;
 };
 export type GraphRelationshipWrite = GraphKeyedMutation & GraphWriteOperation & {
   readonly kind: 'relationship';
@@ -1089,66 +1096,6 @@ export type GraphDelete = GraphKeyedMutation & {
   readonly expectedId: bigint;
 } & ({ readonly kind: 'node'; readonly detach?: boolean } | { readonly kind: 'relationship' });
 export type GraphMutation = GraphNodeWrite | GraphRelationshipWrite | GraphDelete;
-/**
- * Synchronous graph/Cypher client, currently supported only on macOS arm64.
- * Documents are nodes; apply commits nodes and relationships together. A legacy
- * Store uses a different on-disk store kind and cannot share this transaction.
- * Close explicitly to release the single-writer lock. Native finalization is
- * only a cleanup safety net.
- */
-export class GraphStore {
-  private constructor();
-  static isSupported(): boolean;
-  /** Throws ZE_ERR_UNSUPPORTED on builds without graph support. */
-  static open(path: string, options?: GraphOpenOptions): GraphStore;
-  /** Checkpoints acknowledged writes, then releases the store, even if checkpointing fails.
-   * Idempotent. Subsequent operations throw ZE_ERR_CLOSED. */
-  close(): void;
-  /** One bounded maintenance step. Loop until cycleComplete to finish a cycle. */
-  maintain(): GraphMaintenanceReport;
-  /** One step on a worker; shares the per-handle writer busy rule with applyAsync. */
-  maintainAsync(): Promise<GraphMaintenanceReport>;
-  /**
-   * Atomically applies at most 16384 keyed mutations; no partial batches.
-   * Build large graphs with bounded batches (for example 100 nodes per call).
-   * Each batch returns durable receipts before the next batch is admitted.
-   * Missing endpoints, including endpoints deleted by this mutation, reject.
-   * Declared relationship policies also apply with detach:true. Implicit
-   * cascade deletes advance child revisions and retain deletion fences; receipts
-   * remain one per input item. Writes conflicting with a cascade reject.
-   * Items and properties must be plain data objects. Invalid input is rejected
-   * before effects. Errors retain disposition and known generations: do not
-   * assume an Indeterminate or Committed error means nothing was written.
-   */
-  apply(items: readonly GraphMutation[]): GraphResult;
-  /**
-   * Executes the engine's documented Cypher profile, including mutations.
-   * Global non-distinct count streams its input. ORDER BY immediately followed
-   * by LIMIT retains a bounded ordered prefix. Both evaluate the full input
-   * and enforce the query budgets.
-   * Parameters accept scalars and nested lists (16 levels, 524288 total elements).
-   * bigint values must fit signed I64; numbers are F64. Unknown
-   * options, nonfinite numbers and malformed Unicode are rejected. No graph
-   * search or vector input in this release.
-   * count, sum, min and max accumulate per group; null operands are skipped.
-   * Empty sum/count is 0; empty min/max is null. Sum uses checked numeric
-   * arithmetic; min/max use the same value ordering as ORDER BY.
-   * DISTINCT retains unique keys. ORDER BY with LIMIT retains only offset +
-   * limit rows and preserves input order for ties. All input is still examined.
-   * collect and DISTINCT aggregate operands consume memory for retained values;
-   * the query memory/work budgets and result-row limit still apply.
-   */
-  cypher(text: string, params?: Readonly<Record<string, GraphParameter>>, options?: GraphQueryOptions): GraphResult;
-  /** Off-thread atomic apply. Await dependent writes; concurrent writers may
-   * reject with ZE_ERR_BUSY. close() waits for admitted work or rejects pending
-   * calls with ZE_ERR_CLOSED. Inputs are copied before returning. */
-  applyAsync(items: readonly GraphMutation[]): Promise<GraphResult>;
-  /** Off-thread Cypher with cooperative AbortSignal cancellation. Cancellation
-   * stops the engine and rejects with ZE_ERR_CANCELLED, never partial results.
-   * Completion can win an abort race. Errors retain graph disposition metadata.
-   * close() has the same lifetime contract as applyAsync. */
-  cypherAsync(text: string, params?: Readonly<Record<string, GraphParameter>>, options?: GraphQueryOptions & { readonly signal?: AbortSignal }): Promise<GraphResult>;
-}
 /** One participant; operations run in the listed phase order. */
 export interface NamespaceMutation {
   readonly name: string;
@@ -1234,3 +1181,76 @@ export interface CascadeDeleteParticipant extends CascadeParticipant {
  * bounded reclamation or physical erasure of deleted text is NOT provided.
  */
 export declare function deleteCascade(root: string, participants: readonly CascadeDeleteParticipant[]): bigint[];
+
+export type GraphControlOptions =
+  | { readonly deadlineNs?: bigint; readonly cancelToken?: never }
+  | { readonly deadlineNs?: never; readonly cancelToken?: CancellationToken };
+export type GraphAsyncOptions =
+  | { readonly signal: AbortSignal; readonly deadlineNs?: never; readonly cancelToken?: never }
+  | (GraphControlOptions & { readonly signal?: never });
+export interface GraphNodeFields { readonly text?: boolean; readonly vector?: boolean }
+export interface GraphResources { readonly engineBytes: bigint; readonly enginePeakBytes: bigint; readonly applicationBytes: bigint; readonly applicationPeakBytes: bigint }
+export interface GraphProjection { readonly slot: number; readonly expression: number }
+export interface GraphSortKey { readonly expression: number; readonly descending: boolean }
+export interface GraphExpansion { readonly source: number; readonly node: number; readonly relationship: number; readonly direction: number; readonly types: readonly string[]; readonly pattern: number }
+export interface GraphEdgePredicate { readonly slot: number; readonly expression: number }
+export type GraphExpression =
+  | readonly ['literal', GraphParameter]
+  | readonly ['slot' | 'parameter', number]
+  | readonly ['unary', number, number]
+  | readonly ['binary', number, number, number]
+  | readonly ['property' | 'hasLabel', number, string]
+  | readonly ['list', readonly number[]]
+  | readonly ['aggregate', number, number | null, boolean];
+export type GraphPlanMutation =
+  | readonly ['createNode', number, readonly string[]]
+  | readonly ['createRelationship', number, number, number, string]
+  | readonly ['removeProperty', number, string]
+  | readonly ['setLabel', number, string, boolean]
+  | readonly ['delete', number, boolean]
+  | readonly ['setProperty', number, string, number];
+export type GraphOperator =
+  | readonly ['unit']
+  | readonly ['join' | 'optionalApply', number, number, number | null]
+  | readonly ['distinct' | 'eager' | 'collect', number]
+  | readonly ['sort', number, readonly GraphSortKey[]]
+  | readonly ['scanNodes', number, string | null]
+  | readonly ['mutate', number, readonly GraphPlanMutation[]]
+  | readonly ['aggregate', number, readonly GraphProjection[], readonly GraphProjection[]]
+  | readonly ['search', number, number | null]
+  | readonly ['offsetLimit', number, bigint, bigint | null]
+  | readonly ['lookupNode' | 'lookupRelationship', number, bigint]
+  | readonly ['lookupKey', number, number, string, number]
+  | readonly ['expand', number, GraphExpansion]
+  | readonly ['boundedExpand', number, GraphExpansion, number, number, GraphEdgePredicate | null]
+  | readonly ['project' | 'with', number, readonly GraphProjection[]]
+  | readonly ['filter', number, number]
+  | readonly ['eligibleSet', number, number, number];
+export interface GraphSearchOptions {
+  readonly profile: number; readonly ef: number; readonly seed: bigint;
+  readonly lastAsPrefix: boolean; readonly rescore: number; readonly alpha: number | null;
+  readonly rulesEnabled: boolean; readonly maxRounds: bigint | null;
+}
+export interface GraphSearch {
+  readonly kind: readonly ['vector' | 'text', number] | readonly ['hybrid', number, number];
+  readonly call: number; readonly k: number; readonly tier?: number | null;
+  readonly eligibleSet?: number | null; readonly window?: number | null;
+  readonly node: number; readonly score: number;
+  readonly vectorDistance?: number | null; readonly lexicalScore?: number | null;
+  readonly options?: GraphSearchOptions | null;
+}
+export interface GraphPlan {
+  readonly root: number; readonly operators: readonly GraphOperator[];
+  readonly expressions: readonly GraphExpression[];
+  readonly parameters: readonly {readonly name: string; readonly kinds: number}[];
+  readonly searches: readonly GraphSearch[]; readonly eagerSearches: readonly number[];
+}
+
+/** Synchronous creation only; other open options are refused in this form. */
+export interface StoreRelationshipOptions {
+  readonly relationshipTypes: readonly GraphRelationshipType[];
+  readonly maxResidentBytes?: bigint;
+  readonly readerDrainTimeoutMs?: bigint;
+}
+
+export type GraphPlanQueryOptions = GraphControlOptions & { readonly parameters?: Readonly<Record<string, GraphParameter>> };

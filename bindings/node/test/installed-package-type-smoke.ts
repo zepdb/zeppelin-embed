@@ -1,6 +1,5 @@
 import {
   ABI_VERSION,
-  GraphStore,
   type GraphMutation,
   type GraphResult,
   type GraphValue,
@@ -63,10 +62,10 @@ token.close();
 records.close();
 store.close();
 
-const graph = GraphStore.open('/unused/typecheck-graph');
+const graph = new Store('/unused/typecheck-graph', {maxResidentBytes: 268435456n});
 const items: GraphMutation[] = [{ kind: 'node', operation: 'create', namespace: 'notes',
   key: 'first', revision: 1n, labels: ['Note'] }];
-const graphReport: GraphResult = graph.apply(items);
+const graphReport: GraphResult = graph.graphApply(items);
 const graphResult: GraphResult = graph.cypher('MATCH (n) RETURN n');
 const values: readonly GraphValue[] = graphResult.rows[0];
 void graphReport;

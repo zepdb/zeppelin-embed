@@ -82,12 +82,12 @@ try {
 }
 
 // Release gate: exercise graph from the installed tarball on each supported host.
-const { GraphStore } = require('@zepdb/zeppelin-embed');
 const graphDirectory = mkdtempSync(join(tmpdir(), 'zeppelin-installed-graph-'));
-assert.equal(GraphStore.isSupported(), true);
-const graph = GraphStore.open(join(graphDirectory, 'graph'));
+assert.equal(Store.graphSupported(), true);
+const graph = new Store(join(graphDirectory, 'graph'), {maxResidentBytes: 268435456n});
 try {
-  const report = graph.apply([
+  graph.enableGraph();
+  const report = graph.graphApply([
     { kind: 'node', operation: 'create', namespace: 'notes', key: 'first',
       revision: 1n, labels: ['Note'], properties: { title: 'Planning' } },
     { kind: 'node', operation: 'create', namespace: 'folders', key: 'work',
@@ -103,7 +103,7 @@ try {
 } finally {
   graph.close();
 }
-const reopened = GraphStore.open(join(graphDirectory, 'graph'), { mode: 'readOnly' });
+const reopened = new Store(join(graphDirectory, 'graph'), {readOnly: true, maxResidentBytes: 268435456n});
 try {
   assert.deepEqual(reopened.cypher('MATCH (n) RETURN count(n)').rows, [[2n]]);
 } finally {

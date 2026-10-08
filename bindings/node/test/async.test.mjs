@@ -1,10 +1,11 @@
+import { openGraph } from './graph-fixture.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-const { Store, GraphStore, openNamespace, openNamespaceAsync, ZeppelinError } = createRequire(import.meta.url)('..');
+const { Store, openNamespace, openNamespaceAsync, ZeppelinError } = createRequire(import.meta.url)('..');
 const cancelled = e => e instanceof ZeppelinError && e.code === 'ZE_ERR_CANCELLED';
 async function fixture(fn) {
   const root = mkdtempSync(join(tmpdir(), 'ze249-'));
@@ -60,22 +61,22 @@ test('query and scan AbortSignal preserve cancellation and complete-result races
     assert.ok(performance.now() - start < 2000, 'cancellation settles within 2s');
   }
 }));
-test('graph async parity cancellation and close', { skip: !GraphStore.isSupported() }, async () => {
+test('graph async parity cancellation and close', { skip: !Store.graphSupported() }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'ze249-graph-'));
-  const s = GraphStore.open(join(root, 'graph'));
+  const s = openGraph(join(root, 'graph'));
   try {
-    await s.applyAsync([{ kind: 'node', operation: 'create', namespace: 'docs', key: 'a', revision: 1n }]);
+    await s.graphApplyAsync([{ kind: 'node', operation: 'create', namespace: 'docs', key: 'a', revision: 1n }]);
     assert.deepEqual(await s.cypherAsync('MATCH (n) RETURN n'), s.cypher('MATCH (n) RETURN n'));
     const c = new AbortController(); c.abort();
     await assert.rejects(s.cypherAsync('RETURN 1', {}, { signal: c.signal }), cancelled);
     const p = s.cypherAsync('RETURN 1'); s.close();
     await p.catch(e => assert.equal(e.code, 'ZE_ERR_CLOSED'));
     await assert.rejects(s.cypherAsync('RETURN 1'), e => e.code === 'ZE_ERR_CLOSED');
-    const writer = GraphStore.open(join(root, 'graph'), { mode: 'readWrite' });
-    const write = writer.applyAsync([{ kind: 'node', operation: 'create', namespace: 'docs', key: 'b', revision: 1n }]);
+    const writer = openGraph(join(root, 'graph'), {});
+    const write = writer.graphApplyAsync([{ kind: 'node', operation: 'create', namespace: 'docs', key: 'b', revision: 1n }]);
     writer.close();
     await write.catch(e => assert.equal(e.code, 'ZE_ERR_CLOSED'));
-  } finally { s.close(); rmSync(root, { recursive: true, force: true }); }
+  } finally { try { s.close(); } catch (e) { if (e.code !== 'ZE_ERR_CLOSED') throw e; } rmSync(root, { recursive: true, force: true }); }
 });
 
 test('async open and mutation policies preserve ownership and errors', async () => {
@@ -138,9 +139,9 @@ test('pending query scan and cypher cancel from a microtask within 2s', { timeou
     await s.upsertAsync(Array.from({ length: 50000 }, (_, i) => ({ id: BigInt(i), vector, timestamp: BigInt(50000 - i) })));
     await abortWhilePending(signal => s.queryAsync({ vector, k: 50000, tier: 'exact', signal }));
     await abortWhilePending(signal => s.scanAsync({ limit: 50000, order: 'timestampAscending', signal }));
-    if (GraphStore.isSupported()) {
-      graph = GraphStore.open(join(root, 'graph'));
-      await graph.applyAsync(Array.from({ length: 33 }, (_, i) => ({ kind: 'node', operation: 'create', namespace: 'n', key: String(i), revision: 1n })));
+    if (Store.graphSupported()) {
+      graph = openGraph(join(root, 'graph'));
+      await graph.graphApplyAsync(Array.from({ length: 33 }, (_, i) => ({ kind: 'node', operation: 'create', namespace: 'n', key: String(i), revision: 1n })));
       await abortWhilePending(signal => graph.cypherAsync('MATCH (a), (b), (c), (d) RETURN count(a)', {}, { signal }));
     }
     const pending = s.queryAsync({ vector, k: 50000, tier: 'exact' });

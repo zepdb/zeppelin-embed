@@ -528,54 +528,58 @@ try {
 original application's namespace spec. It retains tokenizer compatibility
 checks and rejects writes. Ordinary `Store` and `openNamespace` epoch/schema
 validation is unchanged. This shell inspects document stores, not graph stores.
-## Graph documents and Cypher — 0.6.0 MVP
+## Graph documents and Cypher
 
-Structured graph query, node/relationship getters and resource APIs are not
-yet exposed in Node. The existing graph MVP methods ship in 0.6.0.
-
-**Disk reclamation.** Writable graph stores default to `autoReclaim: true`
-with `reclaimAfterBytes: 67108864` (64 MiB). Set a safe integer threshold of
-at least 1 MiB to reclaim more often, or set `autoReclaim: false` and call
-`maintain()` / `maintainAsync()` explicitly. Each call returns a scalar report;
-loop until `cycleComplete` to finish a cycle. Automatic work runs before the
-next write after the threshold, taking up to eight cycles of at most four
-bounded steps each. It can add write latency and propagates maintenance errors
-before staging that write. The options are refused on read-only opens.
-
-
-`GraphStore` uses the existing graph store format. A document is a node, so a
-single `apply` commits document nodes and relationships atomically. A legacy
-`Store` directory cannot be opened as a graph store or participate in its writes.
-This labelled graph MVP ships on darwin-arm64, darwin-x64 and win32-x64
-(node-napi8 and electron-44). The macOS deployment target stays 11;
-`GraphStore.isSupported()` returns false below macOS 14, and `open` throws
-`ZeppelinError` with `ZE_ERR_UNSUPPORTED`. Full qualification remains ZE-78.
-A Cypher statement creates about 121 nodes under default budgets; use `apply`
-for bulk writes. Graph search inside Cypher is not included (ZE-58).
+Graph methods use the same `Store` handle as document methods. A node's ID is
+its document ID. Call `enableGraph()` explicitly to opt into graph storage;
+opening a Store or checking `Store.graphSupported()` does not enable it.
+Graph-free builds expose the methods and throw `ZE_ERR_GRAPH_UNSUPPORTED_BUILD`.
 
 ```js
-const { GraphStore } = require('@zepdb/zeppelin-embed');
-const graph = GraphStore.open('/path/to/new-graph');
+const { Store } = require('@zepdb/zeppelin-embed');
+const store = new Store('/path/to/store', { maxResidentBytes: 268435456n });
 try {
-  const result = graph.apply([
+  store.enableGraph();
+  const result = store.graphApply([
     { kind: 'node', operation: 'create', namespace: 'notes', key: 'note-1',
-      revision: 1n, labels: ['Note'], text: 'Meeting notes',
+      revision: 1n, id: 1n, labels: ['Note'], text: 'Meeting notes',
+      timestamp: 10n, metadata: new Uint8Array([1]),
       properties: { title: 'Planning', done: false } },
     { kind: 'node', operation: 'create', namespace: 'folders', key: 'work',
       revision: 1n, labels: ['Folder'], properties: { name: 'Work' } },
     { kind: 'relationship', operation: 'create', namespace: 'filing', key: 'note-1/work',
       revision: 1n, type: 'IN_FOLDER', source: { local: 0 }, target: { local: 1 } },
   ]);
-  console.log(result.disposition, result.generation, result.receipts);
-  console.log(graph.cypher(
-    'MATCH (n:Note)-[:IN_FOLDER]->(f:Folder) WHERE f.name = $name RETURN n, ze.stored_text(n)',
-    { name: 'Work' }, { maxRows: 4096 },
-  ).rows);
-} finally {
-  graph.close();
-}
-// Reopen explicitly: GraphStore.open(path, { mode: 'readWrite' }) or 'readOnly'.
+  console.log(result.receipts);
+  console.log(store.cypher('MATCH (n:Note) WHERE n.title IN $titles RETURN n',
+    { titles: ['Planning'] }).rows);
+  console.log(store.graphGetNodes([1n, 999n, 1n], { text: true }));
+  console.log(store.graphQuery({root: 0, operators: [['scanNodes', 0, 'Note']],
+    expressions: [], parameters: [], searches: [], eagerSearches: []}).rows);
+} finally { store.close(); }
+// Reopen with new Store(path), or new Store(path, {readOnly: true}).
 ```
+
+Node items can also carry a finite `Float32Array` vector and the same
+`attributes` array accepted by `upsert`. Vectors must match the Store's vector
+space; create a namespace with `openNamespace` to declare that space/schema.
+`id` selects a document ID on create only. Getters preserve input order,
+duplicates, and nulls for missing IDs, and copy vectors into independent arrays.
+`graphResources()` returns four bigint allocation counters.
+
+`graphApplyAsync`, `cypherAsync`, `graphQueryAsync`, `graphGetNodesAsync`, and
+`graphGetRelationshipsAsync` accept an options object containing `signal`.
+Requests copy nested buffers before queuing work. Cancellation waits for the
+worker to settle; completion may win an abort race. Sync/async graph calls also
+accept `cancelToken` or a relative `deadlineNs`; use one interruption source.
+Structured plans use tagged tuples in the declaration order in `index.d.ts`.
+
+Creation-only relationship policies use `new Store(path, {relationshipTypes:
+[{type: 'IN_FOLDER', onDelete: 'restrict'}], maxResidentBytes: 268435456n})`.
+This synchronous creation form accepts only relationship types, resident limit,
+and reader drain timeout. Graph maintenance uses `graphMaintain()` /
+`graphMaintainAsync()`. Configure it explicitly with `graphSetMaintenancePolicy`
+and `{autoReclaim, reclaimAfterBytes}`; document `maintain()` retains its behavior.
 
 Mutations are keyed by `(namespace, key)` with positive unsigned 64-bit bigint
 revisions. Exact retries report `Replayed`. `put` replaces the full image and

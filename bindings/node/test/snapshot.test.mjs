@@ -1,3 +1,4 @@
+import { openGraph } from './graph-fixture.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -204,25 +205,23 @@ test('snapshot rejects unusable targets and handles', async () => {
 });
 
 test('backupAsync restores graph nodes and relationships in the same store', async (t) => {
-  const { GraphStore, Store, verify } = require('..');
-  if (!GraphStore.isSupported()) { t.skip('graph unavailable'); return; }
+  const { Store, verify } = require('..');
+  if (!Store.graphSupported()) { t.skip('graph unavailable'); return; }
   const root = temporaryRoot('zeppelin-node-backup-graph-');
   const source = join(root, 'source');
   const target = join(root, 'backup');
   try {
-    const graph = GraphStore.open(source, { autoReclaim: false });
-    graph.apply([
+    const graph = openGraph(source, { autoReclaim: false });
+    graph.graphApply([
       { kind: 'node', operation: 'create', namespace: 'test', key: 'a', revision: 1n },
       { kind: 'node', operation: 'create', namespace: 'test', key: 'b', revision: 1n },
       { kind: 'relationship', operation: 'create', namespace: 'test', key: 'ab', revision: 1n,
         type: 'LINKS', source: { local: 0 }, target: { local: 1 } },
     ]);
-    graph.close();
-    const store = new Store(source, FAST);
-    try { await store.backupAsync(target); } finally { store.close(); }
+    try { await graph.backupAsync(target); } finally { graph.close(); }
     assert.equal(verify(target).findings.length, 0);
     for (const mode of ['readOnly', 'readWrite']) {
-      const restored = GraphStore.open(target, { mode });
+      const restored = openGraph(target, {readOnly: mode === 'readOnly'});
       try { assert.deepEqual(restored.cypher('MATCH (a)-[:LINKS]->(b) RETURN count(a)').rows, [[1n]]); }
       finally { restored.close(); }
     }

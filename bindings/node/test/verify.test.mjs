@@ -1,3 +1,4 @@
+import { openGraph } from './graph-fixture.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -245,13 +246,13 @@ test('zeppelin-verify prints the report and exits 0 clean, 1 damaged, 2 unusable
 });
 
 test('verify reports graphObjectCorrupt without changing the directory', async (t) => {
-  const { GraphStore } = require('..');
-  if (!GraphStore.isSupported()) { t.skip('graph unavailable'); return; }
+  const { Store } = require('..');
+  if (!Store.graphSupported()) { t.skip('graph unavailable'); return; }
   const root = mkdtempSync(join(tmpdir(), 'zeppelin-node-verify-graph-'));
   const directory = join(root, 'store');
   try {
-    const graph = GraphStore.open(directory, { autoReclaim: false });
-    graph.apply([{ kind: 'node', operation: 'create', namespace: 'test', key: 'a', revision: 1n }]);
+    const graph = openGraph(directory, { autoReclaim: false });
+    graph.graphApply([{ kind: 'node', operation: 'create', namespace: 'test', key: 'a', revision: 1n }]);
     graph.close();
     const file = readdirSync(directory).find(name => name.endsWith('.zgraph'));
     const path = join(directory, file);

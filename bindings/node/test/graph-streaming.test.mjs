@@ -1,26 +1,27 @@
+import { openGraph } from './graph-fixture.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-const { GraphStore } = createRequire(import.meta.url)('..');
+const { Store } = createRequire(import.meta.url)('..');
 
 function streamingAcceptance(count) {
   const dir = mkdtempSync(join(tmpdir(), 'ze255-node-'));
   const path = join(dir, 'graph');
   let store;
   try {
-    store = GraphStore.open(path);
+    store = openGraph(path);
     for (let start = 0; start < count; start += 16) {
-      store.apply(Array.from({ length: Math.min(16, count - start) }, (_, offset) => {
+      store.graphApply(Array.from({ length: Math.min(16, count - start) }, (_, offset) => {
         const i = start + offset;
         return { kind: 'node', operation: 'create', namespace: 's', key: String(i),
           revision: 1n, labels: ['Segment'], properties: { i: BigInt(i), k: BigInt(i % 7) } };
       }));
     }
     store.close();
-    store = GraphStore.open(path, { mode: 'readWrite' });
+    store = openGraph(path, {});
     assert.deepEqual(store.cypher('MATCH (s:Segment) RETURN count(s)').rows, [[BigInt(count)]]);
     assert.deepEqual(store.cypher('MATCH (s:Segment) RETURN s.k AS speaker, count(s) AS n ORDER BY speaker').rows,
       Array.from({ length: 7 }, (_, i) => [BigInt(i), BigInt(Math.floor(count / 7) + (i < count % 7 ? 1 : 0))]));
@@ -36,7 +37,7 @@ function streamingAcceptance(count) {
 // Largest measured build/reopen fixture under default budgets with this shape:
 // 444 nodes pass; adding node 445 exhausts graph directory work (ZE-257).
 test('ZE-255 default cypher streams aggregates, top-k and DISTINCT over 444 segments',
-  { skip: !GraphStore.isSupported() }, () => streamingAcceptance(444));
+  { skip: !Store.graphSupported() }, () => streamingAcceptance(444));
 
 test('ZE-255 default cypher over 200000 segments',
   { skip: 'needs ZE-257 (graph reopen and build at 200,000 nodes)' },
