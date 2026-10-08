@@ -11,6 +11,43 @@ release and a compatible correction is a patch release.
 - Node `GraphStore.cypher` and `cypherAsync` accept list parameters, including
   nested lists, nulls, mixed scalar types and numeric typed arrays.
 
+## 0.7.0 (unreleased)
+
+### Changed
+
+- Documents and graph share one Store handle, manifest and WAL. `NodeId`
+  shares `DocId`; legacy documents have an implicit `Document` label.
+  Store durability governs graph, and Restrict policies refuse document deletes.
+- Rust `GraphStore` is replaced by graph methods on `Store` and
+  `StoreCypherExt`. The binding migration replaces `ZeGraphHandle` and
+  `ZeppelinGraphStore` ownership with `ze_handle` and `ZeppelinStore`;
+  Node graph methods move to `Store`. See
+  [ADR-022's migration table](docs/adr/ADR-022-one-store-for-documents-and-graph.md#api-and-migration).
+- ZE-360 targets additive `ze_store_*` functions: `ze_store_enable_graph`,
+  `ze_store_graph_apply`, `ze_store_graph_apply_v2`, `ze_store_graph_query`,
+  `ze_store_cypher`, `ze_store_cypher_with_row_limit`, `ze_store_get_nodes`,
+  `ze_store_get_relationships`, `ze_store_graph_resources`. Names may still
+  change in ZE-360; this checkout's header retains the `ze_graph_*` surface.
+  Keep `ze_graph_response_free` for graph results and the append-only C ABI.
+- Current C error names: `ZE_ERR_FORMAT_TOO_NEW` (56),
+  `ZE_ERR_LEGACY_GRAPH_DIRECTORY` (58), `ZE_ERR_GRAPH_UNSUPPORTED_BUILD` (59),
+  `ZE_ERR_GRAPH_EPOCH_TRANSITION` (60). Any additional ZE-360 errors must be
+  appended; the planned GraphDisabled code is not assigned here.
+
+### Notes for upgrading
+
+- Document stores from 0.4.x–0.6.0 open unchanged. Graph-free encoding stays
+  byte-identical (manifest v2, WAL operations <= 9) until the first graph
+  write or explicit `enable_graph`; ordinary document writes keep their format.
+- The first graph write upgrades the manifest to v3; an older binary then
+  refuses the store. Explicit enable also upgrades it. Snapshot beforehand;
+  restore that snapshot to downgrade. Refusal preserves data bytes, although
+  namespace opens may create lock files. Old standalone graph directories
+  have no converter.
+- A graph-free build refuses graph stores with `GraphUnsupportedBuild`.
+  The Python wheel has no graph. Python graph method stubs are owned by ZE-363
+  and report `UnsupportedBuild`; they do not add graph to the wheel.
+
 ## 0.6.0 - 2026-10-06
 
 ### Added
