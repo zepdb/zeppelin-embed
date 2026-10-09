@@ -61,6 +61,10 @@ pub struct Model {
     #[cfg(feature = "graph-cypher")]
     pub graph_nodes: BTreeSet<u32>,
     #[cfg(feature = "graph-cypher")]
+    graph_node_ids: BTreeMap<u32, u32>,
+    #[cfg(feature = "graph-cypher")]
+    graph_node_high_water: u32,
+    #[cfg(feature = "graph-cypher")]
     pub edges: BTreeMap<u32, (u32, u32)>,
     #[cfg(feature = "graph-cypher")]
     pub document_edges: BTreeMap<u32, (u32, u32)>,
@@ -78,6 +82,19 @@ pub struct Model {
 }
 
 impl Model {
+    /// The unified graph publication owns one document snapshot outside the
+    /// published slot; this is not an outstanding caller lease.
+    pub fn quiescent_snapshot_owners(&self) -> u64 {
+        #[cfg(feature = "graph-cypher")]
+        {
+            u64::from(self.graph_enabled)
+        }
+        #[cfg(not(feature = "graph-cypher"))]
+        {
+            0
+        }
+    }
+
     pub fn prepare_epoch_b(&mut self) {
         self.epoch_b_prepared = true;
     }
@@ -137,6 +154,20 @@ impl Model {
     }
 
     pub fn delete(&mut self, doc_id: u32) {
+        #[cfg(feature = "graph-cypher")]
+        {
+            let removed = self
+                .graph_node_ids
+                .iter()
+                .find_map(|(key, id)| (*id == doc_id).then_some(*key));
+            if let Some(key) = removed {
+                self.graph_nodes.remove(&key);
+                self.edges
+                    .retain(|_, (from, to)| *from != key && *to != key);
+            }
+            self.document_edges
+                .retain(|_, (from, to)| *from != doc_id && *to != doc_id);
+        }
         self.live.remove(&doc_id);
         self.active.remove(&doc_id);
         self.deleted.insert(doc_id);
@@ -626,7 +657,25 @@ impl Model {
                 }
                 let from = graph_key.checked_mul(2).ok_or("graph key overflow")?;
                 let to = from.checked_add(1).ok_or("graph key overflow")?;
-                next.graph_nodes.extend([from, to]);
+                // Allocation shares the document ID domain. Keep the key's
+                // incarnation even after deletion: high waters never rewind.
+                for key in [from, to] {
+                    if !next.graph_node_ids.contains_key(&key) {
+                        loop {
+                            next.graph_node_high_water = next
+                                .graph_node_high_water
+                                .checked_add(1)
+                                .ok_or("node id overflow")?;
+                            let id = next.graph_node_high_water;
+                            let submitted_document = matches!(*op, program::Op::MixedBatch { doc_id, .. } if doc_id == id);
+                            if !next.live.contains_key(&id) && !submitted_document {
+                                next.graph_node_ids.insert(key, id);
+                                break;
+                            }
+                        }
+                        next.graph_nodes.insert(key);
+                    }
+                }
                 next.edges.insert(graph_key, (from, to));
                 match *op {
                     program::Op::MixedBatch {

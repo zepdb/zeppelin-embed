@@ -975,3 +975,175 @@ pub fn probe_unified_read_refusal() -> Result<(), String> {
     engine.execute_unified(&mut model, &Op::GraphApply { graph_key: 2 })?;
     check_unified(&model, &engine.observe_unified()?)
 }
+
+#[cfg(test)]
+mod ze410_tests {
+    use super::*;
+
+    #[test]
+    fn unified_storage_mutations_preserve_acknowledged_documents_and_graph() {
+        for seed in 0..4 {
+            let root = tempfile::tempdir().unwrap();
+            let mut engine = RealEngine::without_faults(root.path().to_owned());
+            let mut model = Model::default();
+            for (index, op) in Program::generate_for(CampaignKind::StorageDurability, seed)
+                .ops
+                .iter()
+                .enumerate()
+                .take(46)
+            {
+                let ack = match *op {
+                    Op::Open => {
+                        engine.open().unwrap();
+                        None
+                    }
+                    Op::Ingest {
+                        first_id,
+                        count,
+                        revision,
+                        timestamp,
+                    } => {
+                        let docs = (first_id..first_id + count)
+                            .map(|doc_id| DocMutation {
+                                doc_id,
+                                revision,
+                                timestamp,
+                            })
+                            .collect::<Vec<_>>();
+                        let ack = engine.ingest(&docs).unwrap();
+                        for doc in docs {
+                            model.acknowledge(doc.doc_id, doc.revision, doc.timestamp);
+                        }
+                        Some(ack)
+                    }
+                    Op::EnableGraph | Op::GraphApply { .. } | Op::MixedBatch { .. } => {
+                        engine.execute_unified(&mut model, op).unwrap()
+                    }
+                    Op::Seal => {
+                        let ack = engine.seal().unwrap();
+                        model.seal();
+                        Some(ack)
+                    }
+                    Op::Maintain { bytes } => Some(engine.maintain(bytes).unwrap()),
+                    Op::Revise {
+                        doc_id,
+                        revision,
+                        timestamp,
+                    } => {
+                        let ack = engine
+                            .ingest(&[DocMutation {
+                                doc_id,
+                                revision,
+                                timestamp,
+                            }])
+                            .unwrap();
+                        model.acknowledge(doc_id, revision, timestamp);
+                        Some(ack)
+                    }
+                    Op::Upsert {
+                        doc_id,
+                        revision,
+                        timestamp,
+                    } => {
+                        let ack = engine
+                            .ingest(&[DocMutation {
+                                doc_id,
+                                revision,
+                                timestamp,
+                            }])
+                            .unwrap();
+                        model.acknowledge(doc_id, revision, timestamp);
+                        Some(ack)
+                    }
+                    Op::Delete { doc_id } => {
+                        let ack = engine.delete(doc_id).unwrap();
+                        model.delete(doc_id);
+                        Some(ack)
+                    }
+                    Op::Purge { doc_id } => {
+                        let ack = engine.purge(doc_id).unwrap();
+                        model.purge(doc_id);
+                        Some(ack)
+                    }
+                    Op::Close => {
+                        engine.close().unwrap();
+                        None
+                    }
+                    Op::Reopen => {
+                        engine.reopen().unwrap();
+                        None
+                    }
+                    _ => continue,
+                };
+                if let Some(ack) = ack {
+                    model.unified_generation = ack.generation;
+                }
+                if matches!(op, Op::Close) {
+                    continue;
+                }
+                check_unified(&model, &engine.observe_unified().unwrap())
+                    .unwrap_or_else(|e| panic!("op {index} {op:?}: {e}"));
+                let found = engine
+                    .search(&program::query(3), usize::MAX, SearchKind::Scan, 0)
+                    .unwrap()
+                    .hits
+                    .into_iter()
+                    .map(|h| h.doc_id)
+                    .collect::<BTreeSet<_>>();
+                assert_eq!(found, model.live_ids(), "op {index} {op:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unified_reopen_counts_internal_snapshot_owner_and_rejects_leaks() {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = RealEngine::without_faults(root.path().to_owned());
+        engine.open().unwrap();
+        let mut model = Model::default();
+        let stats = engine.stats().unwrap();
+        assert_eq!(stats.active_snapshot_leases, 0);
+        assert!(
+            lifecycle_stats_violation(
+                1,
+                FaultProfile::None,
+                0,
+                model.quiescent_snapshot_owners(),
+                stats
+            )
+            .is_none()
+        );
+        engine
+            .execute_unified(&mut model, &Op::EnableGraph)
+            .unwrap();
+        engine.reopen().unwrap();
+        check_unified(&model, &engine.observe_unified().unwrap()).unwrap();
+        let stats = engine.stats().unwrap();
+        assert_eq!(stats.active_snapshot_leases, 1);
+        assert!(
+            lifecycle_stats_violation(
+                1,
+                FaultProfile::None,
+                1,
+                model.quiescent_snapshot_owners(),
+                stats
+            )
+            .is_none()
+        );
+        let leaked = engine.store().unwrap().snapshot().unwrap();
+        let stats = engine.stats().unwrap();
+        assert_eq!(stats.active_snapshot_leases, 2);
+        assert!(
+            lifecycle_stats_violation(
+                1,
+                FaultProfile::None,
+                2,
+                model.quiescent_snapshot_owners(),
+                stats
+            )
+            .is_some()
+        );
+        drop(leaked);
+        assert_eq!(engine.stats().unwrap().active_snapshot_leases, 1);
+    }
+}

@@ -3669,9 +3669,13 @@ fn run_program_for_with_clock(
                     coverage.hit("fault.busy.spawn.first-attempt");
                     match engine.stats() {
                         Ok(stats) => {
-                            if let Some(violation) =
-                                lifecycle_stats_violation(seed, profile, op_index, stats)
-                            {
+                            if let Some(violation) = lifecycle_stats_violation(
+                                seed,
+                                profile,
+                                op_index,
+                                model.quiescent_snapshot_owners(),
+                                stats,
+                            ) {
                                 violations.push(violation);
                             }
                         }
@@ -3692,9 +3696,13 @@ fn run_program_for_with_clock(
                     }
                     match engine.stats() {
                         Ok(stats) => {
-                            if let Some(violation) =
-                                lifecycle_stats_violation(seed, profile, op_index, stats)
-                            {
+                            if let Some(violation) = lifecycle_stats_violation(
+                                seed,
+                                profile,
+                                op_index,
+                                model.quiescent_snapshot_owners(),
+                                stats,
+                            ) {
                                 violations.push(violation);
                             }
                         }
@@ -18630,9 +18638,10 @@ fn lifecycle_stats_violation(
     seed: u64,
     profile: FaultProfile,
     op_index: usize,
+    expected_snapshot_owners: u64,
     stats: StatsObservation,
 ) -> Option<Violation> {
-    (stats.open_files != 2 || stats.active_queries != 0 || stats.active_snapshot_leases != 0)
+    (stats.open_files != 2 || stats.active_queries != 0 || stats.active_snapshot_leases != expected_snapshot_owners)
         .then(|| {
             violation(
                 Invariant::I8,
@@ -18927,7 +18936,7 @@ pub fn planted_counterexample(invariant: Invariant) -> Violation {
                 active_queries: 0,
                 active_snapshot_leases: 0,
             };
-            lifecycle_stats_violation(seed, FaultProfile::None, 1, stats)
+            lifecycle_stats_violation(seed, FaultProfile::None, 1, 0, stats)
                 .expect("leaked descriptor must trip I8")
         }
         Invariant::I9 => generation_violation(
