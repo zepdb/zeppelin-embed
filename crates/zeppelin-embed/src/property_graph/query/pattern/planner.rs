@@ -464,6 +464,10 @@ mod incident_source_tests {
         if let OperatorKind::Expand { direction, .. } = &mut operators[2].kind {
             *direction = Direction::Outgoing;
         }
+        operators[1].kind = OperatorKind::ScanNodes {
+            output: SlotId(0), label: Some(crate::property_graph::GraphName::new("Document").unwrap()),
+        };
+        assert!(incident_source_scan(&operators, &[], PlanNodeId(2)).is_some());
         operators[1].inputs = &scan_input; // A scan chain/correlated anchor is not Unit.
         assert!(incident_source_scan(&operators, &[], PlanNodeId(2)).is_none());
     }

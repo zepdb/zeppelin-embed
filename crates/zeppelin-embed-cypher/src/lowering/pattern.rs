@@ -120,7 +120,7 @@ impl Builder<'_, '_, '_> {
             Ok(input)
         }
     }
-    /// Only the complete, infallible ID equality of an initial single-node
+    /// Only the complete, infallible ID equality of an initial fixed-length
     /// read may replace enumeration. Constraints and WHERE remain residuals.
     fn id_equality_lookup(
         &self,
@@ -132,9 +132,22 @@ impl Builder<'_, '_, '_> {
         };
         let part = syntax(bound, *part_id)?;
         let predicate = syntax(bound, *predicate_id)?;
-        let [node_id] = part.children() else {
+        let Some(node_id) = part.children().first() else {
             return Ok(None);
         };
+        if part.children().iter().any(|id| {
+            bound.syntax().node(*id).is_some_and(|node| {
+                matches!(
+                    node.kind,
+                    NodeKind::RelationshipPattern {
+                        bounds: Some(_),
+                        ..
+                    }
+                )
+            })
+        }) {
+            return Ok(None);
+        }
         let node = syntax(bound, *node_id)?;
         if predicate.kind != NodeKind::Predicate
             || !matches!(node.kind, NodeKind::NodePattern { .. })
@@ -223,6 +236,42 @@ impl Builder<'_, '_, '_> {
             let first = child(part, 0)?;
             let mut anchor = slot(bound, first)?;
             let first_node = syntax(bound, first)?;
+            // A simple label on a fresh fixed-length relationship anchor is
+            // represented by the structured scan's existing label field.
+            let scan_label = if initial_read
+                && !optional
+                && lookup.is_none()
+                && part.children().len() > 1
+                && !part.children().iter().any(|id| {
+                    bound.syntax().node(*id).is_some_and(|node| {
+                        matches!(
+                            node.kind,
+                            NodeKind::RelationshipPattern {
+                                bounds: Some(_),
+                                ..
+                            }
+                        )
+                    })
+                })
+                && !self.scoped(anchor)
+            {
+                if let [label_id] = first_node.children()
+                    && let NodeKind::Name(name) = syntax(bound, *label_id)?.kind
+                {
+                    Some(
+                        self.copy_text(
+                            bound
+                                .syntax()
+                                .text(name)
+                                .ok_or_else(|| invariant(first_node.span, "anchor label"))?,
+                        )?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             if self.scoped(anchor) {
                 let operand = self.expression(DraftExpr::Slot(anchor), first_node.span)?;
                 let predicate = self.expression(
@@ -236,12 +285,17 @@ impl Builder<'_, '_, '_> {
             } else {
                 let op = match lookup {
                     Some(id) => DraftOp::LookupNode { output: anchor, id },
-                    None => DraftOp::Scan(anchor),
+                    None => DraftOp::Scan {
+                        output: anchor,
+                        label: scan_label,
+                    },
                 };
                 current = self.operator(op, &[current], first_node.span)?;
                 self.add_scope(anchor, first_node.span)?;
             }
-            current = self.filter_constraints(bound, first_node, anchor, current)?;
+            if scan_label.is_none() {
+                current = self.filter_constraints(bound, first_node, anchor, current)?;
+            }
             let mut index = 1;
             while index < part.children().len() {
                 let relationship_id = child(part, index)?;

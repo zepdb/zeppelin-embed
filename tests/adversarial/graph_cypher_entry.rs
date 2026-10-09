@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 32] = [
+pub const REQUIRED_COVERAGE: [&str; 36] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -50,6 +50,10 @@ pub const REQUIRED_COVERAGE: [&str; 32] = [
     "property-graph.cypher-entry.expand-rebind.clean",
     "property-graph.cypher-entry.expand.authoritative-row",
     "property-graph.cypher-entry.relationship-cancel.fire",
+    "property-graph.cypher-entry.incident-incoming.read",
+    "property-graph.cypher-entry.incident-undirected.read",
+    "property-graph.cypher-entry.incident-labelled.read",
+    "property-graph.cypher-entry.id-expand.read",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -196,6 +200,7 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         probe_page_validation(&store)?;
         probe_expansion_rebind(&store, base)?;
         probe_relationship_control(&store)?;
+        probe_other_anchor_shapes(&store)?;
         generations.push(read(&store)?.1);
         probe_id_lookup(&store)?;
 
@@ -342,6 +347,75 @@ fn probe_page_validation(store: &Store) -> Result<(), String> {
         return Err(format!(
             "page validation is not statement-scoped: {page_counts:?}"
         ));
+    }
+    Ok(())
+}
+
+fn probe_other_anchor_shapes(store: &Store) -> Result<(), String> {
+    use zeppelin_embed::property_graph::query::pattern_test_support::{
+        observe_document_visits, with_original_node_sources,
+    };
+    for (text, count) in [
+        ("MATCH (a)<-[r:R]-(b) RETURN count(r)", 1),
+        ("MATCH (a)-[r:R]-(b) RETURN count(r)", 2),
+        ("MATCH (a:P)-[r:R]->(b) RETURN count(r)", 1),
+    ] {
+        let (result, visits) = observe_document_visits(|| run(store, text, &[]));
+        let result = result.map_err(|error| error.to_string())?;
+        let original = with_original_node_sources(|| run(store, text, &[]))
+            .map_err(|error| error.to_string())?;
+        if values(&result)? != [count] || values(&original)? != [count] || visits != 0 {
+            return Err(format!(
+                "sparse anchor rows or document visits differ: {text}"
+            ));
+        }
+        let zero = run(
+            store,
+            &text.replace("RETURN count(r)", "RETURN r LIMIT 0"),
+            &[],
+        )
+        .map_err(|error| error.to_string())?;
+        if zero.metadata().rows != 0
+            || zero
+                .metadata()
+                .counters
+                .get(zeppelin_embed::property_graph::query::runtime::WorkKind::Scans)
+                != 0
+        {
+            return Err("sparse anchor LIMIT 0 scanned".into());
+        }
+    }
+    let node =
+        run(store, "MATCH (p:P) RETURN ze.node_id(p)", &[]).map_err(|error| error.to_string())?;
+    let Some(Value::String(span)) = node.cell(0, 0) else {
+        return Err("anchor identity missing".into());
+    };
+    let id = node.string(*span).ok_or("anchor identity text missing")?;
+    let parameters = [ParameterBinding {
+        name: "id",
+        value: QueryValue::String(id),
+    }];
+    let result = run(
+        store,
+        "MATCH (a)-[r:R]->(b) WHERE ze.node_id(a) = $id RETURN count(r)",
+        &parameters,
+    )
+    .map_err(|error| error.to_string())?;
+    let original = with_original_node_sources(|| {
+        run(
+            store,
+            "MATCH (a)-[r:R]->(b) WHERE ze.node_id(a) IN [$id] RETURN count(r)",
+            &parameters,
+        )
+    })
+    .map_err(|error| error.to_string())?;
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    if values(&result)? != [1]
+        || values(&original)? != [1]
+        || result.metadata().counters.get(WorkKind::Scans)
+            >= original.metadata().counters.get(WorkKind::Scans)
+    {
+        return Err("ID expansion did not use its point anchor".into());
     }
     Ok(())
 }

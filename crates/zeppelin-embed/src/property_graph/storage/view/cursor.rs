@@ -58,7 +58,7 @@ pub(crate) struct NodeCursor<'view, 'm, 'g> {
     memory: &'m QueryMemory<'g>,
     labels: QueryArena<'m, 'g, LabelId>,
     documents: Option<crate::lifecycle::native_graph::documents::DocumentCursor>,
-    incident_sources: bool,
+    incident_sources: Option<DirectionSelection>,
     folder: Option<crate::lifecycle::native_graph::documents::FolderCandidates<'m, 'g>>,
     full_drain: bool,
     explicit_nodes: Option<QueryArena<'m, 'g, NodeId>>,
@@ -118,7 +118,7 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
                     .all(|label| label.get() == u64::MAX))
             .then(crate::lifecycle::native_graph::documents::DocumentCursor::default),
             labels,
-            incident_sources: false,
+            incident_sources: None,
             folder: None,
             full_drain: false,
             explicit_nodes: None,
@@ -133,10 +133,12 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
 
     pub(super) fn incident_sources<'lease>(
         lease: &NativeReadLease,
+        selection: LabelSelection<'_>,
+        direction: DirectionSelection,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<Self, TreeError> {
-        let mut cursor = Self::new(lease, LabelSelection::All, runtime)?;
-        cursor.incident_sources = true;
+        let mut cursor = Self::new(lease, selection, runtime)?;
+        cursor.incident_sources = Some(direction);
         cursor.documents = None;
         Ok(cursor)
     }
@@ -257,12 +259,14 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
             .map_err(TreeError::Runtime)?;
         let mut resources = TreeResources::for_query(runtime)?;
         if !self.graph_exhausted {
-            let count = if self.incident_sources {
+            let count = if let Some(direction) = self.incident_sources {
                 scan_incident_sources_after(
                     lease,
                     source,
                     catalog,
                     self.after,
+                    self.labels.as_slice(),
+                    direction,
                     &mut private,
                     &mut resources,
                 )?
@@ -745,13 +749,19 @@ impl<'view, 'm, 'g> RelCursor<'view, 'm, 'g> {
     }
 }
 
-/// OutRanges order is numeric source/type/lower. Seek after the entire source,
-/// including all its types and split ranges; descriptors are candidates only.
+/// Range directories order numeric node/type/lower. Seek after each entire
+/// node and merge direction candidates once; descriptors are candidates only.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit source, direction, labels, and bounded output"
+)]
 fn scan_incident_sources_after<'lease, 'm, 'g>(
     lease: &NativeReadLease,
     source: &NativeQuerySource<'lease, 'm, 'g>,
     catalog: &NativeCatalog<'_, 'm, 'g>,
     mut after: Option<NodeId>,
+    labels: &[LabelId],
+    direction: DirectionSelection,
     output: &mut QueryArena<'m, 'g, NodeId>,
     resources: &mut TreeResources<'_>,
 ) -> Result<usize, TreeError> {
@@ -759,7 +769,11 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
     use crate::property_graph::storage::records::NodeRecordState;
     use crate::property_graph::storage::tree::{Key, TreeKind, directory::DirectoryCursor};
     let roots = lease.bundle().roots();
-    let root = roots.directory(TreeKind::OutRanges)?;
+    let kinds: &[TreeKind] = match direction {
+        DirectionSelection::Out => &[TreeKind::OutRanges],
+        DirectionSelection::In => &[TreeKind::InRanges],
+        DirectionSelection::Undirected => &[TreeKind::OutRanges, TreeKind::InRanges],
+    };
     while output.len() < output.capacity() {
         let lower = match after {
             Some(node) => {
@@ -783,23 +797,37 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
             }
             None => None,
         };
-        let mut cursor = DirectoryCursor::seek(
-            source,
-            root,
-            lower.as_ref().map(<[u8; 40]>::as_slice),
-            resources,
-        )?;
-        let Some(entry) = cursor.next_entry(resources)? else {
+        let mut candidate: Option<NodeId> = None;
+        for kind in kinds {
+            let root = roots.directory(*kind)?;
+            let mut cursor = DirectoryCursor::seek(
+                source,
+                root,
+                lower.as_ref().map(<[u8; 40]>::as_slice),
+                resources,
+            )?;
+            let Some(entry) = cursor.next_entry(resources)? else {
+                continue;
+            };
+            entry.require_root(root)?;
+            let Key::Inline(key) = entry.key() else {
+                return Err(TreeError::Invalid("overflow adjacency key"));
+            };
+            resources.step((40 + RANGE_DESCRIPTOR_BYTES) as u64)?;
+            let node = RangeDescriptor::decode(root.kind(), key, entry.value())?
+                .key()
+                .node;
+            candidate = Some(candidate.map_or(node, |current| {
+                if node.get() < current.get() {
+                    node
+                } else {
+                    current
+                }
+            }));
+        }
+        let Some(node) = candidate else {
             break;
         };
-        entry.require_root(root)?;
-        let Key::Inline(key) = entry.key() else {
-            return Err(TreeError::Invalid("overflow adjacency key"));
-        };
-        resources.step((40 + RANGE_DESCRIPTOR_BYTES) as u64)?;
-        let node = RangeDescriptor::decode(root.kind(), key, entry.value())?
-            .key()
-            .node;
         after = Some(node);
         let Some(state) = lookup_node_state(
             source,
@@ -812,7 +840,9 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
         else {
             return Err(TreeError::Missing);
         };
-        if matches!(state, NodeRecordState::Live(_)) {
+        if let NodeRecordState::Live(record) = state
+            && super::matches_node_labels(source, catalog, node, &record, labels, resources)?
+        {
             output.push(node).map_err(|_| TreeError::Memory)?;
         }
     }

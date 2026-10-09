@@ -340,7 +340,10 @@ enum DraftOp {
     Project(Range),
     With(Range),
     Filter(ExprId),
-    Scan(SlotId),
+    Scan {
+        output: SlotId,
+        label: Option<Range>,
+    },
     LookupNode {
         output: SlotId,
         id: zeppelin_embed::property_graph::NodeId,
@@ -711,9 +714,14 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         DraftOp::LookupNode { output, id } => {
                             OperatorKind::LookupNode { output, id }
                         }
-                        DraftOp::Scan(output) => OperatorKind::ScanNodes {
+                        DraftOp::Scan { output, label } => OperatorKind::ScanNodes {
                             output,
-                            label: None,
+                            label: label
+                                .map(|range| {
+                                    GraphName::new(text(self.bytes.slice(), range, self.control)?)
+                                        .map_err(|_| invariant(Span::default(), "scan label"))
+                                })
+                                .transpose()?,
                         },
                         DraftOp::Expand {
                             source,

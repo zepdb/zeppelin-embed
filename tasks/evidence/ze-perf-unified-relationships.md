@@ -515,3 +515,82 @@ S4 misses are explicit: untyped count 67.767 > 20 ms; typed count
 > 30 ms. Relationship LIMIT 10 meets 2 ms at 1.503875 ms. S5 still
 addresses the incoming, undirected, labelled and ID-anchored access
 paths. Complete raw log S4-timings.log read; no unexpected diagnostics.
+
+## ZE-416 / S5: sparse anchors in all directions
+
+The independent branch widens the existing fresh-read source path to
+`InRanges`, and numerically merges `OutRanges`/`InRanges` candidates once
+per node for undirected expansion. Expand retains its Out-then-In row
+phases and self-loop rule. Incident candidates apply the same explicit
+node label predicate as ordinary scans, including synthesized Document
+and graph-only nodes carrying that label. Cypher represents a simple
+first-node label in the existing structured ScanNodes label field.
+Canonical ID equality on the first node of a fixed-length relationship
+chain lowers to LookupNode; the WHERE remains a residual predicate.
+OPTIONAL, writes, WITH, correlated and variable-length anchors retain
+their existing eligibility exclusions. No format, ABI, golden or
+production dependency changed.
+
+Named RED tests, command:
+
+```
+cargo test -p zeppelin-embed-cypher \
+  --features zeppelin-embed/graph-cypher --test graph_search \
+  anchor_ -- --nocapture
+cargo test -p zeppelin-embed --features graph-cypher \
+  incident_source_requires_fresh_read_region -- --nocapture
+```
+
+All four shape tests failed at the intended seam: incoming, undirected
+and Document visited 34 documents; ID made 46 lookups and 22 scans.
+Planner incoming qualification failed. The initial ID bound of 10
+omitted projection materialization; corrected bound 24 still excludes
+the observed RED 46. A first implementation exposed the label-filter
+lowering seam and that overstrict ID bound. An intermediate compiler
+error was corrected before GREEN; neither attempt is claimed a pass.
+Logs `.ctx/S5-shapes-red.log`, `S5-planner-red.log`, and
+`S5-shapes-green*.log` preserve those receipts.
+
+Final shape GREEN uses 32 and 64 documents with the same edges. Every
+shape has zero document visits and identical work at both sizes:
+
+| shape | Scans | Lookups |
+|---|---:|---:|
+| incoming R | 18 | 77 |
+| undirected R | 52 | 109 |
+| Document outgoing R | 26 | 87 |
+| graph-only Anchor outgoing R | 10 | 21 |
+| graph-only Anchor undirected R | 19 | 22 |
+| canonical ID outgoing R | 4 | 23 |
+
+Ordered complete rows and LIMIT 0/1/3/7/20 prefixes match the original
+source oracle. The ID oracle uses equivalent `IN [canonical-id]` to
+prevent its compiler lowering. Fixtures include document-bound zero
+and maximum-width endpoints, parallel edges, a cycle, a self-loop,
+multiple relationship types, a graph-only Anchor/Document node, and
+tombstoned endpoints after close/reopen. The existing literal outgoing
+oracle uses the original fixture unchanged through a shared helper.
+Read-lowering cases pin incoming/undirected/chained ID lookup plus
+OPTIONAL/WITH/properties/variable-length exclusions.
+
+The adversarial directed probe now exercises incoming, undirected,
+labelled and point-anchored expansions with independent expected counts,
+zero-document-visit checks, original-source comparison and lazy LIMIT 0.
+Four coverage keys register those actual paths. S4's final AFTER smoke
+(88.30s, 14/14 feature faults, zero violations) is S5's BEFORE receipt;
+there was no intervening product mutation.
+
+S5 verification on the independent branch: all per-step gates pass.
+Cypher 27 + 14 + 12 tests (graph-search 638.89s); format_compat 3 pass,
+4 historical/default ignores (0.25s); ffi_contract 21 (7.14s); unified
+19 (53.15s); both named campaign-registry pins 1 each. Exact planner,
+scratch, tiny order oracle, four shape regressions and ID lowering pass.
+Directed Cypher entry probe passes (2.37s) after replacing an incorrect
+2-scan ID bound with comparison against the independently deoptimized
+control; the expansion's resume scan is real work. S5 AFTER smoke passes
+in 92.03s: 14 operations, 14/14 feature faults, zero violations. All
+completed output lines were read, including expected scheduled fault
+errors. A premature Cypher attempt was terminated while waiting on the
+artifact lock; its one-line log is preserved and not credited. The serial
+completed rerun above is the qualification receipt. Final integration,
+fresh S5 timing, final main gates, size and full suite remain pending.

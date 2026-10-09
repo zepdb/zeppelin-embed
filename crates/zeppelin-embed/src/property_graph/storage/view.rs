@@ -532,9 +532,11 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
 
     pub(crate) fn incident_source_cursor(
         &'s self,
+        selection: LabelSelection<'_>,
+        direction: DirectionSelection,
         runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<NodeCursor<'s, 'm, 'g>, TreeError> {
-        cursor::NodeCursor::incident_sources(self.lease, runtime)
+        cursor::NodeCursor::incident_sources(self.lease, selection, direction, runtime)
     }
 
     pub(crate) fn scan_relationships(
@@ -643,36 +645,7 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
         else {
             continue;
         };
-        let super::records::RecordShape::Node { labels: count, .. } = record.shape() else {
-            return Err(TreeError::Invalid("node directory role"));
-        };
-        let mut matched = true;
-        for wanted in labels {
-            let mut found = wanted.get() == u64::MAX
-                && source
-                    .lease()
-                    .document_version(node)
-                    .map_err(|error| {
-                        TreeError::Control(crate::lifecycle::QueryError::Store(error))
-                    })?
-                    .is_some();
-            for index in 0..count {
-                let label = record.label(index, r)?;
-                if label == *wanted
-                    || (wanted.get() == u64::MAX
-                        && catalog
-                            .name(crate::property_graph::catalog::Symbol::Label(label), r)?
-                            .is_some_and(|name| name.as_str() == "Document"))
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                matched = false;
-                break;
-            }
-        }
+        let matched = matches_node_labels(source, catalog, node, &record, labels, r)?;
         if matched {
             output.push(node).map_err(|_| TreeError::Memory)?;
             if output.len() == output.capacity() {
@@ -681,6 +654,46 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
         }
     }
     Ok(output.len())
+}
+
+/// The shared explicit-node label predicate, including synthesized Document.
+fn matches_node_labels<'lease, 'm, 'g>(
+    source: &NativeQuerySource<'lease, 'm, 'g>,
+    catalog: &NativeCatalog<'_, 'm, 'g>,
+    node: NodeId,
+    record: &RecordView<'_, NativeQuerySource<'lease, 'm, 'g>>,
+    labels: &[crate::property_graph::catalog::LabelId],
+    r: &mut TreeResources<'_>,
+) -> Result<bool, TreeError> {
+    let super::records::RecordShape::Node { labels: count, .. } = record.shape() else {
+        return Err(TreeError::Invalid("node directory role"));
+    };
+    let mut matched = true;
+    for wanted in labels {
+        let mut found = wanted.get() == u64::MAX
+            && source
+                .lease()
+                .document_version(node)
+                .map_err(|error| TreeError::Control(crate::lifecycle::QueryError::Store(error)))?
+                .is_some();
+        for index in 0..count {
+            let label = record.label(index, r)?;
+            if label == *wanted
+                || (wanted.get() == u64::MAX
+                    && catalog
+                        .name(crate::property_graph::catalog::Symbol::Label(label), r)?
+                        .is_some_and(|name| name.as_str() == "Document"))
+            {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            matched = false;
+            break;
+        }
+    }
+    Ok(matched)
 }
 
 /// Resolve and completely verify one node from caller-owned immutable source

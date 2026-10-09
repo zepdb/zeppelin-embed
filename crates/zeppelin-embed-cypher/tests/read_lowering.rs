@@ -716,7 +716,31 @@ mod ze404_id_lookup {
                     false,
                 ),
                 ("MATCH (d), (e) WHERE ze.node_id(d) = $id RETURN d", false),
-                ("MATCH (d)-->(e) WHERE ze.node_id(d) = $id RETURN d", false),
+                ("MATCH (d)-->(e) WHERE ze.node_id(d) = $id RETURN d", true),
+                (
+                    "MATCH (d)<-[:R]-(e) WHERE ze.node_id(d) = $id RETURN d",
+                    true,
+                ),
+                (
+                    "MATCH (d)-[:R]-(e)-[:S]->(f) WHERE ze.node_id(d) = $id RETURN d",
+                    true,
+                ),
+                (
+                    "MATCH (d)-[:R*1..2]->(e) WHERE ze.node_id(d) = $id RETURN d",
+                    false,
+                ),
+                (
+                    "OPTIONAL MATCH (d)-->(e) WHERE ze.node_id(d) = $id RETURN d",
+                    false,
+                ),
+                (
+                    "WITH 1 AS x MATCH (d)-->(e) WHERE ze.node_id(d) = $id RETURN d",
+                    false,
+                ),
+                (
+                    "MATCH (d {})-->(e) WHERE ze.node_id(d) = $id RETURN d",
+                    false,
+                ),
                 (
                     "MATCH (d) WHERE ze.node_id(d) = $id AND true RETURN d",
                     false,

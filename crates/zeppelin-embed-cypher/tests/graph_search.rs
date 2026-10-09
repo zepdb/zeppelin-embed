@@ -1324,13 +1324,19 @@ mod incident_sources {
         );
     }
 
-    #[test]
-    fn ze404_incident_source_preserves_expand() {
+    struct TinyShapes {
+        _directory: Directory,
+        store: Store,
+        edges: Vec<(u128, u128, &'static str)>,
+        rels: Vec<u128>,
+    }
+
+    fn tiny_shapes(documents: u128, custom: bool) -> TinyShapes {
         let directory = Directory::new();
         let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
         store
             .ingest(IngestBatch::new(
-                (0..32)
+                (0..documents)
                     .chain([u128::MAX])
                     .map(|id| {
                         IngestDocument::new(
@@ -1387,8 +1393,63 @@ mod incident_sources {
             &store,
             "MATCH (n) WHERE ze.node_id(n) = '00000000000000000000000000000004' DETACH DELETE n",
         );
+        if custom {
+            use zeppelin_embed::property_graph::{CanonicalContents, EntityId};
+            let mut labels = [
+                GraphName::new("Anchor").unwrap(),
+                GraphName::new("Document").unwrap(),
+            ];
+            let node = CanonicalContents::node(&mut labels, &mut [], None, None).unwrap();
+            let receipt = store
+                .graph_apply(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "s5", "custom").unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&node)),
+                    }],
+                    &control(),
+                )
+                .unwrap();
+            let EntityId::Node(id) = receipt.receipts()[0].entity else {
+                panic!("node receipt");
+            };
+            store
+                .graph_apply(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Relationship, "s5", "custom-edge")
+                            .unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Relationship {
+                            source: NodeRef::Existing(id),
+                            target: NodeRef::Existing(NodeId::new(1).unwrap()),
+                            relationship_type: GraphName::new("R").unwrap(),
+                            properties: &[],
+                        }),
+                    }],
+                    &control(),
+                )
+                .unwrap();
+        }
         store.close().unwrap();
         let store = Store::open(directory.path(), OpenOptions::read_only()).unwrap();
+        TinyShapes {
+            _directory: directory,
+            store,
+            edges: edges.to_vec(),
+            rels,
+        }
+    }
+
+    #[test]
+    fn ze404_incident_source_preserves_expand() {
+        let TinyShapes {
+            _directory,
+            store,
+            edges,
+            rels,
+        } = tiny_shapes(32, false);
         let expected: Vec<_> = [6, 1, 2, 3, 4, 0, 5]
             .into_iter()
             .map(|i| vec![edges[i].0, rels[i], edges[i].1])
@@ -1460,6 +1521,81 @@ mod incident_sources {
         eprintln!("R2 tiny document_visits={visits} original_document_visits={original_visits}");
         assert_eq!(visits, 0);
         assert!(original_visits > 0);
+    }
+    fn shape_oracle(body: &str, anchored: bool) -> Vec<[u64; 2]> {
+        let mut work = Vec::new();
+        for documents in [32, 64] {
+            let TinyShapes {
+                _directory, store, ..
+            } = tiny_shapes(documents, true);
+            let query = format!("{body} RETURN a, r, b");
+            let reference = if anchored {
+                query.replace(
+                    "= '00000000000000000000000000000001'",
+                    "IN ['00000000000000000000000000000001']",
+                )
+            } else {
+                query.clone()
+            };
+            let (result, visits) = observe_document_visits(|| run(&store, &query));
+            let original = with_original_node_sources(|| run(&store, &reference));
+            let expected = rows(&original);
+            assert!(!expected.is_empty());
+            assert_eq!(rows(&result), expected, "{query}");
+            for limit in [0, 1, 3, 7, 20] {
+                let limited = format!("{query} LIMIT {limit}");
+                let result = run(&store, &limited);
+                assert_eq!(rows(&result), expected[..limit.min(expected.len())]);
+                assert_eq!(
+                    rows(&result),
+                    rows(&with_original_node_sources(|| run(
+                        &store,
+                        &format!("{reference} LIMIT {limit}")
+                    )))
+                );
+                if limit == 0 {
+                    assert_eq!(result.metadata().counters.get(WorkKind::Scans), 0);
+                }
+            }
+            let counters = result.metadata().counters;
+            let counts = [
+                counters.get(WorkKind::Scans),
+                counters.get(WorkKind::Lookups),
+            ];
+            eprintln!("S5 documents={documents} visits={visits} work={counts:?} query={query}");
+            assert_eq!(visits, 0, "incident anchors must not enumerate documents");
+            if anchored {
+                assert!(
+                    counts[1] <= 24,
+                    "ID anchor must inspect only its degree: {counts:?}"
+                );
+            }
+            work.push(counts);
+        }
+        assert_eq!(work[0], work[1], "isolated documents must add no work");
+        work
+    }
+
+    #[test]
+    fn incoming_anchor_preserves_order_without_document_scan() {
+        shape_oracle("MATCH (a)<-[r:R]-(b)", false);
+    }
+    #[test]
+    fn undirected_anchor_preserves_order_without_document_scan() {
+        shape_oracle("MATCH (a)-[r:R]-(b)", false);
+    }
+    #[test]
+    fn labelled_anchor_preserves_order_without_document_scan() {
+        shape_oracle("MATCH (a:Document)-[r:R]->(b)", false);
+        shape_oracle("MATCH (a:Anchor)-[r:R]->(b)", false);
+        shape_oracle("MATCH (a:Anchor)-[r:R]-(b)", false);
+    }
+    #[test]
+    fn id_anchor_reads_only_its_degree() {
+        shape_oracle(
+            "MATCH (a)-[r:R]->(b) WHERE ze.node_id(a) = '00000000000000000000000000000001'",
+            true,
+        );
     }
 }
 
