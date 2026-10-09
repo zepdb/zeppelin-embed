@@ -195,3 +195,62 @@ second gate. Latest 11 checker self-tests pass in 0.886s, full log read.
 These pins cover production da2df110. ZE-420 is still separately owned and
 active; any later production change requires fresh final-source archive proof
 and matching pins before ZE-369 publishes. No ABI/format/golden changes.
+
+## Packaging branch contract gates
+
+At 1d3dfabf, production Rust matches da2df110. All primary output lines read:
+- cargo fmt --all -- --check: exit 0, no output.
+- cargo clippy --workspace --all-targets --features zeppelin-embed-workspace-tests/graph-result-test-support -- -D warnings: exit 0, 43.58s.
+- cargo clippy -p zeppelin-embed --features graph-cypher --all-targets -- -D warnings: exit 0, 22.34s.
+- RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --features zeppelin-embed-workspace-tests/graph-result-test-support: exit 0, 46.18s.
+- xcrun clang-format --dry-run --Werror bindings/node/native/addon.cc: exit 0, no output.
+- cargo test -p zeppelin-embed --features graph-cypher --test format_compat: exit 0, three passed/four existing configured ignores, 0.22s.
+- cargo test -p zeppelin-embed-ffi --features graph-cypher --test ffi_contract: exit 0, 21 passed/zero ignored, 7.18s.
+No warnings/errors. Logs: .ctx/ZE421-static-*.log and
+.ctx/ZE421-compat-*.log. Shared task-owned rel-speed target cache was used;
+no target directory owned by another session was modified.
+Pinned workflow rehearsal 37931652517 is still running; no green workflow
+or public-release claim yet.
+
+Read-only credential preflight: npm whoami authenticated as zep-dev (exit 0)
+using the ignored owner's NPM_TOKEN through an ephemeral mode-0600 npmrc.
+No token was printed or committed. Permission-listing requests returned 403
+from /-/org/zep-dev/package, so package write scope is not yet verified; this
+is not an expired-token conclusion. Actual npm publication remains required
+under ZE-369. No registry version has been published by this session.
+
+The attempted crates.io /api/v1/me read returned HTTP 403 with the explicit
+reason "this action can only be performed on the crates.io website". It does
+not validate or invalidate CARGO_REGISTRY_TOKEN. Actual cargo publication is
+still required; no token value was printed or committed.
+
+## Pinned rehearsal GREEN on macOS 14
+
+Swift Release run 37931652517 succeeded at source
+1d3dfabf39bd70fba22042269e0ed16317f631b6. Both archive build/checksum jobs
+and exact uploaded-distribution qualification succeeded. Attach-release was
+SKIPPED by source_ref rehearsal mode; no tag/release asset/public registry
+publication occurred. Full readable primary Actions log (2162 lines) read
+without truncation: .ctx/ci-pinned-readable.log; original retained alongside.
+Existing Intel strip/signature-copy diagnostics and Actions Node deprecations
+remain present. A competing cache-save reservation failed in post-job cleanup;
+it did not affect archive bytes or job success. This is not a warning-free
+Actions-log claim. Local warning-denied gates above remain clean.
+
+Both rebuilt zip hashes exactly reproduce the pinned discovery values. New
+SDK tarballs, which are not Swift checksum pins:
+- legacy: 8178f922d4f7750729e8b6a2672f3bd776f58df09f96980525121f3034a85316
+- graph: a6f08996c289b99181ad9b4989b63521e28b67a593e66e7716681e23fa6d030b
+SDK tar hashes are recorded per exact run; byte identity across runs was not
+assumed. Installed qualification ran on macOS 14.8.9/23J631 ARM VM, with
+Xcode 15.4 and Rust 1.93.0. Downloaded report:
+.ctx/ci-pinned-installed-evidence/report.json. Actual graph checksum matches;
+C static/dylib, Rust and root Swift receipts execute batch, structured query,
+get, Cypher and resources successfully. Each C profile flavor has 21 passing
+cases. Swift consumer build completed in 7.34s. Legacy substitution returned
+ZE_ERR_GRAPH_UNSUPPORTED_BUILD. Sizes remain 4732/5478 KiB legacy and 8786 KiB
+graph, under their unchanged budgets. Python/Node remain outside this packaging
+qualification and are required separately by ZE-369.
+
+ZE-421 packaging acceptance is verified. Final publication remains ZE-369,
+which waits for ZE-420 and final-source archive/full-suite/adversarial checks.
