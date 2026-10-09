@@ -660,6 +660,11 @@ fn delegate_to_panic_feature(test_name: &str) -> bool {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let features = if cfg!(feature = "graph-cypher") {
+        "abi-panic-probe,graph-cypher"
+    } else {
+        "abi-panic-probe"
+    };
     let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
         .current_dir(workspace)
         .arg("test")
@@ -668,7 +673,7 @@ fn delegate_to_panic_feature(test_name: &str) -> bool {
             "-p",
             "zeppelin-embed-ffi",
             "--features",
-            "abi-panic-probe",
+            features,
             "--test",
             "ffi_contract",
             test_name,
