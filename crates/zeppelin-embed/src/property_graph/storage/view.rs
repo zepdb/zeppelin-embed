@@ -599,7 +599,7 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
     let (root, lower) = if let Some(label) = labels.first().filter(|label| label.get() != u64::MAX)
     {
         label_lower[..8].copy_from_slice(&label.get().to_le_bytes());
-        label_lower[8..].copy_from_slice(&after.map_or(1, NodeId::get).to_le_bytes());
+        label_lower[8..].copy_from_slice(&after.map_or(0, NodeId::get).to_le_bytes());
         (
             roots.directory(TreeKind::Labels)?,
             Some(label_lower.as_slice()),

@@ -694,3 +694,40 @@ LIMIT10 1.225334ms <=2ms. No optional S6 or other root-cause work was
 started. All raw triples, returned rows and first values are in
 `.ctx/S5-timings.log`. Final main gates, archive size qualification,
 once final full suite, ancestry check and push remain to be completed.
+
+### Final labelled oracle: preserve document-bound node zero
+
+The final main Cypher gate exposed the retained
+`relationship_speed_main::ze418_labelled_preserves_original_rows_and_limits`
+regression. Its optimized Source-labelled query included node0's three
+relationships (301/302/303); the ordinary structured label-directory
+source omitted all three because its fresh seek used node1 as the lower
+bound. Changed that one fresh bound to node0. This restores the original
+Cypher label-filter semantics for adopted zero-ID documents; resume,
+visibility, ordering, label validation and all residual predicates remain
+unchanged. No new fault site/mode or durable ordering change is required;
+the existing labelled-source registry paths and the retained oracle cover
+this read source. Integration AFTER89.42s is the fix's BEFORE receipt.
+
+Exact RED and GREEN command:
+
+```
+cargo test -p zeppelin-embed-cypher \
+  --features zeppelin-embed/graph-cypher --test graph_search \
+  relationship_speed_main::ze418_labelled_preserves_original_rows_and_limits \
+  -- --exact --nocapture
+```
+
+RED mismatched the complete Source rows (303 versus300). GREEN passes
+in48.40s, including Document/Source/combined/Missing label queries and
+LIMIT0/1/10/256/301. Both complete logs read; RED preserved in
+`.ctx/S5-labelled-main-red.log`, GREEN in `S5-labelled-main-green.log`.
+The failed first final-gate attempt was terminated after observing the
+failure and is not counted as a qualification pass. All51 completed
+lines, including its SIGTERM diagnostic, were read and preserved in
+`Final-main-cypher-tests-before-labelled-fix.log`. Fresh timing and final
+main gates will be repeated after this source fix.
+
+Zero-label fix AFTER property-graph smoke passes in87.25s:14/14
+feature faults, zero violations. All38 log lines read, with only the
+expected scheduled fault diagnostics. Log `S5-labelled-zero-after.log`.
