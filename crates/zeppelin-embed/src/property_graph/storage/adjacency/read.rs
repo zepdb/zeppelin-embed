@@ -255,6 +255,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
             None => range::directory_key(probe)?,
         };
         if resume.is_none()
+            && query.relationships.lower.get() > 1
             && query.relationship_type.is_some()
             && let Some(entry) = lookup_predecessor(self.source, root, &start, r)?
         {
@@ -335,7 +336,11 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
                 };
                 // Check the neighbor even for a tombstoned bound node so an
                 // invisible edge cannot hide a corrupt required endpoint.
-                let neighbor_is_live = self.endpoint_live(neighbor, r)?;
+                let neighbor_is_live = if neighbor == bound {
+                    bound_is_live
+                } else {
+                    self.endpoint_live(neighbor, r)?
+                };
                 if !bound_is_live || !neighbor_is_live {
                     continue;
                 }
@@ -487,7 +492,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         node: NodeId,
         r: &mut TreeResources<'_>,
     ) -> Result<bool, TreeError> {
-        let state = lookup_node_state(
+        let Some(state) = lookup_node_state(
             self.source,
             self.roots,
             node,
@@ -495,7 +500,9 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
             self.document,
             r,
         )?
-        .ok_or(TreeError::Missing)?;
+        else {
+            return Err(TreeError::Missing);
+        };
         Ok(matches!(state, NodeRecordState::Live(_)))
     }
     pub(super) fn visible(

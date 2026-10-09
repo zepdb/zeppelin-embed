@@ -594,3 +594,44 @@ errors. A premature Cypher attempt was terminated while waiting on the
 artifact lock; its one-line log is preserved and not credited. The serial
 completed rerun above is the qualification receipt. Final integration,
 fresh S5 timing, final main gates, size and full suite remain pending.
+
+### Integration with already landed ZE-417 and ZE-418
+
+Rebased onto main `f443c7b3`, preserving both regression suites. Main's
+suite lives in `relationship_speed_main`; the independent suite keeps
+its existing name. Retained memory-accounting helpers distinguish the
+statement's page memo from released operator buffers. Both scratch
+observers remain wired to actual query allocation. Main's infallible
+combined-label filter traversal is retained alongside the independent
+structured single-label and canonical ID lowering.
+
+The retained main regressions found two merge omissions, repaired at
+their existing seams without weakening tests. Sparse source liveness
+must be reused after the incident scan: RED 128 lookups for 32 edges
+on 32 sources; GREEN 96 for untyped and typed counts (bound <=100).
+Main's minimum-RelId predecessor avoidance, self-loop liveness reuse
+and lazy endpoint errors are retained. The independent cursor still
+checks owner on rebind and keeps the adjacency mismatch guard.
+
+Main's page regression initially observed 7 checkpoints, then 26 for
+leaf probes. The query's final page-validation counter charge now
+serves as its final close-first checkpoint before memo publication;
+preparation/recovery keep their explicit final checkpoint. Restored
+main's numeric leaf-probe batching. GREEN: 128-cell page 6 polls/384
+work units; found lookup 20 polls/788 units; absent 19/788. Independent
+page-charge and cancellation regressions also pass, as do all 35
+public directory tests (13.99s). Directed entry passes (2.46s).
+
+Integrated shape work at both 32 and 64 documents, still zero visits:
+incoming Scans/Lookups 15/71; undirected 40/89; Document outgoing
+20/74; graph-only Anchor outgoing 9/19 and undirected 17/19;
+canonical ID outgoing 3/22. Complete rows and all prefixes match.
+Exact scratch reservation remains once at anchors16/32: 196608 work
+units, 197992 owned bytes, peak3660001; LIMIT0 has no allocation.
+
+S5 AFTER is integration BEFORE (92.03s); integration AFTER property-
+graph smoke passes in 89.42s with 14/14 feature faults, zero violations.
+All completed logs read in full, including expected fault diagnostics.
+Logs are `.ctx/Integration-*-final.log` plus
+`integration-main-{lookups,page}-*.log`; intermediate RED failures are
+preserved. Final main qualification and S5 timing are still pending.

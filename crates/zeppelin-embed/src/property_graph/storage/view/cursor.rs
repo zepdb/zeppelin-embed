@@ -413,6 +413,11 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
         })
     }
 
+    /// The fresh incident scan already proved this exact bound node live.
+    pub(crate) fn source_was_checked(&mut self) {
+        self.bound_live = Some(true);
+    }
+
     pub(super) fn rebind<'lease>(
         &mut self,
         lease: &NativeReadLease,

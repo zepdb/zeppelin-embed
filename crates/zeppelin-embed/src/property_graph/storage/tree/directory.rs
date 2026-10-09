@@ -793,9 +793,7 @@ fn checked_page<'a>(
     let page = if cached {
         super::reopen_validated_page(root.kind, bytes)?
     } else {
-        let page = decode_page(root.kind, bytes)?;
-        resources.read_event(NativeReadEvent::PageDecoded)?;
-        page
+        decode_page(root.kind, bytes)?
     };
     if page.header().generation != identity.generation || page.header().level as usize >= MAX_DEPTH
     {
@@ -882,7 +880,13 @@ fn checked_page<'a>(
         }
     }
     if !cached {
-        resources.step(0)?;
+        // The counter charge is the query's final close-first checkpoint.
+        // Preparation/recovery counters do not poll, so retain their explicit
+        // final checkpoint before any source can publish the page proof.
+        resources.read_event(NativeReadEvent::PageDecoded)?;
+        if !matches!(resources.control, TreeControl::Query { .. }) {
+            resources.step(0)?;
+        }
         if let Some(reference) = reference {
             source.mark_page_validated(reference)?;
         }
@@ -1634,31 +1638,51 @@ fn lookup_probe_entry<'a>(
     )?;
     let mut low = 0;
     let mut high = count(block.payload())?;
-    let mut inspected = 0_u64;
+    let numeric = root.kind != TreeKind::KeyFences;
+    let mut probe_work = 0;
+    let mut found = None;
     while low < high {
-        let index = low + (high - low) / 2;
-        inspected += 1;
+        if !numeric {
+            resources.step(1)?;
+        }
+        let middle = low + (high - low) / 2;
         let Cell::Leaf { key: stored, value } =
-            owned_page_cell(block.payload(), page.header(), index)?
+            owned_page_cell(block.payload(), page.header(), middle)?
         else {
             return Err(TreeError::Invalid("leaf required"));
         };
-        match key.compare_stored(source, root, stored, resources)? {
+        let order = if numeric {
+            let (ProbeKey::Stored(Key::Inline(probe)), Key::Inline(stored)) = (key, stored) else {
+                return Err(TreeError::Invalid("overflow numeric comparator"));
+            };
+            // Binary search touches at most one bounded 16 KiB page. Preserve
+            // the two work units per probe without checkpointing each cell.
+            probe_work += 2;
+            super::compare_inline_keys(root.kind, probe, stored)?
+        } else {
+            key.compare_stored(source, root, stored, resources)?
+        };
+        match order {
             std::cmp::Ordering::Equal => {
-                resources.step(inspected)?;
-                return Ok(Some(DirectoryEntry {
+                found = Some(DirectoryEntry {
                     root,
                     key: stored,
                     value,
                     generation: page.header().generation,
-                }));
+                });
+                break;
             }
-            std::cmp::Ordering::Greater => low = index + 1,
-            std::cmp::Ordering::Less => high = index,
+            std::cmp::Ordering::Greater => low = middle + 1,
+            std::cmp::Ordering::Less => high = middle,
         }
     }
-    resources.step(inspected)?;
-    Ok(None)
+    if numeric {
+        resources.step(probe_work)?;
+    }
+    if found.is_some() {
+        resources.step(0)?;
+    }
+    Ok(found)
 }
 
 #[allow(
@@ -2755,19 +2779,18 @@ fn insert_key<S: BlockSink>(
 // Existing framing owns slot geometry; this helper preserves the copied bytes'
 // lifetime after a temporary FramedPage has been discarded.
 fn owned_page_cell(bytes: &[u8], header: PageHeader, index: usize) -> Result<Cell<'_>, TreeError> {
-    let slot = index
-        .checked_mul(8)
-        .and_then(|n| n.checked_add(64))
-        .ok_or(TreeError::Memory)?;
+    let Some(slot) = index.checked_mul(8).and_then(|n| n.checked_add(64)) else {
+        return Err(TreeError::Memory);
+    };
     let offset = crate::format::frame::read_u32("graph directory", bytes, slot)? as usize;
     let length = crate::format::frame::read_u32("graph directory", bytes, slot + 4)? as usize;
-    let end = offset.checked_add(length).ok_or(TreeError::Memory)?;
-    Ok(super::parse_cell(
-        header,
-        bytes
-            .get(offset..end)
-            .ok_or(TreeError::Invalid("cell extent"))?,
-    )?)
+    let Some(end) = offset.checked_add(length) else {
+        return Err(TreeError::Memory);
+    };
+    let Some(cell) = bytes.get(offset..end) else {
+        return Err(TreeError::Invalid("cell extent"));
+    };
+    Ok(super::parse_cell(header, cell)?)
 }
 
 /// Remove a compact entry from a private tree candidate. Identity-owned fence
