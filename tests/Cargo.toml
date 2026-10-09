@@ -1,6 +1,6 @@
 [package]
 name = "zeppelin-embed-workspace-tests"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "GPL-3.0-only"
 publish = false
@@ -39,12 +39,12 @@ proptest.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 tempfile.workspace = true
-zeppelin-embed-adversarial-oracle = { path = "adversarial-oracle", version = "=0.6.0" }
-zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.6.0", features = ["benchmark-kernels", "test-seams"] }
-zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.6.0" }
-zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.6.0", features = ["abi-panic-probe"] }
+zeppelin-embed-adversarial-oracle = { path = "adversarial-oracle", version = "=0.7.0" }
+zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.7.0", features = ["benchmark-kernels", "test-seams"] }
+zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.7.0" }
+zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.7.0", features = ["abi-panic-probe"] }
 
-zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher", version = "=0.6.0", optional = true }
+zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher", version = "=0.7.0", optional = true }
 
 [[test]]
 name = "graph_fixture"
@@ -92,4 +92,4 @@ path = "graph_workload_cli.rs"
 required-features = ["graph-cypher"]
 
 [dev-dependencies]
-zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.6.0", features = ["test-seams"] }
+zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.7.0", features = ["test-seams"] }

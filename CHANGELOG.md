@@ -11,7 +11,7 @@ release and a compatible correction is a patch release.
 - Node `GraphStore.cypher` and `cypherAsync` accept list parameters, including
   nested lists, nulls, mixed scalar types and numeric typed arrays.
 
-## 0.7.0 (unreleased)
+## 0.7.0 - 2026-10-08
 
 ### Changed
 
@@ -19,34 +19,56 @@ release and a compatible correction is a patch release.
   shares `DocId`; legacy documents have an implicit `Document` label.
   Store durability governs graph, and Restrict policies refuse document deletes.
 - Rust `GraphStore` is replaced by graph methods on `Store` and
-  `StoreCypherExt`. The binding migration replaces `ZeGraphHandle` and
-  `ZeppelinGraphStore` ownership with `ze_handle` and `ZeppelinStore`;
-  Node graph methods move to `Store`. See
+  `StoreCypherExt`. `ZeGraphHandle` and `ZeppelinGraphStore` are replaced by
+  graph methods on `ze_handle` and `ZeppelinStore`; Node graph methods move
+  to `Store`. See
   [ADR-022's migration table](docs/adr/ADR-022-one-store-for-documents-and-graph.md#api-and-migration).
-- ZE-360 targets additive `ze_store_*` functions: `ze_store_enable_graph`,
-  `ze_store_graph_apply`, `ze_store_graph_apply_v2`, `ze_store_graph_query`,
-  `ze_store_cypher`, `ze_store_cypher_with_row_limit`, `ze_store_get_nodes`,
-  `ze_store_get_relationships`, `ze_store_graph_resources`. Names may still
-  change in ZE-360; this checkout's header retains the `ze_graph_*` surface.
-  Keep `ze_graph_response_free` for graph results and the append-only C ABI.
-- Current C error names: `ZE_ERR_FORMAT_TOO_NEW` (56),
-  `ZE_ERR_LEGACY_GRAPH_DIRECTORY` (58), `ZE_ERR_GRAPH_UNSUPPORTED_BUILD` (59),
-  `ZE_ERR_GRAPH_EPOCH_TRANSITION` (60). Any additional ZE-360 errors must be
-  appended; the planned GraphDisabled code is not assigned here.
+- The C graph header removes `ze_graph_open` and the other standalone graph
+  handle functions. Unified functions are `ze_store_enable_graph`,
+  `ze_store_create_with_relationship_types`, `ze_store_graph_apply`,
+  `ze_store_graph_apply_v2`, `ze_store_graph_query`, `ze_store_cypher`,
+  `ze_store_cypher_with_row_limit`, `ze_store_get_nodes`,
+  `ze_store_get_relationships`, `ze_store_graph_resources`,
+  `ze_store_graph_maintain` and `ze_store_set_graph_maintenance_policy`.
+  `ze_graph_response_free` remains the graph-result deallocator. Existing
+  document ABI layouts and error-code numbers are unchanged; no error code
+  is renumbered.
+- Error codes after 57 are `ZE_ERR_LEGACY_GRAPH_DIRECTORY` (58),
+  `ZE_ERR_GRAPH_UNSUPPORTED_BUILD` (59), `ZE_ERR_GRAPH_EPOCH_TRANSITION` (60)
+  and `ZE_ERR_GRAPH_DISABLED` (61). `ZE_ERR_FORMAT_TOO_NEW` remains 56.
+- Node `Store` exposes `enableGraph`, `graphApply` / `graphApplyAsync`,
+  `graphQuery` / `graphQueryAsync`, `cypher` / `cypherAsync`,
+  `graphGetNodes` / `graphGetNodesAsync`,
+  `graphGetRelationships` / `graphGetRelationshipsAsync`, `graphResources`,
+  `graphMaintain` / `graphMaintainAsync`, `graphSetMaintenancePolicy` and
+  static `graphSupported`. Swift `ZeppelinStore` exposes `enableGraph`,
+  `graphApply`, `graphQuery`, `cypher`, `getNodes`, `getRelationships` and
+  `graphResources`.
 
 ### Notes for upgrading
 
-- Document stores from 0.4.x–0.6.0 open unchanged. Graph-free encoding stays
-  byte-identical (manifest v2, WAL operations <= 9) until the first graph
-  write or explicit `enable_graph`; ordinary document writes keep their format.
-- The first graph write upgrades the manifest to v3; an older binary then
-  refuses the store. Explicit enable also upgrades it. Snapshot beforehand;
-  restore that snapshot to downgrade. Refusal preserves data bytes, although
-  namespace opens may create lock files. Old standalone graph directories
-  have no converter.
-- A graph-free build refuses graph stores with `GraphUnsupportedBuild`.
-  The Python wheel has no graph. Python graph method stubs are owned by ZE-363
-  and report `UnsupportedBuild`; they do not add graph to the wheel.
+- Document stores from 0.4.x–0.6.0 open unchanged, without an eager format
+  migration. Graph-free encoding stays byte-identical (manifest v2, document
+  WAL operations <= 9); ordinary document writes keep their format.
+- The first graph write requires explicit enable: Rust `enable_graph`, C
+  `ze_store_enable_graph`, or Node/Swift `enableGraph()`. Without it, the
+  first apply fails with "native graph writer is absent". Explicit enable
+  durably commits manifest v3 before graph writes; after the first graph
+  write the manifest is v3 and older binaries refuse the store. Take a
+  snapshot before enabling graph if rollback is needed, and restore that
+  snapshot to return to an older binary. Refusal preserves data bytes,
+  although namespace opens may create lock files. Old standalone graph
+  directories have no converter.
+- A graph-free build refuses graph stores with `ZE_ERR_GRAPH_UNSUPPORTED_BUILD`.
+  The Python wheel has no graph: `enable_graph`, `graph_apply`, `graph_query`,
+  `cypher`, `get_nodes`, `get_relationships` and `graph_resources` raise
+  `UnsupportedBuild`.
+
+### Distribution limits
+
+- The graph XCFramework and graph C SDK remain macOS 14+ arm64 only.
+- Cypher eligible-then-search over very large document sets is slow: about
+  6 seconds for 150,000 documents.
 
 ## 0.6.0 - 2026-10-06
 

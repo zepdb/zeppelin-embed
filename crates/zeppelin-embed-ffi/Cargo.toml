@@ -22,9 +22,9 @@ text = ["dep:zeppelin-embed-text"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dependencies]
-zeppelin-embed = { path = "../zeppelin-embed", version = "=0.6.0" }
-zeppelin-embed-cypher = { path = "../zeppelin-embed-cypher", version = "=0.6.0", optional = true }
-zeppelin-embed-text = { path = "../zeppelin-embed-text", version = "=0.6.0", optional = true }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.7.0" }
+zeppelin-embed-cypher = { path = "../zeppelin-embed-cypher", version = "=0.7.0", optional = true }
+zeppelin-embed-text = { path = "../zeppelin-embed-text", version = "=0.7.0", optional = true }
 
 # loom is compiled only under `--cfg loom`, the model-checking build of the
 # handle state machine (task 22 phase 3). It never enters a default build.
@@ -32,8 +32,8 @@ zeppelin-embed-text = { path = "../zeppelin-embed-text", version = "=0.6.0", opt
 loom = "=0.7.2"
 
 [dev-dependencies]
-zeppelin-embed-adversarial-oracle = { path = "../../tests/adversarial-oracle", version = "=0.6.0" }
-zeppelin-embed = { path = "../zeppelin-embed", version = "=0.6.0", features = ["test-seams"] }
+zeppelin-embed-adversarial-oracle = { path = "../../tests/adversarial-oracle", version = "=0.7.0" }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.7.0", features = ["test-seams"] }
 tempfile.workspace = true
 
 [[test]]
