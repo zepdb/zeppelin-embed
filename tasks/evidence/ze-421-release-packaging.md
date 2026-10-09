@@ -122,3 +122,44 @@ First CI rehearsal run 37929281046 failed at checkout in both legs: Actions
 checkout treated the abbreviated 43c7e47a as a branch name. No archive build or
 checksum gate ran. The failed-step log was read completely. The next dispatch
 uses the full 40-character source SHA.
+
+## Swift Store-document fixture alignment
+
+The public graph fixture must associate each searchable node with a Store
+DocumentID through the existing V2 batch seam. Graph-only nodes are not Store
+search documents. No engine behavior, ABI or persisted format changed.
+
+Named RED: GraphQueryOptionsTests.testQueryTowerCompatibilityAndExplicitAlignment
+returned zero rows (four failed assertions) with its old graph-only node.
+Adding explicit DocumentID(0,10) gives GREEN: one test passed in 0.129s.
+Named RED: GraphStructuredQueryTests.testStructuredSearchReportsSurviveProjectionAndEligibility
+returned zero rows with its two graph-only nodes. Explicit DocumentIDs(0,1)
+and (0,2) restore document search. Its explicit Auto weighted-hybrid case then
+correctly reports EstimatedVectorScore: the existing fusion contract refuses
+estimated vector scores. The fixture now asserts that typed endpoint refusal,
+including notCommitted disposition, and adds successful Scan with original
+float rescoring. Default hybrid remains a positive case. All projection,
+eligibility, identity and report assertions remain. GREEN: one test passed in
+0.055s. Intermediate default/Auto and rescore-on-Auto diagnostic failures are
+retained separately; they are not successful gates.
+
+The old optional-generation interpolation warning is fixed with explicit
+String(describing:), preserving the diagnostic value. The Swift README now
+states that searchable graph-created documents require an explicit ID.
+
+Full packaged graph Swift command:
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk ZE_ENABLE_GRAPH=1 ZE_USE_LOCAL_XCFRAMEWORK=1 swift test --jobs 3 --scratch-path target/swift-packaging-graph
+Exit 0: 73 executed, eight existing conditional skips, 65 passed, zero
+failures in 11.480s. No warnings. Existing skips: two optional bindings-parity
+corpora, one private fault bridge, four optional profile-manifest cases, and
+the private ABI panic probe. Shipping archives exclude those private hooks;
+no new test waiver was introduced.
+
+Full packaged default Swift command:
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk ZE_USE_LOCAL_XCFRAMEWORK=1 swift test --jobs 3 --scratch-path target/swift-packaging-legacy
+Exit 0: 31 executed, one existing ABI-panic-probe skip, 30 passed, zero
+failures in 10.119s. No warnings. Complete primary logs were read, with no
+truncation: .ctx/swift-packaging-graph-GREEN.log (202 lines) and
+.ctx/swift-packaging-legacy.log. Named RED/GREEN logs and intermediate failed
+attempts are retained in .ctx/swift-query-options-* and
+.ctx/swift-search-reports-*. Original full failures are not gate credit.

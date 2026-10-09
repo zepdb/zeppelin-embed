@@ -66,7 +66,7 @@ final class GraphBindingsParityTests: XCTestCase {
       XCTAssertEqual(fields.count, 5)
       let result = try await store.cypher(String(fields[1]), controls: GraphControls(rowLimit: 1024))
       let observed = observe(result)
-      print("ZE72 observed\t\(fields[0])\t\(observed.replacingOccurrences(of: "\n", with: "\\n"))\t\(result.metadata.reports.count)\t\(result.metadata.admittedGeneration)")
+      print("ZE72 observed\t\(fields[0])\t\(observed.replacingOccurrences(of: "\n", with: "\\n"))\t\(result.metadata.reports.count)\t\(String(describing: result.metadata.admittedGeneration))")
       XCTAssertEqual(observed, fields[2].replacingOccurrences(of: "\\n", with: "\n"), String(fields[0]))
       XCTAssertEqual(result.metadata.reports.count, Int(fields[3]))
       XCTAssertEqual(result.metadata.admittedGeneration, UInt64(fields[4]))

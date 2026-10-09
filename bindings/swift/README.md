@@ -34,6 +34,8 @@ Graph methods use the same `ZeppelinStore` handle: `enableGraph`, `graphApply`,
 Call `enableGraph()` explicitly before graph queries. `GraphNodeID` is an alias for `DocumentID`. A document node created with
 `GraphNodeImage(id:timestamp:attributes:metadata:)` uses the appended V2 ABI;
 create requires a caller ID, and put uses its existing node ID.
+Vector, text and hybrid search read Store documents. Include an explicit `id`
+when creating a searchable document through `GraphNodeImage`.
 
 For local graph builds, link one full archive:
 

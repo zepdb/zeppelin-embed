@@ -43,7 +43,8 @@ final class GraphQueryOptionsTests: XCTestCase {
     let store = try await openGraphTestStore(at: path, mode: .create, documentTower: tower)
     var batch = GraphBatch()
     batch.node(
-      key: GraphKey(namespace: "", key: "v"), revision: 1, .create(GraphNodeImage(vector: [1, 0])))
+      key: GraphKey(namespace: "", key: "v"), revision: 1,
+      .create(GraphNodeImage(vector: [1, 0], id: DocumentID(high: 0, low: 10))))
     _ = try await store.graphApply(batch)
     let plan = GraphPlan(
       root: GraphOperatorID(0), operators: [.search(GraphSearchID(0), eligibility: nil)],

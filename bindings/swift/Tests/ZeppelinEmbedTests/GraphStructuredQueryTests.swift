@@ -269,10 +269,12 @@ extension GraphStructuredQueryTests {
     var batch = GraphBatch()
     batch.node(
       key: GraphKey(namespace: "", key: "near"), revision: 1,
-      .create(GraphNodeImage(labels: ["Eligible"], text: "amber", vector: [0, 0])))
+      .create(GraphNodeImage(labels: ["Eligible"], text: "amber", vector: [0, 0],
+                             id: DocumentID(high: 0, low: 1))))
     batch.node(
       key: GraphKey(namespace: "", key: "far"), revision: 1,
-      .create(GraphNodeImage(text: "amber amber", vector: [3, 4])))
+      .create(GraphNodeImage(text: "amber amber", vector: [3, 4],
+                             id: DocumentID(high: 0, low: 2))))
     let written = try await store.graphApply(batch)
     guard case .node(let near) = written.metadata.receipts[0].identity else {
       return XCTFail("identity")
@@ -281,12 +283,15 @@ extension GraphStructuredQueryTests {
       GraphSearchKind.vector(GraphExpressionID(0)), .text(GraphExpressionID(1)),
       .hybrid(vector: GraphExpressionID(0), text: GraphExpressionID(1)),
     ] {
-      for tier in [GraphTier?.none, .some(.auto)] {
+      var tiers: [GraphTier?] = [nil, .auto]
+      if case .hybrid = kind { tiers.append(.scan) }
+      for tier in tiers {
         if case .text = kind, tier != nil { continue }
         var searchOptions = GraphSearchOptions()
         if case .hybrid = kind {
           searchOptions.alpha = 0.5
           searchOptions.maxRounds = 0
+          if tier == .scan { searchOptions.rescore = .originalFloat32 }
         }
         var expressions: [GraphExpression] = [.literal(.integer(2)), .slot(GraphSlotID(2))]
         let activeKind: GraphSearchKind
@@ -318,9 +323,24 @@ extension GraphStructuredQueryTests {
               input: GraphOperatorID(2),
               bindings: [GraphProjection(GraphSlotID(4), GraphExpressionID(1))]),
           ], expressions: expressions, searches: [search], eagerSearches: [GraphOperatorID(2)])
+        if case .hybrid = kind, tier == .auto {
+          // Explicit Auto can return estimated vector scores. Weighted fusion
+          // refuses those; Scan rescoring supplies original distances below.
+          do {
+            _ = try await store.graphQuery(plan)
+            XCTFail("weighted hybrid must reject estimated scores")
+          } catch let error as GraphError {
+            XCTAssertEqual(error.code, .endpoint)
+            XCTAssertTrue(error.nativeMessage?.contains("EstimatedVectorScore") == true)
+            XCTAssertEqual(error.metadata?.disposition, .notCommitted)
+          }
+          continue
+        }
         let result = try await store.graphQuery(plan)
         XCTAssertEqual(result.rows.count, 1)
-        guard case .node(let node) = result.rows[0][0] else { return XCTFail("search node") }
+        guard let value = result.rows.first?.first, case .node(let node) = value else {
+          return XCTFail("search node")
+        }
         XCTAssertEqual(node.id, near)
         XCTAssertEqual(result.columns.map(\.name), ["slot_4"])
         XCTAssertEqual(result.metadata.reports.count, 1)
@@ -328,7 +348,7 @@ extension GraphStructuredQueryTests {
         XCTAssertEqual(report.call_id, 0)
         XCTAssertEqual(report.generation, written.metadata.changedGeneration)
         XCTAssertEqual(report.has_requested_tier, tier == nil ? 0 : 1)
-        if tier != nil { XCTAssertEqual(report.requested_tier, 0) }
+        if tier != nil { XCTAssertEqual(report.requested_tier, tier == .scan ? 2 : 0) }
         XCTAssertGreaterThan(report.candidate_count, 0)
       }
     }
