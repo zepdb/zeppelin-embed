@@ -366,3 +366,63 @@ tests; format_compat 3 pass/4 default historical ignores; ffi_contract
 Logs S2-*.log, prescribed commands .ctx/run-gates.py S2. The scratch and
 owner regressions and Cypher directed probe are also green as recorded
 above. No query timings claimed before the prescribed S4/S5 measurements.
+
+## S3 authoritative rows and bound-node proof (ZE-414; in progress)
+
+BEFORE is S2's completed AFTER smoke (88.36 s, 14/14 faults, zero
+violations). HEAD fc707132 plus S3 working changes; same S0 hardware.
+
+RED outgoing_expand_reads_each_relationship_once: 300 parallel edges
+between two adopted document nodes required 1,805 Lookups for pairs,
+exceeding 2E + 2S + 8 = 610. GREEN: pairs 606 untyped/607 typed, counts
+602/603, 1 test (43.40 s). Literal ordered [1, RelId 1..300, 2] rows and
+with_original_node_sources agree, including LIMIT 0/1/255/256/257/300/301.
+Deletion of key parallel-0 revision 2 excludes relationship 1 after
+reopen; detaching target 2 and reopening produces no rows on both paths.
+Complete S3-authoritative-{red-final,green}.log read.
+
+expand_from now returns the authoritative RelationshipRow it already
+validated. The adjacency-versus-authoritative bound/neighbor/type guard
+remains before liveness. ExpandCursor retains a lazy bound-node proof
+only within its exact node/admission and clears it on rebind. Every edge
+still checks the neighbor even if the bound node is tombstoned, so hidden
+edges cannot conceal a corrupt required endpoint. Empty implicit nodes
+with no edges require no graph-state record. The duplicate relationship
+lookup in scan_inner is removed. Undirected incoming self-loop suppression
+uses verified source == target. Actual 64-byte authoritative row copies
+replace the former 48-byte adjacency row charge. Public component expand
+and visible retain their existing verification paths.
+
+Existing tiny ordered oracle passes (0.56 s): multiple types, self-loop,
+parallel edges, cycle, zero/full-width IDs, adopted ZGOP v2 endpoints,
+tombstoned sources/targets, two-hop paths, incoming/undirected and excluded
+shapes. Native hidden-endpoint/property/label/type guard passes (0.08 s).
+Directed Cypher entry passes (2.49 s), including a new WITH/DESC read
+visiting implicit nodes before the live source, and checking literal
+source v = fixture base, target Guard, and authoritative type R. Required
+new coverage: property-graph.cypher-entry.expand.authoritative-row.
+
+Correction to S2's wording: the original P-only directed probe has one P
+anchor, so it did not specifically demonstrate empty anchors. S2's real
+32-source structured regression and owner checks did cover reuse. The
+new directed read strengthens expand-rebind.clean coverage; ZE413's
+resolution now links this correction. No S2 gate result changed.
+
+Required S3 AFTER smoke passes: 88.69 s, 14 operations, 14/14 feature
+faults, zero violations. All 34 output lines read, only expected scheduled
+checksum/I/O error observations. Full S3 per-step gate sequence is running.
+No S3 completion or timing target is claimed yet.
+
+```sh
+cargo test -p zeppelin-embed-cypher --features zeppelin-embed/graph-cypher --test graph_search relationship_speed::outgoing_expand_reads_each_relationship_once -- --exact --nocapture
+cargo test -p zeppelin-embed-cypher --features zeppelin-embed/graph-cypher --test graph_search incident_sources::ze404_incident_source_preserves_expand -- --exact --nocapture
+cargo test -p zeppelin-embed --features graph-cypher --lib lifecycle::native_graph::tests::expression_tests::native_expression_reads_real_properties_labels_types_and_text -- --exact --nocapture
+cargo test -p zeppelin-embed-workspace-tests --features graph-result-test-support --test adversarial_tests cypher_entry_probe_fires_refusals_and_clean_control -- --exact --nocapture
+```
+
+All S3 per-step gates pass; every output line read. Cypher: 23 graph-search
+(628.48 s), 14 lowering, 12 execution; format_compat: 3 pass, 4 default
+historical ignores; ffi_contract: 21 pass; unified: 19 pass (49.55 s);
+both required registry pins: 1 pass each. Static gates clean. Complete
+logs S3-*.log; exact gate commands in .ctx/run-gates.py S3. No format, ABI,
+golden or dependency change. No S4/S5 timing target claimed yet.

@@ -357,6 +357,7 @@ pub(crate) struct ExpandCursor<'view, 'm, 'g> {
     phase: Direction,
     resume: Option<super::super::adjacency::ExpansionResume>,
     scratch: Option<Box<[RangeScratch<'m>; 1]>>,
+    bound_live: Option<bool>,
     exhausted: bool,
     failed: bool,
     _view: PhantomData<&'view ()>,
@@ -400,6 +401,7 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
             },
             resume: None,
             scratch: None,
+            bound_live: None,
             exhausted,
             failed: false,
             _view: PhantomData,
@@ -433,6 +435,7 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
             DirectionSelection::Out | DirectionSelection::Undirected => Direction::Out,
         };
         self.resume = None;
+        self.bound_live = None;
         self.exhausted = self.types.as_ref().is_some_and(|values| values.is_empty());
         Ok(())
     }
@@ -538,6 +541,7 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
                     },
                 },
                 self.resume,
+                &mut self.bound_live,
                 &mut adjacent,
                 scratch,
                 &mut resources,
@@ -545,14 +549,11 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
             for row in adjacent.as_slice() {
                 if self.phase == Direction::In
                     && self.direction == DirectionSelection::Undirected
-                    && row.edge.neighbor == self.node
+                    && row.source == row.target
                 {
                     continue;
                 }
-                let relationship = reader
-                    .relationship(row.edge.rel, &mut resources)?
-                    .ok_or(TreeError::Invalid("visible adjacency relationship missing"))?;
-                private.push(relationship).map_err(|_| TreeError::Memory)?;
+                private.push(*row).map_err(|_| TreeError::Memory)?;
             }
             self.resume = resume;
             drop(resources);

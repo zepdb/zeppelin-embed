@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 30] = [
+pub const REQUIRED_COVERAGE: [&str; 31] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -48,6 +48,7 @@ pub const REQUIRED_COVERAGE: [&str; 30] = [
     "property-graph.cypher-entry.incident-source.undirected",
     "property-graph.cypher-entry.page-validation.statement-scope",
     "property-graph.cypher-entry.expand-rebind.clean",
+    "property-graph.cypher-entry.expand.authoritative-row",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -192,6 +193,7 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         page_memo_controls(&store)?;
         probe_document_scan(&store)?;
         probe_page_validation(&store)?;
+        probe_expansion_rebind(&store, base)?;
         generations.push(read(&store)?.1);
         probe_id_lookup(&store)?;
 
@@ -319,8 +321,6 @@ fn probe_page_validation(store: &Store) -> Result<(), String> {
     use zeppelin_embed::property_graph::query::runtime::WorkKind;
     let mut page_counts = Vec::new();
     let once = "MATCH (a:P)-[r:R]->(b) RETURN count(r)";
-    // Multiple P anchors include empty expansions; the second MATCH also
-    // resets its Expand between outer rows. Both retain the one visible edge.
     let twice = "MATCH (a:P)-[r:R]->(b) MATCH (c:P)-[s:R]->(d) RETURN count(r)";
     for text in [once, twice, once] {
         let result = run(store, text, &[]).map_err(|error| error.to_string())?;
@@ -340,6 +340,27 @@ fn probe_page_validation(store: &Store) -> Result<(), String> {
         return Err(format!(
             "page validation is not statement-scoped: {page_counts:?}"
         ));
+    }
+    Ok(())
+}
+
+fn probe_expansion_rebind(store: &Store, base: i64) -> Result<(), String> {
+    // DESC visits the 32 never-adopted documents before the one source. WITH
+    // keeps the original node path, so this exercises empty-anchor rebinds.
+    let result = run(
+        store,
+        "MATCH (a) WITH a ORDER BY ze.node_id(a) DESC MATCH (a)-[r:R]->(b) RETURN a.v, b:Guard, type(r)",
+        &[],
+    ).map_err(|error| error.to_string())?;
+    let Some(Value::String(kind)) = result.cell(0, 2) else {
+        return Err("expansion authoritative type missing".into());
+    };
+    if result.metadata().rows != 1
+        || result.cell(0, 0) != Some(&Value::I64(base))
+        || result.cell(0, 1) != Some(&Value::Bool(true))
+        || result.string(*kind) != Some("R")
+    {
+        return Err("expansion rebind changed authoritative endpoints/type".into());
     }
     Ok(())
 }

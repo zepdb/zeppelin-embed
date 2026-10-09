@@ -135,6 +135,103 @@ mod relationship_speed {
         (directory, store)
     }
 
+    fn relationship_rows(result: &CompletedGraphResult) -> Vec<[u128; 3]> {
+        (0..result.metadata().rows as usize)
+            .map(|row| {
+                let Some(Value::Node(a)) = result.cell(row, 0) else {
+                    panic!("source");
+                };
+                let Some(Value::Relationship(r)) = result.cell(row, 1) else {
+                    panic!("relationship");
+                };
+                let Some(Value::Node(b)) = result.cell(row, 2) else {
+                    panic!("target");
+                };
+                [
+                    result.pools().nodes[*a as usize].id.get(),
+                    result.pools().relationships[*r as usize].id.get(),
+                    result.pools().nodes[*b as usize].id.get(),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn outgoing_expand_reads_each_relationship_once() {
+        use zeppelin_embed::property_graph::query::pattern_test_support::with_original_node_sources;
+        let (directory, store) = parallel_edges(300);
+        for query in [
+            "MATCH (a)-[r]->(b) RETURN a, b",
+            "MATCH (a)-[r:R]->(b) RETURN a, b",
+            "MATCH ()-[r]->() RETURN count(r)",
+            "MATCH ()-[r:R]->() RETURN count(r)",
+        ] {
+            let result = run(&store, query);
+            if query.contains("count") {
+                assert_eq!(result.cell(0, 0), Some(&Value::I64(300)));
+            } else {
+                assert_eq!(result.metadata().rows, 300);
+                assert_eq!(ids(&result), vec![1; 300]);
+            }
+            let lookups = result.metadata().counters.get(WorkKind::Lookups);
+            eprintln!("S3 {query}: lookups={lookups}");
+            assert!(
+                lookups <= 2 * 300 + 2 + 8,
+                "one relationship and neighbor lookup per edge, bounded anchor overhead: {lookups}"
+            );
+        }
+        let query = "MATCH (a)-[r:R]->(b) RETURN a, r, b";
+        let expected: Vec<_> = (1..=300).map(|r| [1, r, 2]).collect();
+        for limit in [0, 1, 255, 256, 257, 300, 301] {
+            let query = format!("{query} LIMIT {limit}");
+            let result = run(&store, &query);
+            assert_eq!(relationship_rows(&result), expected[..limit.min(300)]);
+            assert_eq!(
+                relationship_rows(&result),
+                relationship_rows(&with_original_node_sources(|| run(&store, &query)))
+            );
+        }
+        store.close().unwrap();
+        let writer = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        writer
+            .graph_apply(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Relationship, "rel-speed", "parallel-0")
+                        .unwrap(),
+                    revision: GraphRevision::new(2).unwrap(),
+                    operation: StructuredOperation::Delete(
+                        zeppelin_embed::property_graph::EntityId::Relationship(
+                            zeppelin_embed::property_graph::RelId::new(1).unwrap(),
+                        ),
+                        zeppelin_embed::property_graph::GraphDeleteMode::Restrict,
+                    ),
+                    image: None,
+                }],
+                &control(),
+            )
+            .unwrap();
+        writer.close().unwrap();
+        let reopened = Store::open(directory.path(), OpenOptions::read_only()).unwrap();
+        let result = run(&reopened, query);
+        assert_eq!(relationship_rows(&result), expected[1..]);
+        assert_eq!(
+            relationship_rows(&result),
+            relationship_rows(&with_original_node_sources(|| run(&reopened, query)))
+        );
+        reopened.close().unwrap();
+        let writer = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        run(
+            &writer,
+            "MATCH (n) WHERE ze.node_id(n) = '00000000000000000000000000000002' DETACH DELETE n",
+        );
+        writer.close().unwrap();
+        let reopened = Store::open(directory.path(), OpenOptions::read_only()).unwrap();
+        assert!(relationship_rows(&run(&reopened, query)).is_empty());
+        assert!(
+            relationship_rows(&with_original_node_sources(|| run(&reopened, query))).is_empty()
+        );
+    }
+
     #[test]
     fn relationship_pattern_validates_each_page_once_per_statement() {
         // 32 parallel edges fit the same directory leaves and use two adopted
