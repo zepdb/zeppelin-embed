@@ -635,3 +635,62 @@ All completed logs read in full, including expected fault diagnostics.
 Logs are `.ctx/Integration-*-final.log` plus
 `integration-main-{lookups,page}-*.log`; intermediate RED failures are
 preserved. Final main qualification and S5 timing are still pending.
+
+### S5 fresh-addon measurements after integration
+
+Source HEAD `1f9731c525be0037715c99a578819586fae129c1`.
+ARM addon SHA256
+`818e38ff435a90599b49dcb0ee39b925dd2cb3c10c787275e067b49a761230cc`.
+Host: Apple M3 Max Mac15,9, 128GiB, macOS27.0/26A5388g,
+rustc1.93.0, Node24.21.0. Fresh ARM and Intel archive/addon builds
+completed in 1m44s and 1m38s; the harness rebuilt both again (cached
+0.02s each). Waited after compilation: pre-timing load3.62/6.59/6.62;
+measured uptime02:02, up20:04, load3.63/6.45/6.57. The one-minute load
+returned to the plan's 2.1–3.9 baseline range. Another session's core
+test remained active; these wall times remain supporting evidence.
+
+Command:
+
+```
+scripts/cy_time.sh \
+  /Users/aghatage/Documents/code/zeppelin-embed-worktrees/rel-speed \
+  /Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/ze-perf-unified/stores
+```
+
+Prepared namespace `perf`: 150000 documents, 500 relationships.
+Full filename/SHA256 maps before and after are identical to S0:
+221 files, zero changed names or bytes. Maps
+`.ctx/prepared-store-S5-before-timing.json` and
+`.ctx/prepared-store-S5-after-timing.json`. Complete raw timing and
+build logs read; no warnings or unexpected errors.
+
+| Query | raw three runs (ms) | median ms | rows | target ms |
+|---|---|---:|---:|---:|
+| count all nodes | 17.996084, 9.611125, 9.530125 | 9.611125 | 1 | supporting |
+| count Document label | 9.555541, 9.512375, 9.377792 | 9.512375 | 1 | supporting |
+| point lookup by node_id | 0.350291, 0.25175, 0.251208 | 0.25175 | 1 | supporting |
+| 10 docs, LIMIT 10 | 0.618417, 0.58525, 0.58125 | 0.58525 | 10 | supporting |
+| count relationships | 60.825334, 60.73025, 60.734666 | 60.734666 | 1 | 20 |
+| count PERF_LINK | 60.485792, 60.282333, 60.510625 | 60.485792 | 1 | 20 |
+| all 500 rel pairs | 60.641542, 60.808416, 60.680917 | 60.680917 | 500 | 25 |
+| 2-hop count | 72.58275, 72.098708, 72.548292 | 72.548292 | 1 | 30 |
+| incoming count | 60.634417, 60.563, 60.614459 | 60.614459 | 1 | 25 |
+| undirected count | 166.760417, 167.469875, 167.265291 | 167.265291 | 1 | 45 |
+| labelled start count | 64.078458, 63.355583, 63.481708 | 63.481708 | 1 | 25 |
+| id-anchored expand | 0.613834, 0.519292, 0.510042 | 0.519292 | 1 | 1 |
+| rel pairs, LIMIT 10 | 1.226708, 1.212, 1.225334 | 1.225334 | 10 | 2 |
+
+Explicit final measured misses, allowed by the goal DONE alternative:
+- count relationships: 60.734666 ms > 20 ms.
+- count PERF_LINK: 60.485792 ms > 20 ms.
+- all 500 rel pairs: 60.680917 ms > 25 ms.
+- 2-hop count: 72.548292 ms > 30 ms.
+- incoming count: 60.614459 ms > 25 ms.
+- undirected count: 167.265291 ms > 45 ms.
+- labelled start count: 63.481708 ms > 25 ms.
+
+Passes: canonical ID expansion0.519292ms <=1ms and relationship
+LIMIT10 1.225334ms <=2ms. No optional S6 or other root-cause work was
+started. All raw triples, returned rows and first values are in
+`.ctx/S5-timings.log`. Final main gates, archive size qualification,
+once final full suite, ancestry check and push remain to be completed.
