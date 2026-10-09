@@ -22,7 +22,7 @@ let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // local mismatch.
 let binaryChecksum = "4016bfdeaecae0617ef3f3e879b80451601b53902194fc384ec6eb67a58705b9" // ze:xcframework-checksum
 
-let graphBinaryChecksum = "18fe397689d18f6f0225b8faf6d0456ee0c47f211a95c101096b0a4934dbda15" // ze:graph-xcframework-checksum
+let graphBinaryChecksum = "b33dae4c31e46043c338faa1ae913132ae9a951bdf052f8f211d680ebd73f9e7" // ze:graph-xcframework-checksum
 
 let cTarget: Target
 if useLocalFFI {
