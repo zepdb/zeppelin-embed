@@ -614,7 +614,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                     break Ok(false);
                 }
                 let mut resources = TreeResources::for_query(context)?;
-                if self.view.lookup_node(*id, &mut resources)?.is_some() {
+                if self.view.contains_node(*id, &mut resources)? {
                     drop(resources);
                     self.push_extended(
                         index,

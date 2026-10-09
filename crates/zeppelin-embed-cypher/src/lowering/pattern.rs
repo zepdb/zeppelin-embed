@@ -120,18 +120,94 @@ impl Builder<'_, '_, '_> {
             Ok(input)
         }
     }
+    /// Only the complete, infallible ID equality of an initial single-node
+    /// read may replace enumeration. Constraints and WHERE remain residuals.
+    fn id_equality_lookup(
+        &self,
+        bound: &BoundQuery<'_>,
+        clause: &Node,
+    ) -> Result<Option<zeppelin_embed::property_graph::NodeId>, ParseError> {
+        let [part_id, predicate_id] = clause.children() else {
+            return Ok(None);
+        };
+        let part = syntax(bound, *part_id)?;
+        let predicate = syntax(bound, *predicate_id)?;
+        let [node_id] = part.children() else {
+            return Ok(None);
+        };
+        let node = syntax(bound, *node_id)?;
+        if predicate.kind != NodeKind::Predicate
+            || !matches!(node.kind, NodeKind::NodePattern { .. })
+            || node.children().iter().any(|id| {
+                bound
+                    .syntax()
+                    .node(*id)
+                    .is_some_and(|detail| detail.kind == NodeKind::Properties)
+            })
+        {
+            return Ok(None);
+        }
+        let anchor = slot(bound, *node_id)?;
+        let expression = |id: ExprId| bound.expressions().get(id.0 as usize);
+        let Some(Expression::Binary {
+            operation: BinaryExpression::Comparison(Comparison::Equal),
+            left,
+            right,
+        }) = expression(ExprId(child(predicate, 0)?.0 as u32))
+        else {
+            return Ok(None);
+        };
+        let is_id = |id| {
+            matches!(expression(id), Some(Expression::Unary {
+            operation: UnaryExpression::NodeIdText, operand,
+        }) if matches!(expression(*operand), Some(Expression::Slot(slot)) if *slot == anchor))
+        };
+        let value = if is_id(*left) {
+            *right
+        } else if is_id(*right) {
+            *left
+        } else {
+            return Ok(None);
+        };
+        let text = match expression(value) {
+            Some(Expression::Literal(Literal::String(text))) => *text,
+            Some(Expression::Parameter(id)) => {
+                match bound.parameters().get(id.0 as usize).map(|p| p.value) {
+                    Some(zeppelin_embed::property_graph::query::QueryValue::String(text)) => text,
+                    _ => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        if text.len() != 32
+            || !text
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Ok(None);
+        }
+        let id = u128::from_str_radix(text, 16)
+            .map_err(|_| invariant(predicate.span, "canonical node identity"))?;
+        Ok(Some(zeppelin_embed::ingest::DocId::new(id).into()))
+    }
     pub(super) fn pattern(
         &mut self,
         bound: &BoundQuery<'_>,
         clause: &Node,
         left: PlanNodeId,
         optional: bool,
+        initial_read: bool,
     ) -> Result<PlanNodeId, ParseError> {
         let pattern = PatternId(self.pattern_id);
         self.pattern_id = self
             .pattern_id
             .checked_add(1)
             .ok_or_else(|| limit(clause.span))?;
+        let lookup = if initial_read && !optional {
+            self.id_equality_lookup(bound, clause)?
+        } else {
+            None
+        };
         let mut current = left;
         let mut attached = None;
         for id in clause.children() {
@@ -158,7 +234,11 @@ impl Builder<'_, '_, '_> {
                 )?;
                 current = self.operator(DraftOp::Filter(predicate), &[current], first_node.span)?;
             } else {
-                current = self.operator(DraftOp::Scan(anchor), &[current], first_node.span)?;
+                let op = match lookup {
+                    Some(id) => DraftOp::LookupNode { output: anchor, id },
+                    None => DraftOp::Scan(anchor),
+                };
+                current = self.operator(op, &[current], first_node.span)?;
                 self.add_scope(anchor, first_node.span)?;
             }
             current = self.filter_constraints(bound, first_node, anchor, current)?;

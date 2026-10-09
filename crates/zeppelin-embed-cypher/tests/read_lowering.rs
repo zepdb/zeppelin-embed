@@ -683,3 +683,109 @@ fn read_lowering_copies_all_accepted_scalar_operation_families_and_label_synthes
         .unwrap();
     });
 }
+
+mod ze404_id_lookup {
+    use super::*;
+    use zeppelin_embed::property_graph::query::QueryValue;
+
+    #[test]
+    fn ze404_id_equality_preserves_value_semantics() {
+        with_memory(|memory, context| {
+            let id = "000000000000000000000000000000ab";
+            let cases = [
+                (
+                    "MATCH (d:Document) WHERE ze.node_id(d) = $id RETURN d",
+                    true,
+                ),
+                ("MATCH (d) WHERE $id = ze.node_id(d) RETURN d", true),
+                (
+                    "MATCH (d) WHERE ze.node_id(d) = '00000000000000000000000000000000' RETURN d",
+                    true,
+                ),
+                ("MATCH (d {}) WHERE ze.node_id(d) = $id RETURN d", false),
+                (
+                    "OPTIONAL MATCH (d) WHERE ze.node_id(d) = $id RETURN d",
+                    false,
+                ),
+                (
+                    "WITH 1 AS x MATCH (d) WHERE ze.node_id(d) = $id RETURN d",
+                    false,
+                ),
+                (
+                    "MATCH (a) MATCH (d) WHERE ze.node_id(d) = $id RETURN d",
+                    false,
+                ),
+                ("MATCH (d), (e) WHERE ze.node_id(d) = $id RETURN d", false),
+                ("MATCH (d)-->(e) WHERE ze.node_id(d) = $id RETURN d", false),
+                (
+                    "MATCH (d) WHERE ze.node_id(d) = $id AND true RETURN d",
+                    false,
+                ),
+                ("MATCH (d) WHERE ze.node_id(d) = [$id][0] RETURN d", false),
+            ];
+            for (text, lookup) in cases {
+                let parameters = [ParameterBinding {
+                    name: "id",
+                    value: QueryValue::String(id),
+                }];
+                compile_read_in(
+                    text,
+                    if text.contains("$id") {
+                        &parameters
+                    } else {
+                        &[]
+                    },
+                    CompileLimits::default(),
+                    memory,
+                    context,
+                    |read, _| {
+                        let operators = read.plan().description().operators;
+                        assert_eq!(
+                            operators
+                                .iter()
+                                .any(|op| matches!(op.kind, OperatorKind::LookupNode { .. })),
+                            lookup,
+                            "{text}"
+                        );
+                        if lookup {
+                            assert!(
+                                !operators
+                                    .iter()
+                                    .any(|op| matches!(op.kind, OperatorKind::ScanNodes { .. }))
+                            );
+                            assert!(
+                                operators
+                                    .iter()
+                                    .any(|op| matches!(op.kind, OperatorKind::Filter(_)))
+                            );
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            }
+            zeppelin_embed_cypher::compile_mutation_in(
+                "MATCH (d) WHERE ze.node_id(d) = $id SET d:Changed",
+                &[ParameterBinding {
+                    name: "id",
+                    value: QueryValue::String(id),
+                }],
+                CompileLimits::default(),
+                memory,
+                context,
+                |mutation, _| {
+                    assert!(
+                        !mutation
+                            .plan()
+                            .description()
+                            .operators
+                            .iter()
+                            .any(|op| matches!(op.kind, OperatorKind::LookupNode { .. }))
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+        });
+    }
+}

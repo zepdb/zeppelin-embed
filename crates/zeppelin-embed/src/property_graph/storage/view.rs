@@ -214,6 +214,31 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         }
     }
 
+    /// Unified membership without manufacturing a record for an implicit document.
+    /// A retained graph tombstone always wins over document fallback.
+    pub(crate) fn contains_node(
+        &self,
+        node: NodeId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<bool, TreeError> {
+        self.lease
+            .check_active()
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
+            .map_err(TreeError::Runtime)?;
+        match lookup_node_state(
+            self.source,
+            self.lease.bundle().roots(),
+            node,
+            self.catalog,
+            self.lease.bundle().document(),
+            resources,
+        )? {
+            Some(NodeRecordState::Live(_)) => Ok(true),
+            Some(NodeRecordState::Tombstone(_)) => Ok(false),
+            None => Ok(self.document_version(node)?.is_some()),
+        }
+    }
+
     pub(crate) fn lookup_relationship(
         &self,
         relationship: RelId,

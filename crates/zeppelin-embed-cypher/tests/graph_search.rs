@@ -734,3 +734,273 @@ fn eligible_collect_parity(hybrid: bool) {
         previous = Some((n as u64, work));
     }
 }
+
+mod ze404_id_lookup {
+    use super::*;
+    use zeppelin_embed::ingest::DeleteBatch;
+    use zeppelin_embed::property_graph::query::QueryValue;
+    use zeppelin_embed::property_graph::query::plan::ParameterBinding;
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+
+    fn strings(result: &CompletedGraphResult) -> Vec<String> {
+        (0..result.metadata().rows as usize)
+            .map(|row| match result.cell(row, 0) {
+                Some(Value::String(span)) => result.string(*span).unwrap().to_owned(),
+                other => panic!("identity expected: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[allow(
+        clippy::result_large_err,
+        reason = "preserve the typed statement error for parity assertions"
+    )]
+    fn query(
+        store: &Store,
+        text: &str,
+        value: QueryValue<'_>,
+    ) -> Result<CompletedGraphResult, zeppelin_embed_cypher::StatementError> {
+        execute(
+            store,
+            &control(),
+            &GraphQueryOptions::default(),
+            text,
+            &[ParameterBinding { name: "id", value }],
+            CompileLimits::default(),
+        )
+    }
+
+    #[test]
+    fn ze404_id_equality_uses_unified_lookup() {
+        let mut receipts = Vec::new();
+        for n in [5_000_u128, 10_000] {
+            let directory = Directory::new();
+            let options = || OpenOptions::new().with_max_resident_bytes(128 * 1024 * 1024);
+            let mut store = Store::open(directory.path(), options()).unwrap();
+            let wide = (1_u128 << 100) + 7;
+            let documents: Vec<_> = (0..=n)
+                .chain([wide])
+                .map(|id| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                        vec![1.0],
+                    )
+                    .with_timestamp(-(id as i64))
+                })
+                .collect();
+            store.ingest(IngestBatch::new(documents)).unwrap();
+            store.enable_graph().unwrap();
+            use zeppelin_embed::property_graph::staging::{
+                StructuredOperation, StructuredWrite, WriteImage,
+            };
+            use zeppelin_embed::property_graph::{
+                ApplicationKey, EntityKind, GraphName, GraphRevision, NodeId, NodeRef,
+            };
+            store
+                .graph_apply(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Relationship, "ze405", "adopt")
+                            .unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Relationship {
+                            relationship_type: GraphName::new("LINK").unwrap(),
+                            properties: &[],
+                            source: NodeRef::Existing(NodeId::new(1).unwrap()),
+                            target: NodeRef::Existing(NodeId::new(2).unwrap()),
+                        }),
+                    }],
+                    &control(),
+                )
+                .unwrap();
+            store.delete(DeleteBatch::new(vec![DocId::new(2)])).unwrap();
+            run(&store, "CREATE (:Only)");
+            store.delete(DeleteBatch::new(vec![DocId::new(n)])).unwrap();
+            let only =
+                strings(&run(&store, "MATCH (d:Only) RETURN ze.node_id(d) AS id"))[0].clone();
+            let mut expected: Vec<_> = (0..n)
+                .chain([wide])
+                .filter(|id| *id != 2)
+                .map(|id| format!("{id:032x}"))
+                .collect();
+            expected.push(only.clone());
+            expected.sort();
+            // Active probes prove correctness; sealed probes below prove bounded work.
+            for reopened in [false, true] {
+                if reopened {
+                    store.close().unwrap();
+                    store = Store::open(directory.path(), options()).unwrap();
+                }
+                let mut enumerated = strings(
+                    &execute(
+                        &store,
+                        &control(),
+                        &GraphQueryOptions::default()
+                            .with_result_row_limit(65_536)
+                            .unwrap(),
+                        "MATCH (d) RETURN ze.node_id(d) AS id",
+                        &[],
+                        CompileLimits::default(),
+                    )
+                    .unwrap(),
+                );
+                enumerated.sort();
+                assert_eq!(enumerated, expected);
+                // HasLabel probes document_version and warms the identity index
+                // independently of the point access path under measurement.
+                run(
+                    &store,
+                    "MATCH (d:Document) RETURN ze.node_id(d) AS id LIMIT 1",
+                );
+                for id in [
+                    format!("{:032x}", 0),
+                    format!("{:032x}", 1),
+                    format!("{:032x}", 3),
+                    format!("{wide:032x}"),
+                    format!("{:032x}", 2),
+                    format!("{n:032x}"),
+                    format!("{:032x}", n + 100),
+                    only.clone(),
+                ] {
+                    let wanted: Vec<_> = expected
+                        .iter()
+                        .filter(|candidate| **candidate == id)
+                        .cloned()
+                        .collect();
+                    let result = query(
+                        &store,
+                        "MATCH (d) WHERE ze.node_id(d) = $id RETURN ze.node_id(d) AS id LIMIT 1",
+                        QueryValue::String(&id),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        strings(&result),
+                        wanted,
+                        "n={n} reopened={reopened} id={id}"
+                    );
+                    if reopened {
+                        receipts.push((n, id, result.metadata().counters));
+                    }
+                }
+                if !reopened {
+                    store.seal().unwrap();
+                }
+            }
+        }
+        for (n, id, work) in &receipts {
+            eprintln!(
+                "ZE405 n={n} id={id} scans={} lookups={}",
+                work.get(WorkKind::Scans),
+                work.get(WorkKind::Lookups)
+            );
+        }
+        for (_, _, work) in receipts {
+            assert_eq!(
+                work.get(WorkKind::Scans),
+                0,
+                "canonical ID must not enumerate documents"
+            );
+            assert!(
+                work.get(WorkKind::Lookups) <= 8,
+                "point work must not grow with documents"
+            );
+        }
+    }
+
+    #[test]
+    fn ze404_id_equality_preserves_value_semantics() {
+        let (_directory, store) = fixture();
+        let id = (1_u128 << 100) + 0xab;
+        store
+            .ingest(
+                IngestBatch::new(vec![IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vec![0.0, 0.0],
+                )])
+                .with_epoch(store.epoch_identity().unwrap()),
+            )
+            .unwrap();
+        store.enable_graph().unwrap();
+        let canonical = format!("{id:032x}");
+        let upper = canonical.to_uppercase();
+        for value in [
+            QueryValue::String(&canonical),
+            QueryValue::String(&upper),
+            QueryValue::String("ab"),
+            QueryValue::String("0000000000000000000000000000000g"),
+            QueryValue::Null,
+            QueryValue::I64(1),
+        ] {
+            for label in ["", ":Document", ":Missing"] {
+                let point = format!(
+                    "MATCH (d{label}) WHERE ze.node_id(d) = $id RETURN ze.node_id(d) AS id"
+                );
+                let scan = format!(
+                    "MATCH (d{label}) WHERE ze.node_id(d) = $id AND true RETURN ze.node_id(d) AS id"
+                );
+                match (query(&store, &point, value), query(&store, &scan, value)) {
+                    (Ok(a), Ok(b)) => assert_eq!(strings(&a), strings(&b), "{point} {value:?}"),
+                    (Err(a), Err(b)) => assert_eq!(error_kind(a), error_kind(b)),
+                    _ => panic!("point/scan mismatch: {point} {value:?}"),
+                }
+            }
+        }
+        let node = query(
+            &store,
+            "MATCH (d:Document) WHERE ze.node_id(d) = $id RETURN d",
+            QueryValue::String(&canonical),
+        )
+        .unwrap();
+        assert_eq!(ids(&node), [id]);
+        for predicate in [
+            "$id = ze.node_id(d)",
+            "ze.node_id(d) = $id",
+            &format!("ze.node_id(d) = '{canonical}'"),
+        ] {
+            let source =
+                format!("MATCH (d:Document) WHERE {predicate} RETURN ze.node_id(d) AS id LIMIT 1");
+            let result = if predicate.contains("$id") {
+                query(&store, &source, QueryValue::String(&canonical)).unwrap()
+            } else {
+                run(&store, &source)
+            };
+            assert_eq!(
+                strings(&result).as_slice(),
+                std::slice::from_ref(&canonical)
+            );
+            assert_eq!(result.metadata().counters.get(WorkKind::Scans), 0);
+        }
+        assert!(
+            matches!(execute(&store, &control(), &GraphQueryOptions::default(),
+            "MATCH (d) WHERE ze.node_id(d) = $missing RETURN d", &[], CompileLimits::default()),
+            Err(zeppelin_embed_cypher::StatementError::Compile(error)) if error.kind == zeppelin_embed_cypher::ErrorKind::Parameter)
+        );
+        // Excluded fallible constraints must still fail even when the ID is absent.
+        for source in [
+            "MATCH (d {ts: 1 / 0}) WHERE ze.node_id(d) = $id RETURN d",
+            "MATCH (d) WHERE ze.node_id(d) = $id AND 1 / 0 = 1 RETURN d",
+            "MATCH (d) WHERE ze.node_id(d) = [$id][1 / 0] RETURN d",
+        ] {
+            assert!(
+                query(
+                    &store,
+                    source,
+                    QueryValue::String("00000000000000000000000000000000")
+                )
+                .is_err(),
+                "{source}"
+            );
+        }
+    }
+
+    fn error_kind(error: zeppelin_embed_cypher::StatementError) -> String {
+        match error {
+            zeppelin_embed_cypher::StatementError::Compile(error) => {
+                format!("compile:{:?}", error.kind)
+            }
+            zeppelin_embed_cypher::StatementError::Query(error) => {
+                format!("query:{:?}", error.kind())
+            }
+        }
+    }
+}

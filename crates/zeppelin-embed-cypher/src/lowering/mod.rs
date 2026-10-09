@@ -228,9 +228,13 @@ pub(crate) fn compile_route_in<'v, T, C: ReadContext<'v>>(
             for id in root.children() {
                 let clause = syntax(&bound, *id)?;
                 current = match clause.kind {
-                    NodeKind::Match { optional } => {
-                        builder.pattern(&bound, clause, current, optional)?
-                    }
+                    NodeKind::Match { optional } => builder.pattern(
+                        &bound,
+                        clause,
+                        current,
+                        optional,
+                        !has_prior && !has_mutation,
+                    )?,
                     NodeKind::Projection { .. } => builder.projection(&bound, *id, current)?,
                     NodeKind::Call(_) if route != Route::Mutation => {
                         builder.search(&bound, *id, current, has_prior)?
@@ -337,6 +341,10 @@ enum DraftOp {
     With(Range),
     Filter(ExprId),
     Scan(SlotId),
+    LookupNode {
+        output: SlotId,
+        id: zeppelin_embed::property_graph::NodeId,
+    },
     Aggregate {
         keys: Range,
         aggregates: Range,
@@ -700,6 +708,9 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                             OperatorKind::OffsetLimit { offset, limit }
                         }
                         DraftOp::Filter(predicate) => OperatorKind::Filter(predicate),
+                        DraftOp::LookupNode { output, id } => {
+                            OperatorKind::LookupNode { output, id }
+                        }
                         DraftOp::Scan(output) => OperatorKind::ScanNodes {
                             output,
                             label: None,

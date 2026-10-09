@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 10] = [
+pub const REQUIRED_COVERAGE: [&str; 15] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -28,6 +28,11 @@ pub const REQUIRED_COVERAGE: [&str; 10] = [
     "property-graph.cypher-entry.deleted-result.fire",
     "property-graph.cypher-entry.list-type.fire",
     "property-graph.cypher-entry.limit0-write.commit",
+    "property-graph.cypher-entry.id-lookup",
+    "property-graph.cypher-entry.id-excluded-scan",
+    "property-graph.cypher-entry.id-lookup-limit.fire",
+    "property-graph.cypher-entry.id-scan-limit.fire",
+    "property-graph.cypher-entry.id-cancel.fire",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -115,6 +120,7 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         .map_err(|error| format!("cypher entry setup: {error}"))?;
         committed_no_rows(&setup)?;
         generations.push(read(&store)?.1);
+        probe_id_lookup(&store)?;
 
         // A write without RETURN whose second item divides by zero: refused
         // as an expression error, and its valid first item is not committed.
@@ -295,6 +301,78 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     }
     for key in REQUIRED_COVERAGE {
         coverage.hit(key);
+    }
+    Ok(())
+}
+
+fn probe_id_lookup(store: &Store) -> Result<(), String> {
+    use zeppelin_embed::property_graph::query::runtime::{RuntimeLimits, WorkKind};
+    let all = run(store, "MATCH (p:P) RETURN ze.node_id(p) AS id", &[])
+        .map_err(|error| error.to_string())?;
+    let Some(Value::String(span)) = all.cell(0, 0) else {
+        return Err(String::from("ID lookup fixture identity"));
+    };
+    let id = all.string(*span).ok_or("ID lookup fixture text")?;
+    let parameters = [ParameterBinding {
+        name: "id",
+        value: QueryValue::String(id),
+    }];
+    for (text, point, work_kind) in [
+        (
+            "MATCH (p:P) WHERE ze.node_id(p) = $id RETURN ze.node_id(p) AS id",
+            true,
+            WorkKind::Lookups,
+        ),
+        (
+            "MATCH (p:P) WHERE ze.node_id(p) = $id AND true RETURN ze.node_id(p) AS id",
+            false,
+            WorkKind::Scans,
+        ),
+    ] {
+        let result = run(store, text, &parameters).map_err(|error| error.to_string())?;
+        let Some(Value::String(span)) = result.cell(0, 0) else {
+            return Err(String::from("ID lookup result identity"));
+        };
+        if result.metadata().rows != 1
+            || result.string(*span) != Some(id)
+            || (result.metadata().counters.get(WorkKind::Scans) == 0) != point
+        {
+            return Err(String::from("ID lookup rows or access path differ"));
+        }
+        let options = GraphQueryOptions::default()
+            .with_limits(
+                24 * 1024 * 1024,
+                RuntimeLimits::default()
+                    .with_limit(work_kind, 0)
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        match execute(
+            store,
+            &QueryControl::Cancel(CancelToken::new()),
+            &options,
+            text,
+            &parameters,
+            CompileLimits::default(),
+        ) {
+            Err(StatementError::Query(error))
+                if error.kind() == GraphQueryErrorKind::Limit && error.nothing_committed() => {}
+            _ => return Err(String::from("ID lookup work limit did not fire")),
+        }
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        match execute(
+            store,
+            &QueryControl::Cancel(cancelled),
+            &GraphQueryOptions::default(),
+            text,
+            &parameters,
+            CompileLimits::default(),
+        ) {
+            Err(StatementError::Query(error))
+                if error.kind() == GraphQueryErrorKind::Cancelled && error.nothing_committed() => {}
+            _ => return Err(String::from("ID lookup cancellation did not fire")),
+        }
     }
     Ok(())
 }
