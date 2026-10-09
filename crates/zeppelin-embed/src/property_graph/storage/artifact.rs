@@ -186,7 +186,6 @@ pub(crate) struct ValidatedArtifact {
     kind: ContainerKind,
     directory: usize,
     count: usize,
-    file_length: usize,
     file_checksum: u64,
 }
 impl ArtifactFrame<'_> {
@@ -207,7 +206,6 @@ impl ArtifactFrame<'_> {
             kind: self.kind,
             directory: self.directory,
             count: self.count,
-            file_length: self.bytes.len(),
             file_checksum: self.file_checksum,
         }
     }
@@ -278,7 +276,13 @@ impl ValidatedArtifact {
         bytes: &'a [u8],
         reference: PhysicalRef,
     ) -> Result<FramedBlock<'a>, FormatError> {
-        if bytes.len() != self.file_length {
+        // Admission proved that the directory and trailer end at the file length.
+        // Derive it instead of retaining duplicate geometry in each mapping slot.
+        let file_length = add(
+            self.directory,
+            add(self.count.checked_mul(24).ok_or_else(overflow)?, 8)?,
+        )?;
+        if bytes.len() != file_length {
             return Err(invalid(
                 FormatCheck::FileLength,
                 "validated artifact mapping length changed",

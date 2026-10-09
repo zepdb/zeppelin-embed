@@ -5,8 +5,8 @@ use crate::lifecycle::native_graph::NativeReadLease;
 use crate::property_graph::query::resources::{QueryArena, QueryMemory, QueryReservation};
 use crate::property_graph::query::runtime::{RetainedView, RuntimeContext, RuntimeInstanceId};
 use crate::property_graph::storage::artifact::{
-    self, ArtifactControlError, ArtifactId, ContainerKind, FramedBlock, PhysicalRef,
-    ValidatedArtifact,
+    self, ArtifactControlError, ArtifactId, ContainerKind, FramedBlock, MAX_ARTIFACT_BYTES,
+    PhysicalRef, ValidatedArtifact,
 };
 use crate::property_graph::storage::tree::directory::{
     BlockSource, QueryOwner, TreeError, TreeResources,
@@ -18,12 +18,17 @@ use std::{
     path::PathBuf,
 };
 
-struct MappedArtifact<'m, 'g> {
+// Full directory pages cannot overlap, so offset / PAGE_BYTES identifies
+// distinct pages even when their framed offsets are unaligned. The fixed
+// bitmap is charged with every mapping slot at source admission.
+const PAGE_MEMO_BYTES: usize = MAX_ARTIFACT_BYTES
+    .div_ceil(super::super::tree::PAGE_BYTES)
+    .div_ceil(8);
+
+struct MappedArtifact {
     mapping: NativeReadonlyMapping,
     validation: ValidatedArtifact,
-    // QueryArena charges its heap and control descriptor. Boxing the descriptor
-    // keeps its charge separate from the mapping table's capacity reservation.
-    validated_pages: Box<[QueryArena<'m, 'g, Cell<u8>>; 1]>,
+    validated_pages: [Cell<u8>; PAGE_MEMO_BYTES],
 }
 
 fn charged_artifact_path<'m, 'g>(
@@ -79,7 +84,7 @@ pub(crate) struct NativeQuerySource<'a, 'm, 'g> {
     memory: &'m QueryMemory<'g>,
     owner: QueryOwner<'m, 'g>,
     runtime: RuntimeInstanceId,
-    slots: QueryArena<'m, 'g, OnceCell<MappedArtifact<'m, 'g>>>,
+    slots: QueryArena<'m, 'g, OnceCell<MappedArtifact>>,
 }
 
 /// Unforgeable proof that one retained lease, query-memory owner and runtime
@@ -140,13 +145,8 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
 
     #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn retained_validation_bytes(&self) -> usize {
-        self.slots
-            .as_slice()
-            .iter()
-            .filter_map(OnceCell::get)
-            .flat_map(|mapped| mapped.validated_pages.iter())
-            .map(QueryArena::reserved_bytes)
-            .sum()
+        // Empty slots retain the same charged bitmap capacity.
+        self.slots.capacity() * PAGE_MEMO_BYTES
     }
 
     pub(super) const fn lease(&self) -> &'a NativeReadLease {
@@ -171,9 +171,6 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
     }
 
     fn page_bit(&self, reference: PhysicalRef) -> Result<(&Cell<u8>, u8), TreeError> {
-        if reference.kind != artifact::BlockKind::TreePage {
-            return Err(TreeError::Invalid("page memo requires a directory page"));
-        }
         let mapped = self
             .slots
             .as_slice()
@@ -181,21 +178,12 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
             .filter_map(OnceCell::get)
             .find(|mapped| mapped.validation.artifact() == reference.artifact)
             .ok_or(TreeError::Invalid("page memo mapping missing"))?;
-        let bucket = usize::try_from(reference.offset).map_err(|_| TreeError::Memory)?
-            / super::super::tree::PAGE_BYTES;
-        let byte = mapped
-            .validated_pages
-            .first()
-            .ok_or(TreeError::Memory)?
-            .as_slice()
-            .get(bucket / 8)
-            .ok_or(TreeError::Invalid("page memo reference outside mapping"))?;
-        Ok((byte, 1_u8 << (bucket % 8)))
+        memo_bit(&mapped.validated_pages, reference)
     }
 
     fn decode<'s>(
         &'s self,
-        mapped: &'s MappedArtifact<'m, 'g>,
+        mapped: &'s MappedArtifact,
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'s>, TreeError> {
@@ -303,40 +291,10 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
         drop(path);
         drop(path_charge);
         let validation = self.admit_mapping(&mapping, reference, resources)?;
-        // Exact admitted blocks never overlap. Every directory page spans
-        // PAGE_BYTES plus its frame, so distinct pages cannot share a bucket.
-        // Record blocks cannot consult or set these directory-page bits.
-        let memo_bytes = mapping
-            .as_bytes()
-            .len()
-            .div_ceil(super::super::tree::PAGE_BYTES)
-            .div_ceil(8);
-        let mut pages = QueryArena::new(self.memory, memo_bytes)
-            .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
-            .map_err(TreeError::Runtime)?;
-        resources.step(memo_bytes as u64)?;
-        for _ in 0..memo_bytes {
-            pages
-                .push(Cell::new(0))
-                .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
-                .map_err(TreeError::Runtime)?;
-        }
-        let mut descriptor = Vec::new();
-        descriptor
-            .try_reserve_exact(1)
-            .map_err(|_| TreeError::Memory)?;
-        if descriptor.capacity() != 1 {
-            return Err(TreeError::Memory);
-        }
-        descriptor.push(pages);
-        let validated_pages = descriptor
-            .into_boxed_slice()
-            .try_into()
-            .map_err(|_| TreeError::Memory)?;
         let mapped = MappedArtifact {
             mapping,
             validation,
-            validated_pages,
+            validated_pages: [const { Cell::new(0) }; PAGE_MEMO_BYTES],
         };
         cell.set(mapped)
             .map_err(|_| TreeError::Invalid("native graph source slot initialized twice"))?;
@@ -344,5 +302,53 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
             "native graph source slot remained empty",
         ))?;
         self.decode(mapped, reference, resources)
+    }
+}
+
+fn memo_bit(pages: &[Cell<u8>], reference: PhysicalRef) -> Result<(&Cell<u8>, u8), TreeError> {
+    // Short blocks can share a full page's bucket and must never borrow its proof.
+    if reference.kind != artifact::BlockKind::TreePage
+        || reference.length as usize != super::super::tree::PAGE_BYTES + 24
+    {
+        return Err(TreeError::Invalid(
+            "page memo requires a full directory page",
+        ));
+    }
+    let bucket = usize::try_from(reference.offset).map_err(|_| TreeError::Memory)?
+        / super::super::tree::PAGE_BYTES;
+    let byte = pages
+        .get(bucket / 8)
+        .ok_or(TreeError::Invalid("page memo reference outside mapping"))?;
+    Ok((byte, 1_u8 << (bucket % 8)))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test assertions")]
+mod tests {
+    use super::*;
+    use crate::property_graph::storage::{artifact::BlockKind, tree::PAGE_BYTES};
+
+    #[test]
+    fn undersized_page_cannot_borrow_memo_proof() {
+        let pages = [const { Cell::new(0) }; PAGE_MEMO_BYTES];
+        let full = PhysicalRef {
+            artifact: ArtifactId::new(1).unwrap(),
+            offset: 128,
+            length: (PAGE_BYTES + 24) as u32,
+            kind: BlockKind::TreePage,
+            version: 1,
+        };
+        let (byte, mask) = memo_bit(&pages, full).unwrap();
+        byte.set(mask);
+        // An exact short block preceding the real page shares its bucket.
+        let short = PhysicalRef {
+            offset: 96,
+            length: 32,
+            ..full
+        };
+        assert!(matches!(
+            memo_bit(&pages, short),
+            Err(TreeError::Invalid(_))
+        ));
     }
 }

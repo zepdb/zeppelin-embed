@@ -431,8 +431,7 @@ impl NativeReadConsumer<ReleasedExecution<NodeValueRows>> for ScanProjectConsume
         ];
         let rows_in = self.rows_in.clone();
         let cancel = self.cancel.clone();
-        // The statement keeps its page memo after this operator is dropped.
-        let baseline = runtime.memory().reserved_bytes() - view.retained_validation_bytes();
+        let baseline = runtime.memory().reserved_bytes();
         let result = execute_relational_plan!(
             view,
             runtime,
@@ -480,8 +479,7 @@ impl NativeReadConsumer<ReleasedExecution<NodeValueRows>> for ScanProjectConsume
             },
             vector
         );
-        let released =
-            runtime.memory().reserved_bytes() - view.retained_validation_bytes() == baseline;
+        let released = runtime.memory().reserved_bytes() == baseline;
         if let Some(report) = &self.report
             && let Ok(mut report) = report.lock()
         {
@@ -585,8 +583,7 @@ impl NativeReadConsumer<ReleasedExecution<NodePairRows>> for JoinEagerConsumer {
                 kind: OperatorKind::Collect,
             },
         ];
-        // The statement keeps its page memo after this operator is dropped.
-        let baseline = runtime.memory().reserved_bytes() - view.retained_validation_bytes();
+        let baseline = runtime.memory().reserved_bytes();
         let result = execute_relational_plan!(
             view,
             runtime,
@@ -618,8 +615,7 @@ impl NativeReadConsumer<ReleasedExecution<NodePairRows>> for JoinEagerConsumer {
             |source| source,
             vector
         );
-        let released =
-            runtime.memory().reserved_bytes() - view.retained_validation_bytes() == baseline;
+        let released = runtime.memory().reserved_bytes() == baseline;
         Ok(ReleasedExecution { result, released })
     }
 }
@@ -669,8 +665,7 @@ impl NativeReadConsumer<ReleasedExecution<NodeValueRows>> for EagerMutateConsume
                 kind: OperatorKind::Mutate(&mutations),
             },
         ];
-        // The statement keeps its page memo after this operator is dropped.
-        let baseline = runtime.memory().reserved_bytes() - view.retained_validation_bytes();
+        let baseline = runtime.memory().reserved_bytes();
         let result = execute_relational_plan!(
             view,
             runtime,
@@ -700,8 +695,7 @@ impl NativeReadConsumer<ReleasedExecution<NodeValueRows>> for EagerMutateConsume
             |source| source,
             vector
         );
-        let released =
-            runtime.memory().reserved_bytes() - view.retained_validation_bytes() == baseline;
+        let released = runtime.memory().reserved_bytes() == baseline;
         Ok(ReleasedExecution { result, released })
     }
 }
@@ -912,7 +906,7 @@ fn native_eager_capacity_limit_rejects_without_partial_rows() {
 
     assert!(
         barriered.released,
-        "a rejected eager bag must release every operator reservation"
+        "a rejected eager bag must release every query reservation"
     );
     match barriered.result {
         Err(EagerExecutionFailure::Run(failure)) => match failure.error {
@@ -968,7 +962,7 @@ fn native_eager_cancel_during_drain_releases() {
         );
         assert!(
             report.released,
-            "{label}: cancellation must release every operator reservation"
+            "{label}: cancellation must release every query reservation"
         );
         assert_eq!(
             report.completed_rows, 0,

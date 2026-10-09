@@ -543,8 +543,7 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
         .expect("retain singleton eligibility plan")
         .admit_plan(&plan, runtime.values())
         .expect("admit singleton eligibility plan");
-        // Failed preparation drops its backing; the statement retains its memo.
-        let held = runtime.memory().reserved_bytes() - view.retained_validation_bytes();
+        let held = runtime.memory().reserved_bytes();
         let prepared = match super::eligibility::prepare(
             view,
             &admitted,
@@ -589,10 +588,7 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
-                assert_eq!(
-                    runtime.memory().reserved_bytes() - view.retained_validation_bytes(),
-                    held
-                );
+                assert_eq!(runtime.memory().reserved_bytes(), held);
                 return Ok(Err(error));
             }
         };
@@ -1068,8 +1064,7 @@ impl NativeReadConsumer<Result<PipelineExecution, RuntimeFailure<NativeExecution
         .expect("retain relational directed probe")
         .admit_plan(&plan, runtime.values())
         .expect("admit relational directed probe");
-        // The statement keeps its page memo after this operator is dropped.
-        let baseline = runtime.memory().reserved_bytes() - view.retained_validation_bytes();
+        let baseline = runtime.memory().reserved_bytes();
         let mut source = match NativePattern::new(
             view,
             &admitted,
@@ -1173,9 +1168,7 @@ impl NativeReadConsumer<Result<PipelineExecution, RuntimeFailure<NativeExecution
             },
         );
         drop(source);
-        let released = u64::from(
-            runtime.memory().reserved_bytes() - view.retained_validation_bytes() == baseline,
-        );
+        let released = u64::from(runtime.memory().reserved_bytes() == baseline);
         if let Some(observation) = &self.cancel_observation
             && let Ok(mut observation) = observation.lock()
         {
