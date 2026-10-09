@@ -937,3 +937,88 @@ mod ze404_counts {
         }
     }
 }
+
+mod ze409_scan_tests {
+    use super::*;
+    use crate::property_graph::query::resources::{QueryArena, QueryMemory};
+    use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits, WorkKind};
+    use crate::property_graph::storage::tree::directory::TreeResources;
+    use crate::property_graph::storage::{
+        GraphReadView, LabelSelection, NativeCatalog, NativeQuerySource, NativeReadCapability,
+    };
+
+    #[test]
+    fn ze409_full_drain_membership_is_charged_and_keeps_its_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), native_options()).unwrap();
+        store
+            .ingest(IngestBatch::new(vec![
+                document(91),
+                document(92),
+                document(93),
+                document(94),
+            ]))
+            .unwrap();
+        store.enable_graph().unwrap();
+        disable_generation_fixture_maintenance(&store);
+        link_documents(&store);
+        let lease = store.admit_native_read().unwrap();
+        let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let cancel = CancelToken::new();
+        let control = QueryControl::Cancel(cancel.clone());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(capability, &resources, 32).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut resources).unwrap();
+        drop(resources);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
+        let mut cursor = view.node_cursor(LabelSelection::All, &mut runtime).unwrap();
+        cursor.enable_full_drain();
+        let mut output = [NodeId::new(1).unwrap()];
+        assert_eq!(
+            view.scan_nodes(&mut cursor, &mut output, &mut runtime)
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(output[0].get(), 91);
+        // Publication after admission must not change either the graph set or
+        // the physical document visibility retained by this scan occurrence.
+        store
+            .delete(crate::ingest::DeleteBatch::new(vec![DocId::new(92)]))
+            .unwrap();
+        assert_eq!(
+            view.scan_nodes(&mut cursor, &mut output, &mut runtime)
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(output[0].get(), 92);
+        let before = memory.reserved_bytes();
+        assert_eq!(
+            view.scan_nodes(&mut cursor, &mut output, &mut runtime)
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(output[0].get(), 93);
+        assert_eq!(
+            memory.reserved_bytes() - before,
+            std::mem::size_of::<QueryArena<'_, '_, NodeId>>() + 2 * std::mem::size_of::<NodeId>()
+        );
+        let charged = memory.reserved_bytes();
+        let visits = runtime.counters().get(WorkKind::Scans);
+        cancel.cancel();
+        assert!(
+            view.scan_nodes(&mut cursor, &mut output, &mut runtime)
+                .is_err()
+        );
+        assert_eq!(runtime.counters().get(WorkKind::Scans), visits);
+        drop(cursor);
+        assert!(memory.reserved_bytes() < charged);
+        assert_eq!(store.count_documents(None, None).unwrap().count, 3);
+    }
+}

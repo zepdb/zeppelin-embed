@@ -1852,3 +1852,184 @@ mod ze408 {
         assert_eq!(parity(&store), 1);
     }
 }
+
+mod ze409_scan_tests {
+    use super::*;
+    use zeppelin_embed::property_graph::query::runtime::{RuntimeLimits, WorkKind};
+    use zeppelin_embed::property_graph::staging::{
+        StructuredOperation, StructuredWrite, WriteImage,
+    };
+    use zeppelin_embed::property_graph::{
+        ApplicationKey, EntityKind, GraphName, GraphRevision, NodeId, NodeRef,
+    };
+
+    fn run(store: &Store, source: &str) -> CompletedGraphResult {
+        execute(
+            store,
+            &control(),
+            &GraphQueryOptions::default()
+                .with_result_row_limit(4096)
+                .unwrap(),
+            source,
+            &[],
+            CompileLimits::default(),
+        )
+        .unwrap()
+    }
+
+    fn scan_fixture(n: u128) -> (Directory, Store) {
+        let (directory, store) = fixture();
+        let epoch = store.epoch_identity().unwrap();
+        for start in [0, n / 2] {
+            store
+                .ingest(
+                    IngestBatch::new(
+                        (start..start + n / 2)
+                            .map(|id| {
+                                IngestDocument::new(
+                                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                                    vec![0.0, 0.0],
+                                )
+                                .with_timestamp(-(id as i64))
+                            })
+                            .collect(),
+                    )
+                    .with_epoch(epoch),
+                )
+                .unwrap();
+            if start == 0 {
+                store.seal().unwrap();
+            }
+        }
+        store.enable_graph().unwrap();
+        store
+            .graph_apply(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Relationship, "ze409", "link").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Relationship {
+                        relationship_type: GraphName::new("LINK").unwrap(),
+                        properties: &[],
+                        source: NodeRef::Existing(NodeId::new(3).unwrap()),
+                        target: NodeRef::Existing(NodeId::new(7).unwrap()),
+                    }),
+                }],
+                &control(),
+            )
+            .unwrap();
+        run(&store, "CREATE (dead:R5Dead)");
+        run(&store, "MATCH (dead:R5Dead) DELETE dead");
+        (directory, store)
+    }
+
+    fn strings(result: &CompletedGraphResult) -> Vec<String> {
+        (0..result.metadata().rows as usize)
+            .map(|row| {
+                let Some(Value::String(span)) = result.cell(row, 0) else {
+                    panic!("node ID string");
+                };
+                result.string(*span).unwrap().to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ze404_document_scan_does_not_revalidate_graph_pages_per_document() {
+        let mut previous: Option<zeppelin_embed::property_graph::query::runtime::WorkCounters> =
+            None;
+        for n in [1_000, 2_000] {
+            let (_directory, store) = scan_fixture(n);
+            // LIMIT keeps the original lazy cursor as an independent order oracle.
+            let lazy = run(&store, "MATCH (n) RETURN ze.node_id(n) AS id LIMIT 3000");
+            let result = run(&store, "MATCH (n) RETURN ze.node_id(n) AS id");
+            assert_eq!(strings(&result), strings(&lazy));
+            assert_eq!(result.metadata().rows, n as u32);
+            assert_eq!(
+                &strings(&result)[..2],
+                &[format!("{:032x}", 3), format!("{:032x}", 7)]
+            );
+            let work = result.metadata().counters;
+            eprintln!(
+                "ZE409 n={n} scans={} lookups={} decoded={} copied={} peak={}",
+                work.get(WorkKind::Scans),
+                work.get(WorkKind::Lookups),
+                work.get(WorkKind::DirectoryPagesDecoded),
+                work.get(WorkKind::DirectoryPagesCopied),
+                result.metadata().peak_query_bytes,
+            );
+            if let Some(old) = previous {
+                for kind in [WorkKind::Lookups, WorkKind::DirectoryPagesDecoded] {
+                    assert_eq!(
+                        work.get(kind),
+                        old.get(kind),
+                        "fixed E, doubled N: {kind:?}"
+                    );
+                }
+                assert_eq!(work.get(WorkKind::Scans) - old.get(WorkKind::Scans), 1_000);
+            }
+            previous = Some(work);
+        }
+    }
+
+    #[test]
+    fn ze404_limit_does_not_prefetch_full_scan() {
+        let (_directory, store) = scan_fixture(2_000);
+        let full = strings(&run(&store, "MATCH (n) RETURN ze.node_id(n) AS id"));
+        for limit in [0, 1, 10] {
+            let source = format!("MATCH (n) RETURN ze.node_id(n) AS id LIMIT {limit}");
+            let options = GraphQueryOptions::default()
+                .with_limits(
+                    8 * 1024 * 1024,
+                    RuntimeLimits::default()
+                        .with_limit(WorkKind::Scans, 32)
+                        .unwrap(),
+                )
+                .unwrap();
+            let result = execute(
+                &store,
+                &control(),
+                &options,
+                &source,
+                &[],
+                CompileLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(strings(&result), full[..limit]);
+            let work = result.metadata().counters;
+            eprintln!(
+                "ZE409 limit={limit} scans={} lookups={} decoded={}",
+                work.get(WorkKind::Scans),
+                work.get(WorkKind::Lookups),
+                work.get(WorkKind::DirectoryPagesDecoded)
+            );
+            let expected = match limit {
+                0 => (0, 0, 0),
+                1 => (1, 1, 5),
+                10 => (11, 11, 35),
+                _ => unreachable!("fixed LIMIT cases"),
+            };
+            assert_eq!(
+                (
+                    work.get(WorkKind::Scans),
+                    work.get(WorkKind::Lookups),
+                    work.get(WorkKind::DirectoryPagesDecoded)
+                ),
+                expected
+            );
+            let cancel = CancelToken::new();
+            cancel.cancel();
+            let error = execute(
+                &store,
+                &QueryControl::Cancel(cancel),
+                &options,
+                &source,
+                &[],
+                CompileLimits::default(),
+            )
+            .err()
+            .expect("cancelled scan must fail");
+            assert!(error.to_string().contains("Cancelled"), "{error}");
+        }
+    }
+}

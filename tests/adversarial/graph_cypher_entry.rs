@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 21] = [
+pub const REQUIRED_COVERAGE: [&str; 24] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -39,6 +39,9 @@ pub const REQUIRED_COVERAGE: [&str; 21] = [
     "property-graph.cypher-entry.global-count",
     "property-graph.cypher-entry.count-filter-excluded",
     "property-graph.cypher-entry.count-limit.fire",
+    "property-graph.cypher-entry.document-scan.full-drain",
+    "property-graph.cypher-entry.document-scan.lazy-limit",
+    "property-graph.cypher-entry.document-scan.work-limit.fire",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -163,6 +166,22 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         )
         .map_err(|error| format!("cypher entry setup: {error}"))?;
         committed_no_rows(&setup)?;
+        store
+            .ingest(zeppelin_embed::ingest::IngestBatch::new(
+                (10_000..10_032)
+                    .map(|id| {
+                        zeppelin_embed::ingest::IngestDocument::new(
+                            zeppelin_embed::ingest::DocumentVersion::new(
+                                zeppelin_embed::ingest::DocId::new(id),
+                                zeppelin_embed::ingest::Revision::new(1),
+                            ),
+                            vec![1.0],
+                        )
+                    })
+                    .collect(),
+            ))
+            .map_err(|error| error.to_string())?;
+        probe_document_scan(&store)?;
         generations.push(read(&store)?.1);
         probe_id_lookup(&store)?;
 
@@ -284,6 +303,62 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
     })();
     let _ = std::fs::remove_dir_all(&root);
     outcome
+}
+
+fn probe_document_scan(store: &Store) -> Result<(), String> {
+    use zeppelin_embed::property_graph::query::runtime::{RuntimeLimits, WorkKind};
+    let full =
+        run(store, "MATCH (n) RETURN count(n) AS c", &[]).map_err(|error| error.to_string())?;
+    let lazy = run(
+        store,
+        "MATCH (n) WITH n LIMIT 100 RETURN count(n) AS c",
+        &[],
+    )
+    .map_err(|error| error.to_string())?;
+    if values(&full)? != [35]
+        || values(&lazy)? != [35]
+        || full.metadata().counters.get(WorkKind::Lookups)
+            >= lazy.metadata().counters.get(WorkKind::Lookups)
+    {
+        return Err(String::from(
+            "document scan full-drain/lazy oracle mismatch",
+        ));
+    }
+    // The final graph-page work is the membership pass; consuming its budget
+    // must fail the complete statement at the existing runtime work seam.
+    let pages = full
+        .metadata()
+        .counters
+        .get(WorkKind::DirectoryPagesDecoded);
+    let options = GraphQueryOptions::default()
+        .with_limits(
+            8 * 1024 * 1024,
+            RuntimeLimits::default()
+                .with_limit(
+                    WorkKind::DirectoryPagesDecoded,
+                    pages
+                        .checked_sub(1)
+                        .ok_or("document scan page work missing")?,
+                )
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+    match execute(
+        store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &options,
+        "MATCH (n) RETURN count(n) AS c",
+        &[],
+        CompileLimits::default(),
+    ) {
+        Err(StatementError::Query(error))
+            if error.kind() == GraphQueryErrorKind::Limit && error.nothing_committed() =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!("document scan work-limit wrong refusal: {error}")),
+        Ok(_) => Err(String::from("document scan work limit did not fire")),
+    }
 }
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {

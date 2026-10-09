@@ -60,6 +60,8 @@ pub(crate) struct NodeCursor<'view, 'm, 'g> {
     documents: Option<crate::lifecycle::native_graph::documents::DocumentCursor>,
     incident_sources: bool,
     folder: Option<crate::lifecycle::native_graph::documents::FolderCandidates<'m, 'g>>,
+    full_drain: bool,
+    explicit_nodes: Option<QueryArena<'m, 'g, NodeId>>,
     graph_exhausted: bool,
     after: Option<NodeId>,
     exhausted: bool,
@@ -118,6 +120,8 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
             labels,
             incident_sources: false,
             folder: None,
+            full_drain: false,
+            explicit_nodes: None,
             graph_exhausted: false,
             after: None,
             exhausted: false,
@@ -135,6 +139,66 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
         cursor.incident_sources = true;
         cursor.documents = None;
         Ok(cursor)
+    }
+
+    /// Only callers that prove a read-only full drain may retain membership.
+    pub(crate) fn enable_full_drain(&mut self) {
+        self.full_drain = true;
+    }
+
+    fn retain_explicit_nodes<'lease>(
+        &mut self,
+        lease: &NativeReadLease,
+        source: &NativeQuerySource<'lease, 'm, 'g>,
+        catalog: &NativeCatalog<'_, 'm, 'g>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        use super::super::payload::PayloadRef;
+        use super::super::stream::PayloadSlice;
+        use super::super::tree::{Key, TreeKind, directory::DirectoryCursor};
+
+        let root = lease.bundle().roots().directory(TreeKind::Nodes)?;
+        // The directory has no cardinality summary. Count its entries first so
+        // the fixed-capacity arena is charged before allocation, including IDs
+        // of tombstones. Both passes stay on this cursor's immutable admission.
+        let mut count = 0_usize;
+        {
+            let mut cursor = DirectoryCursor::seek(source, root, None, resources)?;
+            while cursor.next_entry(resources)?.is_some() {
+                count = count.checked_add(1).ok_or(TreeError::Memory)?;
+            }
+        }
+        let mut nodes = QueryArena::new(self.memory, count)
+            .map_err(RuntimeError::Memory)
+            .map_err(TreeError::Runtime)?;
+        let mut cursor = DirectoryCursor::seek(source, root, None, resources)?;
+        while let Some(entry) = cursor.next_entry(resources)? {
+            let Key::Inline(key) = entry.key() else {
+                return Err(TreeError::Invalid("overflow node identity"));
+            };
+            let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(
+                key.try_into()
+                    .map_err(|_| TreeError::Invalid("node identity width"))?,
+            )));
+            super::verify_node_state(
+                PayloadSlice::new(
+                    source,
+                    root.store(),
+                    entry.creation_generation(),
+                    PayloadRef::decode(entry.value())?,
+                ),
+                node,
+                catalog,
+                lease.bundle().document(),
+                resources,
+            )?;
+            nodes.push(node).map_err(|_| TreeError::Memory)?;
+            resources.read_event(super::super::tree::directory::NativeReadEvent::CopiedBytes(
+                std::mem::size_of::<NodeId>() as u64,
+            ))?;
+        }
+        self.explicit_nodes = Some(nodes);
+        Ok(())
     }
 
     pub(super) fn scan<'lease>(
@@ -222,6 +286,9 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
         // Graph records come first. The physical document cursor then supplies
         // only implicit nodes; adopted records and tombstones were handled above.
         if self.graph_exhausted {
+            if self.full_drain && self.documents.is_some() && self.explicit_nodes.is_none() {
+                self.retain_explicit_nodes(lease, source, catalog, &mut resources)?;
+            }
             while private.len() < private.capacity() {
                 let Some(cursor) = &mut self.documents else {
                     break;
@@ -235,16 +302,24 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
                     break;
                 };
                 let node = NodeId::from(version.doc_id());
-                if lookup_node_state(
-                    source,
-                    lease.bundle().roots(),
-                    node,
-                    catalog,
-                    lease.bundle().document(),
-                    &mut resources,
-                )?
-                .is_none()
-                {
+                let implicit = if let Some(nodes) = &self.explicit_nodes {
+                    resources.step(1)?;
+                    nodes
+                        .as_slice()
+                        .binary_search_by_key(&node.get(), |id| id.get())
+                        .is_err()
+                } else {
+                    lookup_node_state(
+                        source,
+                        lease.bundle().roots(),
+                        node,
+                        catalog,
+                        lease.bundle().document(),
+                        &mut resources,
+                    )?
+                    .is_none()
+                };
+                if implicit {
                     private.push(node).map_err(|_| TreeError::Memory)?;
                 }
             }

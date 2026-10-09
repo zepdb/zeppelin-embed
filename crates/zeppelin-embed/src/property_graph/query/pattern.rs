@@ -357,6 +357,7 @@ pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
     /// refuses search and mutation in one statement, so at most one of
     /// `mutation` and `search` is ever present.
     search: Option<SearchScope<'q, 'v, 'm, 'g>>,
+    full_drain_scan: bool,
 }
 
 impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
@@ -488,6 +489,30 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             mutation: mutation.is_some(),
             search: search.is_some(),
         };
+        // Deliberately narrow: one scan in a read-only draining pipeline.
+        // LIMIT, joins, OPTIONAL, expansion and mutation keep lazy cursors.
+        let full_drain_scan = !admitted.mutation
+            && description
+                .operators
+                .iter()
+                .filter(|operator| matches!(operator.kind, OperatorKind::ScanNodes { .. }))
+                .count()
+                == 1
+            && description.operators.iter().all(|operator| {
+                matches!(
+                    operator.kind,
+                    OperatorKind::Unit
+                        | OperatorKind::ScanNodes { .. }
+                        | OperatorKind::Filter(_)
+                        | OperatorKind::Project(_)
+                        | OperatorKind::With(_)
+                        | OperatorKind::Aggregate { .. }
+                        | OperatorKind::Sort(_)
+                        | OperatorKind::Distinct
+                        | OperatorKind::Collect
+                        | OperatorKind::Search { .. }
+                )
+            });
         let mut count = occurrence_count(description.operators, root_node, 0, None, admitted)?;
         let calls = if admitted.search {
             description.eager_searches
@@ -569,6 +594,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             capacity,
             searches,
             search,
+            full_drain_scan,
         })
     }
 
@@ -1127,6 +1153,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 selected.select_folder(candidates);
             }
             *cursor = Some(selected);
+            if self.full_drain_scan
+                && let Some(cursor) = cursor.as_mut()
+            {
+                cursor.enable_full_drain();
+            }
         }
     }
 
