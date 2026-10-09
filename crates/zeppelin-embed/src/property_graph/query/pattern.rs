@@ -29,6 +29,7 @@ use crate::property_graph::{
 };
 
 mod expand;
+mod folder;
 mod join;
 mod mutation;
 mod planner;
@@ -347,6 +348,7 @@ pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
     root_node: PlanNodeId,
     schema: Schema<'m, 'g>,
     mutation: Option<MutationScope<'s, 'i>>,
+    folder: Option<planner::FolderPlan>,
     description: super::plan::PlanDescription<'plan>,
     capacity: PatternCapacity,
     /// Per eager call, in call order; empty without a search scope.
@@ -558,6 +560,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             root_node,
             schema,
             mutation,
+            folder: if !admitted.mutation && description.eager_searches.is_empty() {
+                planner::folder_plan(description, root_node, bindings)
+            } else {
+                None
+            },
             description,
             capacity,
             searches,
@@ -1098,7 +1105,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             if !self.next_occurrence(child, context)? {
                 return Ok(false);
             }
-            *cursor = Some(match label {
+            let mut selected = match label {
                 ResolvedLabel::All if incident_sources => {
                     self.view.incident_source_cursor(context)?
                 }
@@ -1107,7 +1114,19 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                     .view
                     .node_cursor(LabelSelection::AllOf(&[*label]), context)?,
                 ResolvedLabel::Missing => continue,
-            });
+            };
+            let node = self
+                .occurrences
+                .as_slice()
+                .get(index)
+                .ok_or(RuntimeError::Batch)?
+                .node;
+            if let Some(folder) = self.folder.filter(|folder| folder.scan == node)
+                && let Some(candidates) = self.view.folder_candidates(folder.value, context)?
+            {
+                selected.select_folder(candidates);
+            }
+            *cursor = Some(selected);
         }
     }
 

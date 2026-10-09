@@ -109,6 +109,137 @@ fn safe_input_chain(operators: &[Operator<'_>], operator: &Operator<'_>, depth: 
     }
 }
 
+/// Only one uncorrelated Document scan and one scalar folder equality.
+#[derive(Clone, Copy)]
+pub(super) struct FolderPlan {
+    pub(super) scan: PlanNodeId,
+    pub(super) slot: super::SlotId,
+    pub(super) value: u64,
+    pub(super) label: super::ExprId,
+    pub(super) predicate: super::ExprId,
+    pub(super) count: Option<PlanNodeId>,
+}
+
+pub(super) fn folder_plan(
+    description: super::super::plan::PlanDescription<'_>,
+    root: PlanNodeId,
+    bindings: &[super::ParameterBinding<'_>],
+) -> Option<FolderPlan> {
+    use super::super::plan::{AggregateExpression, BinaryExpression, Expression, Literal};
+    let expressions = description.expressions;
+    let operator = |id: PlanNodeId| description.operators.get(id.0 as usize);
+    let expression = |id: super::ExprId| expressions.get(id.0 as usize);
+    let mut node = root;
+    let mut count = None;
+    let mut counted_slot = None;
+    for _ in 0..MAX_PLAN_DEPTH {
+        let op = operator(node)?;
+        match op.kind {
+            OperatorKind::Project { .. }
+            | OperatorKind::OffsetLimit { .. }
+            | OperatorKind::Sort { .. } => node = *op.inputs.first()?,
+            OperatorKind::Aggregate { keys, aggregates }
+                if keys.is_empty() && aggregates.len() == 1 && count.is_none() =>
+            {
+                let Expression::Aggregate {
+                    operation: AggregateExpression::Count { distinct: false },
+                    operand: Some(operand),
+                } = expression(aggregates.first()?.expression)?
+                else {
+                    return None;
+                };
+                let Expression::Slot(slot) = expression(*operand)? else {
+                    return None;
+                };
+                counted_slot = Some(*slot);
+                count = Some(node);
+                node = *op.inputs.first()?;
+                break;
+            }
+            _ => break,
+        }
+    }
+    let eq = operator(node)?;
+    let OperatorKind::Filter(predicate) = eq.kind else {
+        return None;
+    };
+    let Expression::Binary {
+        operation: BinaryExpression::Comparison(super::Comparison::Equal),
+        left,
+        right,
+    } = expression(predicate)?
+    else {
+        return None;
+    };
+    let (property, scalar) = if matches!(expression(*left)?, Expression::Property { .. }) {
+        (*left, *right)
+    } else {
+        (*right, *left)
+    };
+    let Expression::Property { entity, name } = expression(property)? else {
+        return None;
+    };
+    if name.as_str() != "folder" {
+        return None;
+    }
+    let Expression::Slot(slot) = expression(*entity)? else {
+        return None;
+    };
+    let value = match expression(scalar)? {
+        Expression::Literal(Literal::I64(value)) => u64::try_from(*value).ok()?,
+        Expression::Parameter(id) => {
+            let name = description.parameters.get(id.0 as usize)?.name;
+            let super::QueryValue::I64(value) =
+                bindings.iter().find(|binding| binding.name == name)?.value
+            else {
+                return None;
+            };
+            u64::try_from(value).ok()?
+        }
+        _ => return None,
+    };
+    let label_op = operator(*eq.inputs.first()?)?;
+    let OperatorKind::Filter(label) = label_op.kind else {
+        return None;
+    };
+    let Expression::HasLabel {
+        entity,
+        label: name,
+    } = expression(label)?
+    else {
+        return None;
+    };
+    if name.as_str() != "Document"
+        || !matches!(expression(*entity)?, Expression::Slot(found) if found == slot)
+    {
+        return None;
+    }
+    let scan = *label_op.inputs.first()?;
+    let op = operator(scan)?;
+    let OperatorKind::ScanNodes {
+        output,
+        label: None,
+    } = op.kind
+    else {
+        return None;
+    };
+    if output != *slot || counted_slot.is_some_and(|counted| counted != *slot) {
+        return None;
+    }
+    let unit = operator(*op.inputs.first()?)?;
+    if !matches!(unit.kind, OperatorKind::Unit) || !unit.inputs.is_empty() {
+        return None;
+    }
+    Some(FolderPlan {
+        scan,
+        slot: *slot,
+        value,
+        label,
+        predicate,
+        count,
+    })
+}
+
 #[cfg(test)]
 std::thread_local! {
     static FORCED_JOIN: std::cell::Cell<Option<JoinStrategy>> = const { std::cell::Cell::new(None) };

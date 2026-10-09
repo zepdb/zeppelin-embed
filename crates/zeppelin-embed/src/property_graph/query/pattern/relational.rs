@@ -110,6 +110,7 @@ pub(super) struct AggregateState<'v, 'm, 'g> {
     representatives: Option<QueryArena<'m, 'g, Option<usize>>>,
     uses: RowUses<'m, 'g>,
     capacity: PatternCapacity,
+    folder_done: bool,
     started: bool,
     next: usize,
 }
@@ -261,6 +262,7 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
                 representatives: None,
                 uses: RowUses::new(capacity.rows, context)?,
                 capacity,
+                folder_done: false,
                 started: false,
                 next: 0,
             })
@@ -284,6 +286,7 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
             value.clear();
         }
         self.uses = RowUses::new(self.capacity.rows, context)?;
+        self.folder_done = false;
         self.started = false;
         self.next = 0;
         Ok(())
@@ -768,6 +771,21 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             let count = self.view.global_node_count(document, context)?;
             self.output_mut(index)?
                 .push_row(&[QueryValue::I64(count)], context)?;
+            return Ok(true);
+        }
+        if state.folder_done {
+            return Ok(false);
+        }
+        if !state.started
+            && let Some(count) = self.folder_count(index, context)?
+        {
+            self.occurrences
+                .as_mut_slice()
+                .get_mut(index)
+                .ok_or(RuntimeError::Batch)?
+                .output
+                .push_row(&[QueryValue::I64(count)], context)?;
+            state.folder_done = true;
             return Ok(true);
         }
         if !state.started {

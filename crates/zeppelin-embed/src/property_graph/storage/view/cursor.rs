@@ -59,6 +59,7 @@ pub(crate) struct NodeCursor<'view, 'm, 'g> {
     labels: QueryArena<'m, 'g, LabelId>,
     documents: Option<crate::lifecycle::native_graph::documents::DocumentCursor>,
     incident_sources: bool,
+    folder: Option<crate::lifecycle::native_graph::documents::FolderCandidates<'m, 'g>>,
     graph_exhausted: bool,
     after: Option<NodeId>,
     exhausted: bool,
@@ -116,6 +117,7 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
             .then(crate::lifecycle::native_graph::documents::DocumentCursor::default),
             labels,
             incident_sources: false,
+            folder: None,
             graph_exhausted: false,
             after: None,
             exhausted: false,
@@ -148,6 +150,13 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
             self.failed = true;
         }
         result
+    }
+
+    pub(crate) fn select_folder(
+        &mut self,
+        candidates: crate::lifecycle::native_graph::documents::FolderCandidates<'m, 'g>,
+    ) {
+        self.folder = Some(candidates);
     }
 
     fn scan_inner<'lease>(
@@ -217,7 +226,11 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
                 let Some(cursor) = &mut self.documents else {
                     break;
                 };
-                let Some(version) = lease.next_document(cursor, &mut resources)? else {
+                let version = match &mut self.folder {
+                    Some(folder) => folder.next(lease, &mut resources)?,
+                    None => lease.next_document(cursor, &mut resources)?,
+                };
+                let Some(version) = version else {
                     self.documents = None;
                     break;
                 };

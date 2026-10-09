@@ -146,6 +146,60 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
             .map_err(|error| TreeError::Control(crate::lifecycle::QueryError::Store(error)))
     }
 
+    pub(crate) fn folder_candidates(
+        &self,
+        value: u64,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<
+        Option<crate::lifecycle::native_graph::documents::FolderCandidates<'m, 'g>>,
+        TreeError,
+    > {
+        self.validate_expression_owner(runtime)?;
+        crate::lifecycle::native_graph::documents::FolderCandidates::prepare(
+            self.lease, value, runtime,
+        )
+    }
+
+    /// Includes tombstones so bitmap counts can remove hidden documents.
+    pub(crate) fn next_folder_correction(
+        &self,
+        after: Option<NodeId>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<(NodeId, bool)>, TreeError> {
+        use super::tree::{Key, directory::DirectoryCursor};
+        let lower = after.map(|node| node.get().to_le_bytes());
+        let mut cursor = DirectoryCursor::seek(
+            self.source,
+            self.lease.bundle().roots().directory(TreeKind::Nodes)?,
+            lower.as_ref().map(<[u8; 16]>::as_slice),
+            resources,
+        )?;
+        while let Some(entry) = cursor.next_entry(resources)? {
+            let Key::Inline(key) = entry.key() else {
+                return Err(TreeError::Invalid("folder correction node key"));
+            };
+            let id = u128::from_le_bytes(
+                key.try_into()
+                    .map_err(|_| TreeError::Invalid("folder correction node width"))?,
+            );
+            let node = NodeId::from(crate::ingest::DocId::new(id));
+            if after == Some(node) {
+                continue;
+            }
+            let state = lookup_node_state(
+                self.source,
+                self.lease.bundle().roots(),
+                node,
+                self.catalog,
+                self.lease.bundle().document(),
+                resources,
+            )?
+            .ok_or(TreeError::Invalid("folder correction record missing"))?;
+            return Ok(Some((node, matches!(state, NodeRecordState::Live(_)))));
+        }
+        Ok(None)
+    }
+
     pub(crate) fn document_version(
         &self,
         node: NodeId,

@@ -1436,3 +1436,419 @@ mod ze404_counts {
         }
     }
 }
+
+mod ze408 {
+    use super::*;
+    use zeppelin_embed::meta::{ColumnDefinition, ColumnId, ColumnType, PredicateValue, Schema};
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+
+    fn folder_store(n: u128, matches: u128) -> (Directory, Store) {
+        let directory = Directory::new();
+        let schema = Schema::new(vec![ColumnDefinition::new(
+            ColumnId::new(2),
+            "folder",
+            ColumnType::U64,
+            false,
+        )])
+        .unwrap();
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new()
+                .with_schema(schema)
+                .with_max_resident_bytes(128 * 1024 * 1024),
+        )
+        .unwrap();
+        for start in (0..n).step_by(1_000) {
+            store
+                .ingest(IngestBatch::new(
+                    (start..(start + 1_000).min(n))
+                        .map(|id| {
+                            IngestDocument::new(
+                                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                                vec![1.0],
+                            )
+                            .with_timestamp(-(id as i64))
+                            .with_columns(vec![(
+                                ColumnId::new(2),
+                                PredicateValue::U64(if n == 150_000 {
+                                    (id % 10) as u64
+                                } else if id < matches {
+                                    3
+                                } else {
+                                    4
+                                }),
+                            )])
+                        })
+                        .collect(),
+                ))
+                .unwrap();
+            if n == 150_000 && (start + 1_000) % 5_000 == 0 {
+                store.seal().unwrap();
+            }
+        }
+        store.seal().unwrap();
+        store.enable_graph().unwrap();
+        (directory, store)
+    }
+
+    fn large_run(store: &Store, source: &str) -> CompletedGraphResult {
+        execute(
+            store,
+            &control(),
+            &GraphQueryOptions::default()
+                .with_result_row_limit(65_536)
+                .unwrap(),
+            source,
+            &[],
+            Default::default(),
+        )
+        .unwrap()
+    }
+
+    fn string_ids(result: &CompletedGraphResult) -> Vec<u128> {
+        (0..result.metadata().rows as usize)
+            .map(|row| {
+                let Some(Value::String(span)) = result.cell(row, 0) else {
+                    panic!("id string");
+                };
+                u128::from_str_radix(result.string(*span).unwrap(), 16).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ze404_folder_count_uses_metadata_candidates() {
+        let mut previous = None;
+        let mut previous_rows = None;
+        for (n, matches) in [(1_500, 15), (15_000, 15), (150_000, 15_000)] {
+            let (_directory, store) = folder_store(n, matches);
+            let expected = large_run(
+                &store,
+                "MATCH (d:Document) WHERE d.folder IN [3] RETURN ze.node_id(d) AS id",
+            );
+            let actual = large_run(
+                &store,
+                "MATCH (d:Document) WHERE d.folder = 3 RETURN ze.node_id(d) AS id",
+            );
+            assert_eq!(string_ids(&actual), string_ids(&expected));
+            let row_work = actual.metadata().counters;
+            if let Some((old_matches, old)) = previous_rows {
+                let old: zeppelin_embed::property_graph::query::runtime::WorkCounters = old;
+                if matches == old_matches {
+                    for kind in [
+                        WorkKind::Lookups,
+                        WorkKind::Expressions,
+                        WorkKind::OperatorRows,
+                    ] {
+                        assert_eq!(
+                            row_work.get(kind),
+                            old.get(kind),
+                            "nonmatching documents must not add row graph work: {kind:?}"
+                        );
+                    }
+                }
+            }
+            previous_rows = Some((matches, row_work));
+            eprintln!("ZE408 n={n} matches={matches} row_work={row_work:?}");
+
+            let limited = large_run(
+                &store,
+                "MATCH (d:Document) WHERE d.folder = 3 RETURN ze.node_id(d) AS id LIMIT 10",
+            );
+            assert_eq!(string_ids(&limited), string_ids(&expected)[..10]);
+            let count = run(
+                &store,
+                "MATCH (d:Document) WHERE d.folder = 3 RETURN count(d) AS c",
+            );
+            assert_eq!(count.cell(0, 0), Some(&Value::I64(matches as i64)));
+            let work = count.metadata().counters;
+            eprintln!("ZE408 n={n} matches={matches} count_work={work:?}");
+            if let Some(old) = previous {
+                let old: zeppelin_embed::property_graph::query::runtime::WorkCounters = old;
+                for kind in [
+                    WorkKind::Lookups,
+                    WorkKind::Expressions,
+                    WorkKind::OperatorRows,
+                ] {
+                    assert_eq!(
+                        work.get(kind),
+                        old.get(kind),
+                        "nonmatching documents must not add graph work: {kind:?}"
+                    );
+                }
+            }
+            previous = Some(work);
+        }
+    }
+    fn parity(store: &Store) -> usize {
+        let expected = run(store, "MATCH (d:Document) WHERE d.folder IN [3] RETURN d");
+        let actual = run(store, "MATCH (d:Document) WHERE d.folder = 3 RETURN d");
+        assert_eq!(ids(&actual), ids(&expected));
+        let limit = run(
+            store,
+            "MATCH (d:Document) WHERE d.folder = 3 RETURN d LIMIT 2",
+        );
+        assert_eq!(
+            ids(&limit),
+            ids(&expected).into_iter().take(2).collect::<Vec<_>>()
+        );
+        let count = run(
+            store,
+            "MATCH (d:Document) WHERE d.folder = 3 RETURN count(d) AS c",
+        );
+        assert_eq!(
+            count.cell(0, 0),
+            Some(&Value::I64(expected.metadata().rows as i64))
+        );
+        expected.metadata().rows as usize
+    }
+
+    #[test]
+    fn folder_candidates_preserve_graph_precedence_visibility_and_reopen() {
+        let (directory, store) = folder_store(12, 4);
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(20), Revision::new(1)),
+                    vec![1.0],
+                )
+                .with_columns(vec![(ColumnId::new(2), PredicateValue::U64(3))]),
+            ]))
+            .unwrap();
+        run(
+            &store,
+            "MATCH (d:Document) WHERE ze.node_id(d) = '00000000000000000000000000000000' SET d.folder = 99",
+        );
+        run(
+            &store,
+            "MATCH (d:Document) WHERE ze.node_id(d) = '00000000000000000000000000000001' SET d.extra = 1",
+        );
+        run(
+            &store,
+            "MATCH (d:Document) WHERE ze.node_id(d) = '00000000000000000000000000000001' DELETE d",
+        );
+        run(&store, "CREATE (d:Document {folder: 3})");
+        run(&store, "CREATE (d:Other {folder: 3})");
+        assert_eq!(parity(&store), 5);
+        let all = run(&store, "MATCH (d:Document) WHERE d.folder = 3 RETURN d");
+        assert_eq!(
+            ids(&all).first(),
+            Some(&0),
+            "adopted graph records remain first"
+        );
+        store.seal().unwrap();
+        assert_eq!(parity(&store), 5);
+        store.close().unwrap();
+        let reopened = Store::open(
+            directory.path(),
+            OpenOptions::read_only().with_max_resident_bytes(128 * 1024 * 1024),
+        )
+        .unwrap();
+        assert_eq!(parity(&reopened), 5);
+    }
+
+    #[test]
+    fn unsupported_folder_types_nulls_and_missing_values_keep_scan_semantics() {
+        for (column_type, nullable) in [
+            (ColumnType::U64, true),
+            (ColumnType::I64, false),
+            (ColumnType::RawString, false),
+        ] {
+            let directory = Directory::new();
+            let schema = Schema::new(vec![ColumnDefinition::new(
+                ColumnId::new(2),
+                "folder",
+                column_type,
+                nullable,
+            )])
+            .unwrap();
+            let store =
+                Store::open(directory.path(), OpenOptions::new().with_schema(schema)).unwrap();
+            let columns = if nullable {
+                vec![]
+            } else {
+                vec![(
+                    ColumnId::new(2),
+                    match column_type {
+                        ColumnType::I64 => PredicateValue::I64(3),
+                        _ => PredicateValue::String("3".into()),
+                    },
+                )]
+            };
+            store
+                .ingest(IngestBatch::new(vec![
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(0), Revision::new(1)),
+                        vec![1.0],
+                    )
+                    .with_columns(columns),
+                ]))
+                .unwrap();
+            store.enable_graph().unwrap();
+            run(&store, "MATCH (d:Document) SET d.folder = 3");
+            run(&store, "CREATE (d:Document {folder: 3})");
+            assert_eq!(
+                parity(&store),
+                if column_type == ColumnType::RawString {
+                    1
+                } else {
+                    2
+                }
+            );
+            store.seal().unwrap();
+            parity(&store);
+        }
+        let (_directory, store) = fixture();
+        store
+            .ingest(
+                IngestBatch::new(vec![IngestDocument::new(
+                    DocumentVersion::new(DocId::new(0), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )])
+                .with_epoch(store.epoch_identity().unwrap()),
+            )
+            .unwrap();
+        store.enable_graph().unwrap();
+        run(&store, "MATCH (d:Document) SET d.folder = 3");
+        assert_eq!(parity(&store), 1);
+    }
+
+    #[test]
+    fn oversized_folder_keeps_error_and_successful_limit_prefix() {
+        let directory = Directory::new();
+        let schema = Schema::new(vec![ColumnDefinition::new(
+            ColumnId::new(2),
+            "folder",
+            ColumnType::U64,
+            false,
+        )])
+        .unwrap();
+        let store = Store::open(directory.path(), OpenOptions::new().with_schema(schema)).unwrap();
+        store
+            .ingest(IngestBatch::new(
+                (0..2)
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                            vec![1.0],
+                        )
+                        .with_columns(vec![(
+                            ColumnId::new(2),
+                            PredicateValue::U64(if id == 0 { 3 } else { u64::MAX }),
+                        )])
+                    })
+                    .collect(),
+            ))
+            .unwrap();
+        store.enable_graph().unwrap();
+        for sealed in [false, true] {
+            if sealed {
+                store.seal().unwrap();
+            }
+            let limited = run(
+                &store,
+                "MATCH (d:Document) WHERE d.folder = 3 RETURN d LIMIT 1",
+            );
+            assert_eq!(ids(&limited), [0]);
+            for predicate in ["d.folder = 3", "d.folder IN [3]"] {
+                let source = format!("MATCH (d:Document) WHERE {predicate} RETURN count(d)");
+                let Err(error) = execute(
+                    &store,
+                    &control(),
+                    &GraphQueryOptions::default(),
+                    &source,
+                    &[],
+                    Default::default(),
+                ) else {
+                    panic!("oversized folder must fail");
+                };
+                assert!(
+                    format!("{error:?}").contains("document u64 property exceeds graph integer")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn folder_candidates_preserve_parameters_exclusions_and_work_limits() {
+        use zeppelin_embed::property_graph::query::QueryValue;
+        use zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind;
+        use zeppelin_embed::property_graph::query::plan::ParameterBinding;
+        use zeppelin_embed::property_graph::query::runtime::RuntimeLimits;
+        let (_directory, store) = folder_store(150, 15);
+        let source = "MATCH (d:Document) WHERE 3 = d.folder RETURN count(d) AS c";
+        assert_eq!(run(&store, source).cell(0, 0), Some(&Value::I64(15)));
+        for value in [
+            QueryValue::I64(3),
+            QueryValue::I64(-1),
+            QueryValue::Null,
+            QueryValue::String("3"),
+        ] {
+            let bindings = [ParameterBinding {
+                name: "folder",
+                value,
+            }];
+            let query = |predicate| {
+                execute(
+                    &store,
+                    &control(),
+                    &GraphQueryOptions::default(),
+                    &format!("MATCH (d:Document) WHERE {predicate} RETURN d"),
+                    &bindings,
+                    Default::default(),
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                ids(&query("d.folder = $folder")),
+                ids(&query("d.folder IN [$folder]"))
+            );
+        }
+        // Compound/fallible predicates and a LIMIT below count stay on the scan.
+        assert_eq!(
+            run(
+                &store,
+                "MATCH (d:Document) WHERE d.folder = 3 WITH d LIMIT 2 RETURN count(d)"
+            )
+            .cell(0, 0),
+            Some(&Value::I64(2))
+        );
+        assert_eq!(
+            run(
+                &store,
+                "MATCH (d:Document) WHERE d.folder = 3 AND d.folder = 4 RETURN count(d)"
+            )
+            .cell(0, 0),
+            Some(&Value::I64(0))
+        );
+        let counted = run(&store, source);
+        let scans = counted.metadata().counters.get(WorkKind::Scans);
+        let options = GraphQueryOptions::default()
+            .with_limits(
+                24 * 1024 * 1024,
+                RuntimeLimits::default()
+                    .with_limit(WorkKind::Scans, scans - 1)
+                    .unwrap(),
+            )
+            .unwrap();
+        let Err(zeppelin_embed_cypher::StatementError::Query(error)) = execute(
+            &store,
+            &control(),
+            &options,
+            source,
+            &[],
+            Default::default(),
+        ) else {
+            panic!("bitmap work cap must fail");
+        };
+        assert_eq!(error.kind(), GraphQueryErrorKind::Limit);
+        assert!(error.nothing_committed());
+    }
+    #[test]
+    fn graph_only_document_folder_keeps_the_original_scan() {
+        let directory = Directory::new();
+        let store = Store::create_graph(directory.path(), OpenOptions::new(), None).unwrap();
+        run(&store, "CREATE (d:Document {folder: 3})");
+        assert_eq!(parity(&store), 1);
+    }
+}

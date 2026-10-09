@@ -5,6 +5,11 @@ use crate::lifecycle::{PublishedSnapshot, StoreError};
 use crate::property_graph::NodeId;
 use std::sync::Arc;
 
+#[cfg(feature = "graph-cypher")]
+mod folder;
+#[cfg(feature = "graph-cypher")]
+pub(crate) use folder::FolderCandidates;
+
 #[derive(Clone)]
 pub(crate) struct NativeDocuments {
     pub(crate) generation: u64,
