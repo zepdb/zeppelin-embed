@@ -1004,3 +1004,255 @@ mod ze404_id_lookup {
         }
     }
 }
+
+mod incident_sources {
+    use super::*;
+    use zeppelin_embed::property_graph::query::pattern_test_support::{
+        observe_document_visits, with_original_node_sources,
+    };
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    use zeppelin_embed::property_graph::staging::{
+        StructuredOperation, StructuredWrite, WriteImage,
+    };
+    use zeppelin_embed::property_graph::{
+        ApplicationKey, EntityKind, GraphName, GraphRevision, NodeId, NodeRef,
+    };
+
+    fn rows(result: &CompletedGraphResult) -> Vec<Vec<u128>> {
+        (0..result.metadata().rows as usize)
+            .map(|row| {
+                (0..result.pools().columns.len())
+                    .map(|column| match result.cell(row, column) {
+                        Some(Value::Node(index)) => result.pools().nodes[*index as usize].id.get(),
+                        Some(Value::Relationship(index)) => {
+                            result.pools().relationships[*index as usize].id.get()
+                        }
+                        Some(Value::I64(value)) => *value as u128,
+                        other => panic!("unexpected incident row: {other:?}"),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn sparse(n: u128) -> Vec<[u64; 3]> {
+        let directory = Directory::new();
+        let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        store
+            .ingest(IngestBatch::new(
+                (1..=n)
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                            vec![1.0],
+                        )
+                        .with_timestamp(-(id as i64))
+                    })
+                    .collect(),
+            ))
+            .unwrap();
+        store.seal().unwrap();
+        store.enable_graph().unwrap();
+        let keys: Vec<_> = (0..500).map(|i| format!("edge-{i}")).collect();
+        let writes: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze404-r2", key).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    relationship_type: GraphName::new("PERF_LINK").unwrap(),
+                    properties: &[],
+                    // Deliberately create in reverse source order.
+                    source: NodeRef::Existing(NodeId::new(999 - 2 * i as u128).unwrap()),
+                    target: NodeRef::Existing(NodeId::new(1000 - 2 * i as u128).unwrap()),
+                }),
+            })
+            .collect();
+        for batch in writes.chunks(50) {
+            store.graph_apply(batch, &control()).unwrap();
+        }
+        store.close().unwrap();
+        let store = Store::open(directory.path(), OpenOptions::read_only()).unwrap();
+        let queries = [
+            "MATCH ()-[r]->() RETURN count(r)",
+            "MATCH ()-[r:PERF_LINK]->() RETURN count(r)",
+            "MATCH (a)-[:PERF_LINK]->(b) RETURN a, b",
+            "MATCH (a)-[:PERF_LINK]->(b) RETURN a, b LIMIT 10",
+            "MATCH (a)-[:PERF_LINK]->(b)-[:PERF_LINK]->(c) RETURN count(c)",
+        ];
+        let expected_pairs: Vec<_> = (0..500).map(|i| vec![2 * i + 1, 2 * i + 2]).collect();
+        let mut counters = Vec::new();
+        for (i, query) in queries.iter().enumerate() {
+            let (result, document_visits) = observe_document_visits(|| run(&store, query));
+            let expected = match i {
+                0 | 1 => vec![vec![500]],
+                2 => expected_pairs.clone(),
+                3 => expected_pairs[..10].to_vec(),
+                _ => vec![vec![0]],
+            };
+            assert_eq!(rows(&result), expected, "{query}");
+            let work = result.metadata().counters;
+            let counts = [
+                work.get(WorkKind::Scans),
+                work.get(WorkKind::Lookups),
+                work.get(WorkKind::DirectoryPagesDecoded),
+            ];
+            eprintln!("R2 n={n} query={i} document_visits={document_visits} work={counts:?}");
+            counters.push(counts);
+            assert_eq!(
+                document_visits, 0,
+                "relationship anchors must never visit documents: {query}"
+            );
+        }
+        counters
+    }
+
+    #[test]
+    fn ze404_sparse_outgoing_patterns_ignore_isolated_documents() {
+        assert_eq!(
+            sparse(2_000),
+            sparse(4_000),
+            "isolated documents add no source work"
+        );
+    }
+
+    #[test]
+    fn ze404_incident_source_preserves_expand() {
+        let directory = Directory::new();
+        let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        store
+            .ingest(IngestBatch::new(
+                (0..32)
+                    .chain([u128::MAX])
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                            vec![1.0],
+                        )
+                    })
+                    .collect(),
+            ))
+            .unwrap();
+        store.seal().unwrap();
+        store.enable_graph().unwrap();
+        // Parallel edges, a cycle, a self-loop, two types/ranges at source 2,
+        // document zero and the full-width final source. RelId order deliberately
+        // disagrees with source order.
+        let edges = [
+            (2, 3, "S"),
+            (1, 2, "R"),
+            (1, 2, "R"),
+            (2, 1, "R"),
+            (2, 2, "R"),
+            (u128::MAX, 1, "R"),
+            (0, 1, "R"),
+            (3, 4, "R"),
+            (4, 1, "R"),
+        ];
+        let keys: Vec<_> = (0..edges.len()).map(|i| format!("tiny-{i}")).collect();
+        let writes: Vec<_> = edges
+            .iter()
+            .zip(&keys)
+            .map(|(&(source, target, kind), key)| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze404-r2-tiny", key).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    relationship_type: GraphName::new(kind).unwrap(),
+                    properties: &[],
+                    source: NodeRef::Existing(NodeId::from(DocId::new(source))),
+                    target: NodeRef::Existing(NodeId::from(DocId::new(target))),
+                }),
+            })
+            .collect();
+        let receipt = store.graph_apply(&writes, &control()).unwrap();
+        let rels: Vec<_> = receipt
+            .receipts()
+            .iter()
+            .map(|receipt| match receipt.entity {
+                zeppelin_embed::property_graph::EntityId::Relationship(id) => id.get(),
+                _ => panic!("relationship receipt"),
+            })
+            .collect();
+        // Deletes retain range candidates whose source/target is now tombstoned.
+        run(
+            &store,
+            "MATCH (n) WHERE ze.node_id(n) = '00000000000000000000000000000004' DETACH DELETE n",
+        );
+        store.close().unwrap();
+        let store = Store::open(directory.path(), OpenOptions::read_only()).unwrap();
+        let expected: Vec<_> = [6, 1, 2, 3, 4, 0, 5]
+            .into_iter()
+            .map(|i| vec![edges[i].0, rels[i], edges[i].1])
+            .collect();
+        let query = "MATCH (a)-[r]->(b) RETURN a, r, b";
+        let (result, visits) = observe_document_visits(|| run(&store, query));
+        let (original, original_visits) =
+            observe_document_visits(|| with_original_node_sources(|| run(&store, query)));
+        assert_eq!(rows(&result), expected);
+        assert_eq!(rows(&original), expected);
+        for limit in [0, 1, 3, 7, 8] {
+            let query = format!("{query} LIMIT {limit}");
+            let (result, limit_visits) = observe_document_visits(|| run(&store, &query));
+            assert_eq!(rows(&result), expected[..limit.min(expected.len())]);
+            assert_eq!(
+                rows(&result),
+                rows(&with_original_node_sources(|| run(&store, &query)))
+            );
+            if limit == 0 {
+                assert_eq!(limit_visits, 0);
+            }
+            if limit == 0 {
+                assert_eq!(result.metadata().counters.get(WorkKind::Scans), 0);
+            }
+        }
+        // Independently specified two-hop RelId pairs in source/Expand order.
+        let paths = [
+            (6, 1),
+            (6, 2),
+            (1, 3),
+            (1, 4),
+            (2, 3),
+            (2, 4),
+            (3, 1),
+            (3, 2),
+            (4, 3),
+            (5, 1),
+            (5, 2),
+        ];
+        let expected_paths: Vec<_> = paths
+            .into_iter()
+            .map(|(a, b)| vec![rels[a], rels[b]])
+            .collect();
+        let path_query = "MATCH (a)-[r:R]->(b)-[s:R]->(c) RETURN r, s";
+        let result = run(&store, path_query);
+        assert_eq!(rows(&result), expected_paths);
+        assert_eq!(
+            rows(&with_original_node_sources(|| run(&store, path_query))),
+            expected_paths
+        );
+        assert!(rows(&result).iter().all(|row| row[0] != row[1]));
+        for query in [
+            "MATCH (a)-[r:ABSENT]->(b) RETURN a, r, b",
+            "MATCH (a)-[r:S]->(b) RETURN a, r, b",
+            "MATCH (a)<-[r:R]-(b) RETURN a, r, b",
+            "MATCH (a)-[r:R]-(b) RETURN a, r, b",
+            "MATCH (a)-[r:R*1..2]->(b) RETURN count(b)",
+            "OPTIONAL MATCH (a)-[r:R]->(b) RETURN count(b)",
+            "MATCH (a) OPTIONAL MATCH (a)-[r:R]->(b) RETURN count(b)",
+            "MATCH (a:Document)-[r:R]->(b) RETURN count(b)",
+        ] {
+            let actual = run(&store, query);
+            assert_eq!(
+                rows(&actual),
+                rows(&with_original_node_sources(|| run(&store, query))),
+                "{query}"
+            );
+        }
+        eprintln!("R2 tiny document_visits={visits} original_document_visits={original_visits}");
+        assert_eq!(visits, 0);
+        assert!(original_visits > 0);
+    }
+}

@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 15] = [
+pub const REQUIRED_COVERAGE: [&str; 18] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -33,6 +33,9 @@ pub const REQUIRED_COVERAGE: [&str; 15] = [
     "property-graph.cypher-entry.id-lookup-limit.fire",
     "property-graph.cypher-entry.id-scan-limit.fire",
     "property-graph.cypher-entry.id-cancel.fire",
+    "property-graph.cypher-entry.incident-source.read",
+    "property-graph.cypher-entry.incident-source.limit.fire",
+    "property-graph.cypher-entry.incident-source.exclusions",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -121,6 +124,9 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         committed_no_rows(&setup)?;
         generations.push(read(&store)?.1);
         probe_id_lookup(&store)?;
+
+        // R2 uses the existing query work-limit seam on the sparse source.
+        incident_source_controls(&store)?;
 
         // A write without RETURN whose second item divides by zero: refused
         // as an expression error, and its valid first item is not committed.
@@ -373,6 +379,51 @@ fn probe_id_lookup(store: &Store) -> Result<(), String> {
                 if error.kind() == GraphQueryErrorKind::Cancelled && error.nothing_committed() => {}
             _ => return Err(String::from("ID lookup cancellation did not fire")),
         }
+    }
+    Ok(())
+}
+
+fn incident_source_controls(store: &Store) -> Result<(), String> {
+    use zeppelin_embed::property_graph::query::runtime::{RuntimeLimits, WorkKind};
+    let outgoing = "MATCH ()-[r]->() RETURN count(r)";
+    for text in [
+        outgoing,
+        "MATCH ()<-[r]-() RETURN count(r)",
+        "OPTIONAL MATCH ()-[r]->() RETURN count(r)",
+        "MATCH (p:P)-[r]->() RETURN count(r)",
+    ] {
+        let result = run(store, text, &[]).map_err(|error| error.to_string())?;
+        if values(&result)? != [1] || result.metadata().outcome != Outcome::Read {
+            return Err(format!("incident source/exclusion mismatch: {text}"));
+        }
+    }
+    let limits = RuntimeLimits::default()
+        .with_limit(WorkKind::Scans, 0)
+        .map_err(|error| format!("incident source limits: {error:?}"))?;
+    let options = GraphQueryOptions::default()
+        .with_limits(24 * 1024 * 1024, limits)
+        .map_err(|error| format!("incident source options: {error:?}"))?;
+    match execute(
+        store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &options,
+        outgoing,
+        &[],
+        CompileLimits::default(),
+    ) {
+        Err(StatementError::Query(error))
+            if error.kind() == GraphQueryErrorKind::Limit && error.nothing_committed() => {}
+        Err(error) => return Err(format!("incident source wrong limit refusal: {error}")),
+        Ok(_) => return Err(String::from("incident source work limit did not fire")),
+    }
+    let zero =
+        run(store, "MATCH ()-[r]->() RETURN r LIMIT 0", &[]).map_err(|error| error.to_string())?;
+    if zero.metadata().rows != 0 || zero.metadata().counters.get(WorkKind::Scans) != 0 {
+        return Err(String::from("incident source LIMIT 0 scanned"));
+    }
+    // Paired clean execution after refusal uses the same retained storage path.
+    if values(&run(store, outgoing, &[]).map_err(|error| error.to_string())?)? != [1] {
+        return Err(String::from("incident source clean control changed"));
     }
     Ok(())
 }

@@ -383,6 +383,13 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         cursor.scan(self.lease, self.source, self.catalog, output, runtime)
     }
 
+    pub(crate) fn incident_source_cursor(
+        &'s self,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<NodeCursor<'s, 'm, 'g>, TreeError> {
+        cursor::NodeCursor::incident_sources(self.lease, runtime)
+    }
+
     pub(crate) fn scan_relationships(
         &self,
         cursor: &mut RelCursor<'s, 'm, 'g>,

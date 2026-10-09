@@ -1440,3 +1440,46 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
         subsequent,
     })
 }
+
+std::thread_local! {
+    static DOCUMENT_VISITS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static ORIGINAL_NODE_SOURCES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn note_document_visit() {
+    DOCUMENT_VISITS.with(|visits| {
+        if let Some(count) = visits.get() {
+            visits.set(Some(count.saturating_add(1)));
+        }
+    });
+}
+
+/// Count calls to the physical document cursor within this synchronous scope.
+pub fn observe_document_visits<T>(run: impl FnOnce() -> T) -> (T, u64) {
+    struct Restore(Option<u64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DOCUMENT_VISITS.with(|visits| visits.set(self.0));
+        }
+    }
+    let _restore = Restore(DOCUMENT_VISITS.with(|visits| visits.replace(Some(0))));
+    let result = run();
+    let count = DOCUMENT_VISITS.with(|visits| visits.get().unwrap_or(0));
+    (result, count)
+}
+
+/// Execute the unchanged node source as an order/coverage control.
+pub fn with_original_node_sources<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ORIGINAL_NODE_SOURCES.with(|forced| forced.set(self.0));
+        }
+    }
+    let _restore = Restore(ORIGINAL_NODE_SOURCES.with(|forced| forced.replace(true)));
+    run()
+}
+
+pub(super) fn original_node_sources() -> bool {
+    ORIGINAL_NODE_SOURCES.with(std::cell::Cell::get)
+}

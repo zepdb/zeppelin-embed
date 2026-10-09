@@ -88,6 +88,8 @@ impl NativeReadLease {
     ) -> Result<Option<DocumentVersion>, crate::property_graph::storage::tree::directory::TreeError>
     {
         use crate::property_graph::storage::tree::directory::NativeReadEvent;
+        #[cfg(any(test, feature = "test-seams"))]
+        crate::property_graph::query::note_document_visit();
         let Some(documents) = &self.documents else {
             return Ok(None);
         };
