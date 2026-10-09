@@ -172,6 +172,34 @@ def run_rust_consumer(sdk, work, output):
     return dict(artifact_tools().measure(binary, output), reachability=consumer_receipt(result.stdout))
 
 
+def run_graph_free_refusal(library, headers, work, output):
+    source = work / 'graph-free-refusal.c'
+    source.write_text('''#include "zeppelin_embed.h"
+#include "zeppelin_graph_contracts.h"
+#include <stdio.h>
+#include <string.h>
+int main(int argc, char **argv) {
+    if (argc != 2) return 2;
+    ZeGraphOpenRequest request = {0}; request.abi_size = sizeof(request);
+    request.path = (ZeGraphBytes){(const uint8_t *)argv[1], strlen(argv[1])};
+    request.reader_drain_timeout_ms = 250;
+    request.max_resident_bytes = 256ULL << 20;
+    ze_handle handle = 0;
+    ze_error_code code = ze_store_create_with_relationship_types(&request, NULL, 0, &handle);
+    if (code != ZE_ERR_GRAPH_UNSUPPORTED_BUILD || handle != 0) return 1;
+    puts("legacy substitution: ZE_ERR_GRAPH_UNSUPPORTED_BUILD PASS");
+    return 0;
+}
+''')
+    binary = work / 'graph-free-refusal'
+    run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
+         '-mmacosx-version-min=14.0', '-I', headers, source, library,
+         '-framework', 'Security', '-liconv', '-o', binary])
+    result = run([binary, work / 'graph-free-fixture'], capture_output=True, text=True)
+    (output / 'legacy-substitution.log').write_text(result.stdout + result.stderr)
+    return 'rejected: ZE_ERR_GRAPH_UNSUPPORTED_BUILD'
+
+
 def run_swift_consumer(xcframework, work, output, disable_swift_sandbox=False):
     package = work / 'package'
     package.mkdir()
@@ -433,16 +461,10 @@ def qualify(args):
         report['rust'] = run_rust_consumer(sdk, work, output)
         report['c_profile'] = run_c_profile_consumer(sdk, work, output)
         report['swift'] = run_swift_consumer(work / 'ZeppelinEmbedGraph.xcframework', work, output, args.disable_swift_sandbox)
-        # Substituting a valid legacy archive must fail exact graph exports.
+        # Graph-free stubs retain the same ABI; qualify their typed refusal.
         legacy_library = next((work / 'ZeppelinEmbed.xcframework').rglob('*.a'))
-        try:
-            artifact_tools().check_exports(legacy_library, 'graph-cypher')
-        except RuntimeError as error:
-            if 'missing=' not in str(error):
-                raise
-            report['legacy_substitution'] = str(error)
-        else:
-            raise ValueError('legacy substitution was accepted as graph')
+        report['legacy_substitution'] = run_graph_free_refusal(
+            legacy_library, sdk / 'include', work, output)
         # Missing packaged inputs must reject even with source headers present.
         for missing in ('include/zeppelin_embed.h', 'lib/libzeppelin_embed_graph_cypher_ffi.a'):
             path = sdk / missing

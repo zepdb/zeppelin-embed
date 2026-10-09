@@ -95,3 +95,30 @@ Graph C SDK command: scripts/macos-sdk/build.sh --artifact graph-cypher.
 Build finished in 1m42s; export checks passed, ARM only, minos 14.0.
 SDK SHA-256: b614c95ae603a3f92a4eb2581bd5e15ef432e5a7085e87c0297c5ce30a7801ca.
 Latest self-test after workflow rehearsal support: 11 passed in 0.310s.
+
+## Installed substitution control correction
+
+The full installed qualification reproduced RED at its existing legacy
+substitution control: it accepted the legacy archive's exact graph export set
+and raised "legacy substitution was accepted as graph". The shared export set
+is intentional: graph-free builds provide unsupported-build stubs. Replace the
+obsolete export-difference assumption with a compiled C call to the frozen
+create-with-relationship-types entry point. GREEN requires the typed
+ZE_ERR_GRAPH_UNSUPPORTED_BUILD response and an unchanged zero handle.
+
+Complete installed qualification command:
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk python3.13 scripts/release/check-installed-graph.py --artifact-root target --output .ctx/installed-all-fixed
+
+Exit 0. C static, C dylib, Rust and root Swift consumer receipts each confirm
+batch/structured/get/Cypher/resources. The installed profile validates 21 cases
+for each C flavor. Packaged headers, architectures, deployment target, archive
+budgets, missing-input controls and the legacy typed refusal pass. Python and
+Node packages were not supplied to this local check and remain unverified here.
+Checksum enforcement was intentionally not requested for these local bytes;
+zero pins still block actual release verification. Apple strip diagnostics
+remain recorded as above; this is not a warning-free packaging claim.
+
+First CI rehearsal run 37929281046 failed at checkout in both legs: Actions
+checkout treated the abbreviated 43c7e47a as a branch name. No archive build or
+checksum gate ran. The failed-step log was read completely. The next dispatch
+uses the full 40-character source SHA.
