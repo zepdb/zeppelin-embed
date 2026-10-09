@@ -806,3 +806,52 @@ No new fault site/mode or operation ordering change is introduced.
 Logs `.ctx/S5-graphfree-warnings-{red,intermediate,green}.log` and
 `S5-graph-accounting-green.log`, all read in full. Final source changes
 require a fresh addon and final-main gate rerun before the once full suite.
+
+### Final S5 measurements after graph-free feature gating
+
+Source HEAD `ad1e2807fec4229d7a5f13432eabb145a92df9db`.
+ARM addon SHA256
+`12544b1d46e6d88c609e6e997835ce6793e9c34dd1a7f714cb7becc71c806b7a`.
+Same M3 Max Mac15,9,128GiB,macOS27.0/26A5388g,
+rustc1.93.0,Node24.21.0 host and timing command as above.
+Fresh ARM/Intel builds1m41s/1m37s; harness rebuilt both cached0.02s.
+Waited for compilation load to settle: uptime02:46,up20:48,
+load2.99/5.68/6.90, within the one-minute plan baseline. Another
+session's core test remained active; wall time is supporting evidence.
+
+Full maps `.ctx/prepared-store-S5-feature-fixed-{before,after}.json`
+match S0:221 files, zero changed names or bytes. Full rebuild and timing
+logs read without warnings or unexpected errors. Logs
+`.ctx/S5-feature-fixed-addon.log` and `S5-feature-fixed-timings.log`.
+
+| Query | raw three runs (ms) | median ms | rows | target ms |
+|---|---|---:|---:|---:|
+| count all nodes | 17.58325, 9.431167, 9.462709 | 9.462709 | 1 | supporting |
+| count Document label | 9.456291, 9.314375, 9.434959 | 9.434959 | 1 | supporting |
+| point lookup by node_id | 0.35475, 0.245625, 0.248167 | 0.248167 | 1 | supporting |
+| 10 docs, LIMIT 10 | 0.616583, 0.5745, 0.569542 | 0.5745 | 10 | supporting |
+| count relationships | 59.644541, 59.157, 59.539083 | 59.539083 | 1 | 20 |
+| count PERF_LINK | 59.362958, 59.195958, 59.142416 | 59.195958 | 1 | 20 |
+| all 500 rel pairs | 59.575167, 59.440125, 59.556042 | 59.556042 | 500 | 25 |
+| 2-hop count | 71.274292, 71.99925, 71.159917 | 71.274292 | 1 | 30 |
+| incoming count | 59.19475, 59.166083, 59.169875 | 59.169875 | 1 | 25 |
+| undirected count | 162.9725, 163.732583, 163.27575 | 163.27575 | 1 | 45 |
+| labelled start count | 63.090625, 62.670292, 61.862958 | 62.670292 | 1 | 25 |
+| id-anchored expand | 0.576458, 0.515708, 0.503375 | 0.515708 | 1 | 1 |
+| rel pairs, LIMIT 10 | 1.209833, 1.2, 1.20625 | 1.20625 | 10 | 2 |
+
+Final measured misses to record in ZE-416 resolution:
+- count relationships: 59.539083 ms > 20 ms.
+- count PERF_LINK: 59.195958 ms > 20 ms.
+- all 500 rel pairs: 59.556042 ms > 25 ms.
+- 2-hop count: 71.274292 ms > 30 ms.
+- incoming count: 59.169875 ms > 25 ms.
+- undirected count: 163.27575 ms > 45 ms.
+- labelled start count: 62.670292 ms > 25 ms.
+
+Passes: ID0.515708ms<=1ms; relationship LIMIT10 1.20625ms<=2ms.
+This table replaces prior historical S5 tables for final acceptance.
+Feature-gating AFTER smoke87.61s:14/14feature faults, zero violations;
+all38 lines read, including only scheduled fault diagnostics.
+Log `.ctx/S5-feature-fixed-after.log`. No optional S6 work added.
+Final main gates/size, once full suite, ancestry and push remain pending.
