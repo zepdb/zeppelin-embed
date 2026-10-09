@@ -731,3 +731,50 @@ main gates will be repeated after this source fix.
 Zero-label fix AFTER property-graph smoke passes in87.25s:14/14
 feature faults, zero violations. All38 log lines read, with only the
 expected scheduled fault diagnostics. Log `S5-labelled-zero-after.log`.
+
+### Final S5 measurements after the zero-label fix
+
+Source HEAD `cc9c9f19e09dabd7b6693dde06d58a6138b9b163`.
+ARM addon SHA256
+`a571ec135e44f6b46c09d8948e0d62b0f9644e6d8dc22da054128cd8476a23c2`.
+Same M3 Max Mac15,9, 128GiB, macOS27.0/26A5388g,
+rustc1.93.0, Node24.21.0 host and timing command as above.
+Fresh ARM/Intel builds took 1m41s/1m39s; the harness rebuilt both
+again (cached0.02s each). Uptime02:22, up20:23, load3.44/5.17/6.22;
+one-minute load is within the plan baseline. Another session's
+Cypher test used one CPU; wall time remains supporting evidence.
+
+Full maps `.ctx/prepared-store-S5-zero-fixed-{before,after}.json`
+match S0:221 files, zero changed names or bytes. Complete rebuild and
+27-line timing logs read without warnings or unexpected errors:
+`.ctx/S5-addon-zero-fixed.log` and `S5-zero-fixed-timings.log`.
+
+| Query | raw three runs (ms) | median ms | rows | target ms |
+|---|---|---:|---:|---:|
+| count all nodes | 17.64825, 9.395333, 9.336416 | 9.395333 | 1 | supporting |
+| count Document label | 9.383583, 9.333583, 9.34 | 9.34 | 1 | supporting |
+| point lookup by node_id | 0.331625, 0.245125, 0.248667 | 0.248667 | 1 | supporting |
+| 10 docs, LIMIT 10 | 0.60475, 0.59, 0.64225 | 0.60475 | 10 | supporting |
+| count relationships | 59.912375, 59.372334, 59.186833 | 59.372334 | 1 | 20 |
+| count PERF_LINK | 59.199334, 59.48125, 59.250584 | 59.250584 | 1 | 20 |
+| all 500 rel pairs | 59.623292, 59.552125, 59.628541 | 59.623292 | 500 | 25 |
+| 2-hop count | 70.957458, 70.90975, 70.78025 | 70.90975 | 1 | 30 |
+| incoming count | 59.416708, 59.425708, 59.35875 | 59.416708 | 1 | 25 |
+| undirected count | 163.272959, 162.836792, 163.240583 | 163.240583 | 1 | 45 |
+| labelled start count | 62.673334, 61.8295, 62.38325 | 62.38325 | 1 | 25 |
+| id-anchored expand | 0.583, 0.5065, 0.505125 | 0.5065 | 1 | 1 |
+| rel pairs, LIMIT 10 | 1.203667, 1.204541, 1.194375 | 1.203667 | 10 | 2 |
+
+Final measured misses to record in ZE-416 resolution:
+- count relationships: 59.372334 ms > 20 ms.
+- count PERF_LINK: 59.250584 ms > 20 ms.
+- all 500 rel pairs: 59.623292 ms > 25 ms.
+- 2-hop count: 70.90975 ms > 30 ms.
+- incoming count: 59.416708 ms > 25 ms.
+- undirected count: 163.240583 ms > 45 ms.
+- labelled start count: 62.38325 ms > 25 ms.
+
+ID expansion0.5065ms <=1ms and relationship LIMIT10 1.203667ms
+<=2ms pass. These replace the preceding historical S5 measurements
+for final acceptance; no optional S6 work was added. Final main gates,
+size qualification, the once final full suite and push remain pending.
