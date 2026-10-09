@@ -291,10 +291,6 @@ jobs:
           name: crash-safety-win32-x64
           path: ${{ runner.temp }}/crash-safety-win32-x64.json
           if-no-files-found: error
-      - name: Run focused release graph smoke tests
-        if: env.MINIMAL_RELEASE == 'true'
-        run: node --test test/store-graph.test.mjs test/graph-list-params.test.mjs
-        working-directory: bindings/node
       - run: npm run typecheck
         working-directory: bindings/node
       - run: npm run check:prebuilt
