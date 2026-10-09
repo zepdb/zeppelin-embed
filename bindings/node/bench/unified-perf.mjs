@@ -97,7 +97,8 @@ export function unifiedQueries(smoke = false) {
   const eligibleIds = Array.from({ length: smoke ? 100 : 10000 }, (_, i) =>
     String(Math.floor(i / 300) * 302 + i % 300 + 1));
   const cells = perfQueries().slice(100, 102).map(q => ({
-    name: q.name.replace('unfiltered', 'eligible'), request: { ...q.request, eligibleIds } }));
+    // The Cypher procedure has no alpha argument, so eligible cells use the default alpha on both paths.
+    name: q.name.replace('unfiltered', 'eligible'), request: (({ alpha, ...rest }) => ({ ...rest, eligibleIds }))(q.request) }));
   return [...cells, ...cells.map(q => ({ ...q, name: `cypher-${q.name}` }))];
 }
 function attachRelationships(store, count, stride) {
@@ -139,7 +140,7 @@ function cypherCall(request) {
   const hybrid = Boolean(request.vector);
   const call = hybrid ? "ze.hybrid_search($vector, $text, 10, 'exact', eligible)" : 'ze.text_search($text, 10, eligible)';
   return { text: `MATCH (d:Document) WHERE ze.node_id(d) <= $lastId WITH collect(DISTINCT d) AS eligible CALL ${call} YIELD node, score RETURN ze.node_id(node) AS id, score`,
-    parameters: { lastId: request.eligibleIds.at(-1).toString(16).padStart(32, '0'), text: request.text, ...(hybrid ? { vector: request.vector } : {}) } };
+    parameters: { lastId: BigInt(request.eligibleIds.at(-1)).toString(16).padStart(32, '0'), text: request.text, ...(hybrid ? { vector: request.vector } : {}) } };
 }
 function recordCypherResult(result) {
   assert.deepEqual(result.columns, ['id', 'score']); assert.equal(result.receipts.length, 0);

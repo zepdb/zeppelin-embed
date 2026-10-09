@@ -126,7 +126,8 @@ function comparatorFixture() {
   candidate.provenance = { ...candidate.provenance, source: 'checkout', tag: null,
     commit: 'b'.repeat(40), addonSha256: 'b'.repeat(64), releaseFlags: 'npm run build:native (release)' };
   candidate.candidateOnlyQueries = ['lexical', 'hybrid'].flatMap(kind => {
-    const request = { ...baseline.manifest.queries.find(q => q.name === `${kind}-unfiltered`).request,
+    const { alpha, ...unfiltered } = baseline.manifest.queries.find(q => q.name === `${kind}-unfiltered`).request; // eligible cells use the default alpha
+    const request = { ...unfiltered,
       eligibleIds: Array.from({ length: 10000 }, (_, i) => String(Math.floor(i / 300) * 302 + i % 300 + 1)) };
     return [{ name: `${kind}-eligible`, request }];
   });
