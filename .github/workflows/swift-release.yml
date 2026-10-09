@@ -7,6 +7,10 @@ on:
         description: Existing version tag to package, for example v0.1.0
         required: true
         type: string
+      source_ref:
+        description: Optional branch or SHA for checksum rehearsal; never attaches release assets
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -30,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ inputs.source_ref || inputs.release_tag }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -67,8 +71,6 @@ jobs:
           if actual != expected:
               raise SystemExit(f"release tag {actual!r} must be {expected!r}")
           graph = "${{ matrix.artifact }}" == "graph-cypher"
-          if graph:
-              raise SystemExit("ZE-362: unified graph SwiftPM publication awaits the Intel XCFramework decision and ZE-369 pins")
           manifest_path = "Package.swift"
           manifest = pathlib.Path(manifest_path).read_text()
           name = "ZeppelinEmbedGraph" if graph else "ZeppelinEmbed"
@@ -86,6 +88,13 @@ jobs:
           scripts/size-budget.sh --graph-core-archive "${cores[0]}"
       - name: Build language-neutral macOS SDK
         run: scripts/macos-sdk/build.sh --artifact ${{ matrix.artifact }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zeppelin-embed-macos-${{ matrix.artifact }}
+          path: |
+            target/xcframework${{ matrix.suffix }}/${{ matrix.name }}.xcframework.zip
+            target/macos-sdk${{ matrix.suffix }}/zeppelin-embed${{ matrix.suffix }}-macos-arm64.tar.gz
+          if-no-files-found: error
       - name: Verify archive checksum
         run: |
           python3 - <<'PY'
@@ -106,13 +115,6 @@ jobs:
               if actual != expected:
                   raise SystemExit(f"legacy checksum mismatch: pinned={expected} actual={actual}")
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zeppelin-embed-macos-${{ matrix.artifact }}
-          path: |
-            target/xcframework${{ matrix.suffix }}/${{ matrix.name }}.xcframework.zip
-            target/macos-sdk${{ matrix.suffix }}/zeppelin-embed${{ matrix.suffix }}-macos-arm64.tar.gz
-          if-no-files-found: error
 
   qualify-installed:
     name: Qualify exact uploaded distributions
@@ -123,7 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ inputs.source_ref || inputs.release_tag }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -152,6 +154,7 @@ jobs:
   attach-release:
     name: Attach macOS artifacts to GitHub release
     needs: qualify-installed
+    if: inputs.source_ref == ''
     runs-on: ubuntu-latest
     permissions:
       contents: write

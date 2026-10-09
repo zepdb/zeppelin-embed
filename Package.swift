@@ -10,7 +10,6 @@ let ffiArchive = environment["ZE_LOCAL_FFI_ARCHIVE"] ?? repositoryRoot
     .standardizedFileURL.path
 let useLocalFFI = environment["ZE_USE_LOCAL_FFI"] == "1"
 let graph = environment["ZE_ENABLE_GRAPH"] == "1"
-precondition(!graph || useLocalFFI, "Graph builds currently require ZE_USE_LOCAL_FFI=1 and one full graph archive; XCFramework architecture decision remains open.")
 let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // The checksum has to be a literal. When a consumer depends on this package by
 // URL, SwiftPM compiles the manifest in a sandbox where `#filePath` is
@@ -34,13 +33,17 @@ if useLocalFFI {
 } else if useLocalXCFramework {
     cTarget = .binaryTarget(
         name: "CZeppelinEmbed",
-        path: "target/xcframework/ZeppelinEmbed.xcframework"
+        path: graph
+            ? "target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework"
+            : "target/xcframework/ZeppelinEmbed.xcframework"
     )
 } else {
     cTarget = .binaryTarget(
         name: "CZeppelinEmbed",
-        url: "https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbed.xcframework.zip",
-        checksum: binaryChecksum
+        url: graph
+            ? "https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbedGraph.xcframework.zip"
+            : "https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbed.xcframework.zip",
+        checksum: graph ? graphBinaryChecksum : binaryChecksum
     )
 }
 
@@ -51,6 +54,13 @@ let localLinkerSettings: [LinkerSetting]? = useLocalFFI
             "-Xlinker", ffiArchive,
         ]),
     ]
+    : nil
+
+// Packaged graph headers already expose the complete C module. Only the
+// source shim needs its graph declarations enabled through the C compiler.
+let graphSwiftSettings: [SwiftSetting]? = graph
+    ? [.define("ZE_GRAPH")] + (useLocalFFI
+        ? [.unsafeFlags(["-Xcc", "-DZE_GRAPH"])] : [])
     : nil
 
 let package = Package(
@@ -65,14 +75,14 @@ let package = Package(
             name: "ZeppelinEmbed",
             dependencies: ["CZeppelinEmbed"],
             path: "bindings/swift/Sources/ZeppelinEmbed",
-            swiftSettings: graph ? [.define("ZE_GRAPH"), .unsafeFlags(["-Xcc", "-DZE_GRAPH"])] : nil,
+            swiftSettings: graphSwiftSettings,
             linkerSettings: localLinkerSettings
         ),
         .testTarget(
             name: "ZeppelinEmbedTests",
             dependencies: ["ZeppelinEmbed"],
             path: "bindings/swift/Tests/ZeppelinEmbedTests",
-            swiftSettings: graph ? [.define("ZE_GRAPH"), .unsafeFlags(["-Xcc", "-DZE_GRAPH"])] : nil
+            swiftSettings: graphSwiftSettings
         ),
     ] + (graph ? [
         .executableTarget(name: "GraphWorkload", dependencies: ["ZeppelinEmbed"],

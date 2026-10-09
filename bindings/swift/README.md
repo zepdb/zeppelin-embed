@@ -6,7 +6,7 @@ consumers use the checksum-pinned XCFramework binary target in the root
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.6.0")
+.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.7.0")
 ```
 
 Local source builds set `ZE_USE_LOCAL_FFI=1` after building the release FFI
@@ -43,7 +43,10 @@ CLANG_MODULE_CACHE_PATH=/tmp/ze-swift-clang ZE_USE_LOCAL_FFI=1 ZE_ENABLE_GRAPH=1
 CLANG_MODULE_CACHE_PATH=/tmp/ze-swift-clang ZE_USE_LOCAL_FFI=1 ZE_ENABLE_GRAPH=1 swift test --disable-sandbox --jobs 4 -Xswiftc -DZE72_TEST_BRIDGE
 ```
 
-The separate graph package is retired. The default package still resolves its
-existing universal graph-free XCFramework. Selecting a remote unified graph
-artifact awaits the Intel slice decision and ZE-369 release pins; local graph
-builds do not change the supported package architectures.
+The separate graph package is retired. The default package resolves the
+universal graph-free XCFramework on Apple silicon and Intel. Set
+`ZE_ENABLE_GRAPH=1` when resolving and building the package to select the
+checksum-pinned graph XCFramework and expose graph methods on `ZeppelinStore`.
+The graph XCFramework supports macOS 14+ on Apple silicon only. For local
+artifact validation, also set `ZE_USE_LOCAL_XCFRAMEWORK=1`; the package selects
+`target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework`.

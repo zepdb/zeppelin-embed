@@ -6,18 +6,23 @@ release and a compatible correction is a patch release.
 
 ## Unreleased
 
+## 0.7.0 - 2026-10-09
+
 ### Added
 
-- Node `GraphStore.cypher` and `cypherAsync` accept list parameters, including
+- Node `Store.cypher` and `cypherAsync` accept list parameters, including
   nested lists, nulls, mixed scalar types and numeric typed arrays.
-
-## 0.7.0 - 2026-10-08
+- The root Swift package selects the checksum-pinned graph XCFramework with
+  `ZE_ENABLE_GRAPH=1`, exposing graph methods through `ZeppelinEmbed`.
 
 ### Changed
 
 - Documents and graph share one Store handle, manifest and WAL. `NodeId`
   shares `DocId`; legacy documents have an implicit `Document` label.
   Store durability governs graph, and Restrict policies refuse document deletes.
+- Relationship queries reuse statement page validation and expansion scratch.
+  Incoming, undirected, labelled and ID-anchored starts use relationship
+  directories to avoid scanning unrelated document nodes.
 - Rust `GraphStore` is replaced by graph methods on `Store` and
   `StoreCypherExt`. `ZeGraphHandle` and `ZeppelinGraphStore` are replaced by
   graph methods on `ze_handle` and `ZeppelinStore`; Node graph methods move

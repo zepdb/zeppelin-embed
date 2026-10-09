@@ -124,7 +124,7 @@ check_export_allowlist() {
     if [ "$SELECTOR" = graph-cypher ]; then
         grep -E '^ze_' "$ALLOWLIST" | grep -Ev '^ze_text_' | LC_ALL=C sort -u > "$expected"
     else
-        grep -E '^ze_' "$ALLOWLIST" | grep -Ev '^ze_(text|graph)_' | LC_ALL=C sort -u > "$expected"
+        grep -E '^ze_' "$ALLOWLIST" | grep -Ev '^ze_text_' | LC_ALL=C sort -u > "$expected"
     fi
     if ! diff -u "$expected" "$observed"; then
         echo "ERROR: $label exported C namespace differs from symbols.allowlist" >&2

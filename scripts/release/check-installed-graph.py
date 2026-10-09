@@ -175,16 +175,10 @@ def run_rust_consumer(sdk, work, output):
 def run_swift_consumer(xcframework, work, output, disable_swift_sandbox=False):
     package = work / 'package'
     package.mkdir()
-    shutil.copytree(ROOT / 'bindings/swift/Sources/ZeppelinEmbed', package / 'Sources/ZeppelinEmbed')
+    shutil.copytree(ROOT / 'bindings/swift', package / 'bindings/swift')
     # One full graph archive, exported through the unified C module.
-    shutil.copytree(xcframework, package / 'Artifacts/ZeppelinEmbedGraph.xcframework')
-    manifest = '''// swift-tools-version: 5.10
-import PackageDescription
-let package = Package(name: "ZeppelinEmbed", platforms: [.macOS(.v14)],
- products: [.library(name: "ZeppelinEmbed", targets: ["ZeppelinEmbed"])], targets: [
- .binaryTarget(name: "CZeppelinEmbed", path: "Artifacts/ZeppelinEmbedGraph.xcframework"),
- .target(name: "ZeppelinEmbed", dependencies: ["CZeppelinEmbed"], swiftSettings: [.define("ZE_GRAPH")])])
-'''
+    shutil.copytree(xcframework, package / 'target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework')
+    manifest = (ROOT / 'Package.swift').read_text()
     (package / 'Package.swift').write_text(manifest)
     consumer = work / 'swift-consumer'
     (consumer / 'Sources/Consumer').mkdir(parents=True)
@@ -197,6 +191,7 @@ let package = Package(name: "InstalledConsumer", platforms: [.macOS(.v14)],
  dependencies: [.product(name: "ZeppelinEmbed", package: "package")])])
 ''')
     env = {k: v for k, v in os.environ.items() if not k.startswith('ZE_')}
+    env.update(ZE_ENABLE_GRAPH='1', ZE_USE_LOCAL_XCFRAMEWORK='1')
     env['CLANG_MODULE_CACHE_PATH'] = str(work / 'clang-cache')
     command = ['swift', 'build', '--package-path', consumer, '--scratch-path', work / 'swift-build',
                '--cache-path', work / 'swift-cache', '--jobs', '3']
@@ -241,6 +236,42 @@ def run_legacy_consumers(args, output):
 
 
 class ContractTests(unittest.TestCase):
+    def test_remote_qualification_rejects_non_release_tags(self):
+        with self.assertRaisesRegex(ValueError, 'exact vMAJOR.MINOR.PATCH'):
+            remote_qualify(argparse.Namespace(remote_tag='main'))
+
+    def test_graph_free_exports_retain_the_response_free_abi(self):
+        self.assertIn('ze_graph_response_free', artifact_tools().expected_symbols('legacy'))
+
+    def test_profile_contract_recognizes_unified_structured_export(self):
+        self.assertIn('installed profile receipts', profile_receipt_state(None))
+
+    def test_release_workflow_accepts_unified_graph_manifest(self):
+        workflow = (ROOT / '.github/workflows/swift-release.yml').read_text()
+        step = workflow.split('      - name: Match release tag to package version\n', 1)[1]
+        code = step.split("          python3 - <<'PY'\n", 1)[1].split('          PY\n', 1)[0]
+        code = '\n'.join(line[10:] for line in code.splitlines())
+        code = code.replace('${{ matrix.artifact }}', 'graph-cypher')
+        result = subprocess.run([sys.executable, '-c', code], cwd=ROOT,
+                                env=dict(os.environ, RELEASE_TAG='v0.7.0'),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unified_graph_manifest_selects_remote_graph_artifact(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith('ZE_')}
+        env['ZE_ENABLE_GRAPH'] = '1'
+        result = subprocess.run(['swift', 'package', '--package-path', str(ROOT),
+                                 'dump-package'], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        package = json.loads(result.stdout)
+        targets = {target['name']: target for target in package['targets']}
+        self.assertEqual(targets['CZeppelinEmbed']['url'],
+                         'https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbedGraph.xcframework.zip')
+        self.assertEqual(targets['CZeppelinEmbed']['checksum'],
+                         pin((ROOT / 'Package.swift').read_text(), graph=True))
+        self.assertEqual(targets['ZeppelinEmbed']['settings'],
+                         [{'kind': {'define': {'_0': 'ZE_GRAPH'}}, 'tool': 'swift'}])
+
     def test_installed_receipts_require_rust_and_resources(self):
         receipt = dict(executed=['batch', 'structured', 'get', 'cypher'],
                        artifact_kind='graph-cypher', exit_status=0, resources=True)
@@ -255,7 +286,8 @@ class ContractTests(unittest.TestCase):
 
     def test_root_package_is_the_only_swift_product(self):
         check_release_contract()
-        self.assertNotIn('ZeppelinEmbedGraph', (ROOT / 'Package.swift').read_text())
+        self.assertNotIn('.library(name: "ZeppelinEmbedGraph"',
+                         (ROOT / 'Package.swift').read_text())
         self.assertEqual(len(pin((ROOT / 'Package.swift').read_text())), 64)
 
     def test_graph_checksum_pin_is_readable(self):
@@ -337,7 +369,7 @@ def run_c_profile_consumer(sdk, work, output):
 
 def profile_receipt_state(path):
     header = (ROOT / 'crates/zeppelin-embed-ffi/include/zeppelin_graph_contracts.h').read_text()
-    if 'ze_graph_query(' not in header:
+    if 'ze_store_graph_query(' not in header:
         raise ValueError('required public C structured query export is absent')
     if path is None:
         return 'BLOCKED: C structured source present; ZE-71 installed profile receipts and ZE-278 Swift structured receipts missing'
@@ -361,7 +393,7 @@ def require_structured_execution(report):
                 or receipt.get('artifact_kind') != 'graph-cypher' or receipt.get('exit_status') != 0
                 or receipt.get('resources') is not True):
             raise ValueError('missing ZE-71/ZE-278 installed structured query/get receipt for '
-                             + kind + '; ze_graph_query is present; see report.json')
+                             + kind + '; ze_store_graph_query is present; see report.json')
 
 
 def qualify(args):
@@ -442,7 +474,58 @@ def qualify(args):
 
 def remote_qualify(args):
     """Read-only post-publication proof; never tag, upload, or change pins."""
-    raise ValueError('ZE-362: remote unified graph SwiftPM qualification awaits the Intel XCFramework decision and ZE-369 publication')
+    if not re.fullmatch(r'v\d+\.\d+\.\d+', args.remote_tag):
+        raise ValueError('remote tag must be an exact vMAJOR.MINOR.PATCH release')
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    base = 'https://github.com/zepdb/zeppelin-embed/releases/download/' + args.remote_tag + '/'
+    with tempfile.TemporaryDirectory(prefix='ze71-remote-') as directory:
+        work = Path(directory).resolve()
+        def download(url, destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(url) as response, destination.open('wb') as handle:
+                shutil.copyfileobj(response, handle)
+        checkout = work / 'release'
+        run(['git', 'clone', '--depth', '1', '--branch', args.remote_tag,
+             'https://github.com/zepdb/zeppelin-embed.git', checkout], cwd=work)
+        archive = work / 'ZeppelinEmbedGraph.xcframework.zip'
+        download(base + archive.name, archive)
+        contract = check_release_contract(checkout, archive, True)
+        sdk_archive = work / 'zeppelin-embed-graph-cypher-macos-arm64.tar.gz'
+        download(base + sdk_archive.name, sdk_archive)
+        with tarfile.open(sdk_archive) as tar:
+            tar.extractall(work, filter='data')
+        shutil.copy(ROOT / 'crates/zeppelin-embed-ffi/tests/c/graph_artifact_consumer.c', work / 'consumer.c')
+        sdk = work / 'zeppelin-embed-graph-cypher-macos-arm64'
+        report = dict(contract=contract, c=run_c_consumer(sdk, work, output),
+                      rust=run_rust_consumer(sdk, work, output))
+        consumer = work / 'consumer'
+        (consumer / 'Sources/Consumer').mkdir(parents=True)
+        shutil.copy(ROOT / 'bindings/swift/Examples/InstalledGraphConsumer/main.swift',
+                    consumer / 'Sources/Consumer/main.swift')
+        (consumer / 'Package.swift').write_text(
+            '// swift-tools-version: 5.10\nimport PackageDescription\n'
+            'let package = Package(name: "RemoteConsumer", platforms: [.macOS(.v14)],'
+            'dependencies: [.package(url: "https://github.com/zepdb/zeppelin-embed.git", exact: "' + args.remote_tag[1:] + '")],'
+            'targets: [.executableTarget(name: "Consumer", dependencies: '
+            '[.product(name: "ZeppelinEmbed", package: "zeppelin-embed")])])\n')
+        env = {k: v for k, v in os.environ.items() if not k.startswith('ZE_')}
+        env['ZE_ENABLE_GRAPH'] = '1'
+        env['CLANG_MODULE_CACHE_PATH'] = str(work / 'clang-cache')
+        run(['swift', 'build', '--package-path', consumer, '--scratch-path', work / 'build',
+             '--cache-path', work / 'cache', '--jobs', '3'], env=env, cwd=work)
+        result = run([work / 'build/debug/Consumer', work / 'fixture'], env=env, cwd=work,
+                     capture_output=True, text=True)
+        (output / 'swift.log').write_text(result.stdout + result.stderr)
+        report['swift'] = dict(artifact_tools().measure(work / 'build/debug/Consumer', output),
+                               reachability=consumer_receipt(result.stdout))
+        report['reachability'] = {
+            **{'c-' + kind: report['c'][key]['reachability']
+               for kind, key in [('static', 'a'), ('dylib', 'dylib')]},
+            'swift': report['swift']['reachability'], 'rust': report['rust']['reachability']}
+        report['scope'] = 'remote installed batch/structured/get/resources/Cypher'
+        (output / 'remote-report.json').write_text(json.dumps(report, indent=2) + '\n')
+        require_structured_execution(report)
 
 
 if __name__ == '__main__':
