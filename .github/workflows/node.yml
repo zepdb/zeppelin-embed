@@ -44,6 +44,8 @@ permissions:
 
 env:
   CARGO_BUILD_JOBS: 4
+  # Owner requested only packaging and installed smoke checks for 0.7.0.
+  MINIMAL_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag == 'v0.7.0' }}
 
 jobs:
   package:
@@ -85,8 +87,10 @@ jobs:
             --addon bindings/node/prebuilds/darwin-arm64/zeppelin_embed.node \
             --addon bindings/node/prebuilds/darwin-x64/zeppelin_embed.node
       - name: Install the graph header test generator
+        if: env.MINIMAL_RELEASE != 'true'
         run: cargo install cbindgen --version 0.29.4 --locked
       - name: Run the graph suites against the x86_64 target
+        if: env.MINIMAL_RELEASE != 'true'
         run: |
           cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed-ffi --features graph-cypher --test ffi_graph_entry --test ffi_graph_contract --test ffi_graph_layout --test ffi_graph_header
           cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed-cypher
@@ -94,17 +98,22 @@ jobs:
           cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed --lib --features graph-cypher lifecycle::lock
       # The package suite includes the crash-safety suite, which kills a
       # writer at seeded points and verifies the store; its per-round results
-      # are kept with every run, including each release run.
+      # are kept with full runs; the owner waived this campaign for 0.7.0.
       - run: npm test
+        if: env.MINIMAL_RELEASE != 'true'
         working-directory: bindings/node
         env:
           ZE_CRASH_EVIDENCE: ${{ runner.temp }}/crash-safety-darwin-arm64.json
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.MINIMAL_RELEASE != 'true'
         with:
           name: crash-safety-darwin-arm64
           path: ${{ runner.temp }}/crash-safety-darwin-arm64.json
           if-no-files-found: error
+      - name: Run focused release graph smoke tests
+        if: env.MINIMAL_RELEASE == 'true'
+        run: node --test test/store-graph.test.mjs test/graph-list-params.test.mjs
+        working-directory: bindings/node
       - run: npm run typecheck
         working-directory: bindings/node
       - name: Match a release tag to the npm version
@@ -153,7 +162,11 @@ jobs:
           if [ -n "${SKIP_TEST_PATTERN:-}" ]; then
             skip=(--test-skip-pattern "$SKIP_TEST_PATTERN")
           fi
-          arch -x86_64 "$x64node" --test ${skip[@]+"${skip[@]}"} test/*.test.mjs
+          if [ "$MINIMAL_RELEASE" = true ]; then
+            arch -x86_64 "$x64node" --test test/store-graph.test.mjs test/graph-list-params.test.mjs
+          else
+            arch -x86_64 "$x64node" --test ${skip[@]+"${skip[@]}"} test/*.test.mjs
+          fi
       - name: Pack and smoke-test the installed artifact
         id: pack
         working-directory: bindings/node
@@ -217,18 +230,28 @@ jobs:
         run: |
           dumpbin /symbols target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib | findstr /C:"ze_store_graph_apply"
           if errorlevel 1 exit /b 1
-          dumpbin /headers target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib
+          dumpbin /headers target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib > "%RUNNER_TEMP%\archive-headers.txt"
           if errorlevel 1 exit /b 1
           dir target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib
       - name: Record Windows archive disk usage
         shell: bash
         run: du -k target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib
+      # Measurement tooling can be repaired without changing an immutable tag.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tooling
+          sparse-checkout: |
+            scripts/size-budget.sh
+            scripts/release/package-native.py
+          sparse-checkout-cone-mode: false
       - name: Gate Windows graph archive linked sections
         shell: bash
         run: |
           llvm_bin="$(python -c 'from pathlib import Path; import subprocess; print(Path(subprocess.check_output(["rustc", "--print", "target-libdir"], text=True).strip()).parent / "bin")')"
           export PATH="$(cygpath -u "$llvm_bin"):$PATH"
-          bash scripts/size-budget.sh --graph-archive target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          bash .release-tooling/scripts/size-budget.sh --graph-archive "$GITHUB_WORKSPACE/target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib"
       - name: Verify Windows packaging contracts
         shell: bash
         run: |
@@ -239,6 +262,7 @@ jobs:
       - name: Record Windows native static libraries
         run: cargo rustc --locked --target x86_64-pc-windows-msvc -p zeppelin-embed-ffi --features graph-cypher --crate-type staticlib -- --print native-static-libs
       - name: Run the graph suites natively on Windows
+        if: env.MINIMAL_RELEASE != 'true'
         # pwsh, not bash: Git's /usr/bin/link shadows the MSVC linker.
         shell: pwsh
         run: |
@@ -257,15 +281,20 @@ jobs:
           cargo test --locked -p zeppelin-embed --lib --features graph-cypher lifecycle::native_graph @nativeGraphTestArgs
       # On Windows the crash-safety suite's kill is TerminateProcess.
       - run: npm test
+        if: env.MINIMAL_RELEASE != 'true'
         working-directory: bindings/node
         env:
           ZE_CRASH_EVIDENCE: ${{ runner.temp }}/crash-safety-win32-x64.json
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && env.MINIMAL_RELEASE != 'true'
         with:
           name: crash-safety-win32-x64
           path: ${{ runner.temp }}/crash-safety-win32-x64.json
           if-no-files-found: error
+      - name: Run focused release graph smoke tests
+        if: env.MINIMAL_RELEASE == 'true'
+        run: node --test test/store-graph.test.mjs test/graph-list-params.test.mjs
+        working-directory: bindings/node
       - run: npm run typecheck
         working-directory: bindings/node
       - run: npm run check:prebuilt

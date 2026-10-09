@@ -78,7 +78,7 @@ measure_artifact() {
             ' "$raw_size")"
             ;;
         MINGW*|MSYS*)
-            "$STRIP_TOOL" --strip-debug "$stripped"
+            python3 "$SCRIPT_DIR/release/package-native.py" measure-coff "$artifact" "$stripped"
             "$SIZE_TOOL" -A "$stripped" > "$raw_size"
             size_bytes="$(awk '
                 $1 ~ /^\./ && $1 !~ /^\.llvm/ { total += $2 }

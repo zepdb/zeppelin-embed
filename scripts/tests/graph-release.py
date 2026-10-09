@@ -294,17 +294,18 @@ class ReleaseTests(unittest.TestCase):
         workflow = (self.g.ROOT / '.github/workflows/node.yml').read_text()
         windows = workflow.split('  windows-package:', 1)[1].split('  electron-package:', 1)[0]
         commands = [shlex.split(line.strip()) for line in windows.splitlines()
-                    if line.strip().startswith('bash scripts/size-budget.sh --graph-archive ')]
+                    if line.strip().startswith('bash .release-tooling/scripts/size-budget.sh --graph-archive ')]
         self.assertEqual(len(commands), 1, 'Windows shipping archive has no linked-section gate')
         command = commands[0]
         self.assertEqual(command[-1],
-            'target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib')
+            '$GITHUB_WORKSPACE/target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib')
         source = self.root / 'over-budget.c'
         source.write_text('char ze_size_fixture[12288 * 1024 + 1] = {1};\n')
         obj = self.root / 'over-budget.o'
         archive = self.root / 'over-budget.a'
         subprocess.run(['clang', '-c', str(source), '-o', str(obj)], check=True, capture_output=True)
         subprocess.run(['ar', 'rcs', str(archive), str(obj)], check=True, capture_output=True)
+        command[1] = str(self.g.ROOT / 'scripts/size-budget.sh')
         command[-1] = str(archive)
         env = dict(os.environ, CARGO_TARGET_DIR=str(self.root / 'target'),
                    ZE_GRAPH_SIZE_BUDGET_KB='12288')

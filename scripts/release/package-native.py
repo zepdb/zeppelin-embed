@@ -24,7 +24,7 @@ def llvm_tool(name):
 LLVM_SECTIONS = ['__LLVM,__bitcode', '__LLVM,__cmdline', '.llvmbc', '.llvmcmd']
 
 
-def clean_coff_archive(source, output):
+def clean_coff_archive(source, output, strip_debug=False):
     # Rust MSVC archives include short import objects. llvm-objcopy rejects
     # those, so preserve them verbatim and transform only ordinary COFF objects.
     # Keep duplicate member names (e.g. several kernel32.dll imports) in order.
@@ -73,6 +73,7 @@ def clean_coff_archive(source, output):
             if body[:8] != b'\x00\x00\xff\xff\x00\x00\x64\x86':
                 subprocess.run([llvm_tool('llvm-objcopy'),
                                 *['--remove-section=' + section for section in LLVM_SECTIONS],
+                                *(['--strip-debug'] if strip_debug else []),
                                 str(member)], check=True)
             members.append(member)
         response = work / 'members.rsp'
@@ -85,15 +86,15 @@ def clean_coff_archive(source, output):
 
 
 def package(mode, source, destination):
-    if mode == 'archive' and source.resolve() == destination.resolve():
+    if mode in ('archive', 'measure-coff') and source.resolve() == destination.resolve():
         raise ValueError('archive output must be a distribution copy, not the Cargo input')
     destination.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=destination.name + '.', dir=destination.parent)
     os.close(fd)
     try:
-        if mode == 'archive':
-            if source.suffix.lower() == '.lib':
-                clean_coff_archive(source, Path(temporary))
+        if mode in ('archive', 'measure-coff'):
+            if mode == 'measure-coff' or source.suffix.lower() == '.lib':
+                clean_coff_archive(source, Path(temporary), strip_debug=mode == 'measure-coff')
             else:
                 subprocess.run([
                     llvm_tool('llvm-objcopy'),
@@ -117,7 +118,7 @@ def package(mode, source, destination):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['archive', 'windows-addon'])
+    parser.add_argument('mode', choices=['archive', 'windows-addon', 'measure-coff'])
     parser.add_argument('source', type=Path)
     parser.add_argument('destination', type=Path)
     args = parser.parse_args()
