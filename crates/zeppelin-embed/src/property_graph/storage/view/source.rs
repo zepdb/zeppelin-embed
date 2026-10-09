@@ -21,6 +21,8 @@ use std::{
 struct MappedArtifact<'m, 'g> {
     mapping: NativeReadonlyMapping,
     validation: ValidatedArtifact,
+    // QueryArena charges its heap and control descriptor. Boxing the descriptor
+    // keeps its charge separate from the mapping table's capacity reservation.
     validated_pages: Box<[QueryArena<'m, 'g, Cell<u8>>; 1]>,
 }
 
@@ -159,26 +161,6 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
         self.runtime
     }
 
-    fn page_bit(&self, reference: PhysicalRef) -> Result<(&Cell<u8>, u8), TreeError> {
-        let Some(mapped) = crate::property_graph::storage::mapping_slot(
-            self.slots.as_slice(),
-            reference.artifact,
-            |mapped| mapped.validation.artifact(),
-            || Ok(()),
-        )?
-        .and_then(OnceCell::get) else {
-            return Err(TreeError::Invalid("page memo mapping missing"));
-        };
-        let bit = usize::try_from(reference.offset).map_err(|_| TreeError::Memory)? / 24;
-        let Some(memo) = mapped.validated_pages.first() else {
-            return Err(TreeError::Memory);
-        };
-        let Some(byte) = memo.as_slice().get(bit / 8) else {
-            return Err(TreeError::Invalid("page memo offset outside mapping"));
-        };
-        Ok((byte, 1 << (bit % 8)))
-    }
-
     fn check_owner(&self, resources: &mut TreeResources<'_>) -> Result<(), TreeError> {
         self.lease
             .check_active()
@@ -186,6 +168,29 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
             .map_err(TreeError::Runtime)?;
         resources.require_query_owner(self.owner)?;
         resources.step(0)
+    }
+
+    fn page_bit(&self, reference: PhysicalRef) -> Result<(&Cell<u8>, u8), TreeError> {
+        if reference.kind != artifact::BlockKind::TreePage {
+            return Err(TreeError::Invalid("page memo requires a directory page"));
+        }
+        let mapped = self
+            .slots
+            .as_slice()
+            .iter()
+            .filter_map(OnceCell::get)
+            .find(|mapped| mapped.validation.artifact() == reference.artifact)
+            .ok_or(TreeError::Invalid("page memo mapping missing"))?;
+        let bucket = usize::try_from(reference.offset).map_err(|_| TreeError::Memory)?
+            / super::super::tree::PAGE_BYTES;
+        let byte = mapped
+            .validated_pages
+            .first()
+            .ok_or(TreeError::Memory)?
+            .as_slice()
+            .get(bucket / 8)
+            .ok_or(TreeError::Invalid("page memo reference outside mapping"))?;
+        Ok((byte, 1_u8 << (bucket % 8)))
     }
 
     fn decode<'s>(
@@ -298,31 +303,33 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
         drop(path);
         drop(path_charge);
         let validation = self.admit_mapping(&mapping, reference, resources)?;
-        // Framed blocks occupy at least 24 bytes, so distinct exact block
-        // references cannot share an offset / 24 slot. Resolve proves exact
-        // membership before a directory page can consult this bitset.
-        let memo_bytes = mapping.as_bytes().len().div_ceil(24).div_ceil(8);
-        let mut validated_pages = QueryArena::new(self.memory, memo_bytes)
+        // Exact admitted blocks never overlap. Every directory page spans
+        // PAGE_BYTES plus its frame, so distinct pages cannot share a bucket.
+        // Record blocks cannot consult or set these directory-page bits.
+        let memo_bytes = mapping
+            .as_bytes()
+            .len()
+            .div_ceil(super::super::tree::PAGE_BYTES)
+            .div_ceil(8);
+        let mut pages = QueryArena::new(self.memory, memo_bytes)
             .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
             .map_err(TreeError::Runtime)?;
+        resources.step(memo_bytes as u64)?;
         for _ in 0..memo_bytes {
-            validated_pages
+            pages
                 .push(Cell::new(0))
                 .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
                 .map_err(TreeError::Runtime)?;
         }
-        // The arena charges its own control descriptor. Keep that descriptor
-        // out of the fixed mapping table. The validated frame also owns the
-        // artifact identity, so the table needs no duplicate identity field.
-        // A one-element, exact-capacity Vec makes boxing fallible and requires
-        // no allocation when converting to a fixed-size boxed array.
-        let mut memo = Vec::new();
-        memo.try_reserve_exact(1).map_err(|_| TreeError::Memory)?;
-        if memo.capacity() != 1 {
+        let mut descriptor = Vec::new();
+        descriptor
+            .try_reserve_exact(1)
+            .map_err(|_| TreeError::Memory)?;
+        if descriptor.capacity() != 1 {
             return Err(TreeError::Memory);
         }
-        memo.push(validated_pages);
-        let validated_pages = memo
+        descriptor.push(pages);
+        let validated_pages = descriptor
             .into_boxed_slice()
             .try_into()
             .map_err(|_| TreeError::Memory)?;

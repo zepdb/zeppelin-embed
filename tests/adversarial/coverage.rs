@@ -371,6 +371,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.cypher-entry.document-scan.full-drain",
     "property-graph.cypher-entry.document-scan.lazy-limit",
     "property-graph.cypher-entry.document-scan.work-limit.fire",
+    "property-graph.cypher-entry.page-validation.statement-scope",
     "property-graph.relational.order-bags",
     "property-graph.relational.collect",
     "property-graph.relational.eligible",

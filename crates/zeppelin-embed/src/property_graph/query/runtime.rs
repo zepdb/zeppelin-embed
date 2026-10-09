@@ -75,7 +75,7 @@ pub enum WorkKind {
     EligibilityEntries,
     /// Bytes actually copied during intermediate/result construction.
     CopiedBytes,
-    /// Full directory page validations; immutable query pages count once per statement.
+    /// Full directory-page validations; immutable query pages count once per statement.
     DirectoryPagesDecoded,
     /// Full fixed directory pages copied into owned trace scratch.
     DirectoryPagesCopied,

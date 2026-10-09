@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 28] = [
+pub const REQUIRED_COVERAGE: [&str; 29] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -46,6 +46,7 @@ pub const REQUIRED_COVERAGE: [&str; 28] = [
     "property-graph.cypher-entry.incident-source.incoming",
     "property-graph.cypher-entry.incident-source.labelled",
     "property-graph.cypher-entry.incident-source.undirected",
+    "property-graph.cypher-entry.page-validation.statement-scope",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -93,6 +94,7 @@ fn read(store: &Store) -> Result<(Vec<i64>, u64), String> {
     }
     let rows = values(&result)?;
     // `once` ingests 32 implicit Document nodes as well as Guard and D.
+    // The fixture also ingests exactly 32 implicit document nodes.
     let expected = i64::try_from(rows.len()).map_err(|error| error.to_string())? + 2 + 32;
     for (text, count) in [
         ("MATCH (n) RETURN count(n)", expected),
@@ -188,6 +190,7 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
             .map_err(|error| error.to_string())?;
         page_memo_controls(&store)?;
         probe_document_scan(&store)?;
+        probe_page_validation(&store)?;
         generations.push(read(&store)?.1);
         probe_id_lookup(&store)?;
 
@@ -311,6 +314,33 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
     outcome
 }
 
+fn probe_page_validation(store: &Store) -> Result<(), String> {
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    let mut page_counts = Vec::new();
+    let once = "MATCH (a:P)-[r:R]->(b) RETURN count(r)";
+    let twice = "MATCH (a:P)-[r:R]->(b) MATCH (c:P)-[s:R]->(d) RETURN count(r)";
+    for text in [once, twice, once] {
+        let result = run(store, text, &[]).map_err(|error| error.to_string())?;
+        if values(&result)? != [1] {
+            return Err("page validation probe relationship count differs".into());
+        }
+        page_counts.push(
+            result
+                .metadata()
+                .counters
+                .get(WorkKind::DirectoryPagesDecoded),
+        );
+    }
+    if page_counts.first().is_none_or(|pages| *pages == 0)
+        || page_counts.windows(2).any(|pair| pair[0] != pair[1])
+    {
+        return Err(format!(
+            "page validation is not statement-scoped: {page_counts:?}"
+        ));
+    }
+    Ok(())
+}
+
 fn probe_document_scan(store: &Store) -> Result<(), String> {
     use zeppelin_embed::property_graph::query::runtime::{RuntimeLimits, WorkKind};
     let full =
@@ -330,8 +360,8 @@ fn probe_document_scan(store: &Store) -> Result<(), String> {
             "document scan full-drain/lazy oracle mismatch",
         ));
     }
-    // The final graph-page work is the membership pass; consuming its budget
-    // must fail the complete statement at the existing runtime work seam.
+    // One fewer full page validation than the complete statement requires
+    // must fail at the existing runtime work seam, including with memo reuse.
     let pages = full
         .metadata()
         .counters

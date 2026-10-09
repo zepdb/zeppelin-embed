@@ -86,6 +86,87 @@ fn ids(result: &CompletedGraphResult) -> Vec<u128> {
         .collect()
 }
 
+mod relationship_speed {
+    use super::*;
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    use zeppelin_embed::property_graph::staging::{
+        StructuredOperation, StructuredWrite, WriteImage,
+    };
+    use zeppelin_embed::property_graph::{
+        ApplicationKey, EntityKind, GraphName, GraphRevision, NodeId, NodeRef,
+    };
+
+    fn parallel_edges(edges: usize) -> (Directory, Store) {
+        let directory = Directory::new();
+        let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        store
+            .ingest(IngestBatch::new(
+                [1, 2]
+                    .into_iter()
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                            vec![1.0],
+                        )
+                    })
+                    .collect(),
+            ))
+            .unwrap();
+        store.seal().unwrap();
+        store.enable_graph().unwrap();
+        let keys: Vec<_> = (0..edges).map(|i| format!("parallel-{i}")).collect();
+        let writes: Vec<_> = keys
+            .iter()
+            .map(|key| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "rel-speed", key).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    relationship_type: GraphName::new("R").unwrap(),
+                    properties: &[],
+                    source: NodeRef::Existing(NodeId::new(1).unwrap()),
+                    target: NodeRef::Existing(NodeId::new(2).unwrap()),
+                }),
+            })
+            .collect();
+        store.graph_apply(&writes, &control()).unwrap();
+        store.close().unwrap();
+        let store = Store::open(directory.path(), OpenOptions::read_only()).unwrap();
+        (directory, store)
+    }
+
+    #[test]
+    fn relationship_pattern_validates_each_page_once_per_statement() {
+        // 32 parallel edges fit the same directory leaves and use two adopted
+        // document nodes. Consuming 16 then 32 rows touches the same page set.
+        let (_directory, store) = parallel_edges(32);
+        let half = run(&store, "MATCH (a)-[:R]->(b) RETURN a, b LIMIT 16");
+        let all = run(&store, "MATCH (a)-[:R]->(b) RETURN a, b LIMIT 32");
+        assert_eq!(half.metadata().rows, 16);
+        assert_eq!(all.metadata().rows, 32);
+        for result in [&half, &all] {
+            assert_eq!(ids(result), vec![1; result.metadata().rows as usize]);
+            for row in 0..result.metadata().rows as usize {
+                let Some(Value::Node(index)) = result.cell(row, 1) else {
+                    panic!("target node expected");
+                };
+                assert_eq!(result.pools().nodes[*index as usize].id.get(), 2);
+            }
+        }
+        let half_pages = half
+            .metadata()
+            .counters
+            .get(WorkKind::DirectoryPagesDecoded);
+        let all_pages = all.metadata().counters.get(WorkKind::DirectoryPagesDecoded);
+        eprintln!("relationship pages: E=16 {half_pages}, E=32 {all_pages}");
+        assert!(half_pages > 0);
+        assert_eq!(
+            all_pages, half_pages,
+            "fixed pages must not be revalidated per edge"
+        );
+    }
+}
+
 #[test]
 fn eligible_set_restricts_both_hybrid_legs() {
     let (_directory, store) = fixture();
@@ -2033,6 +2114,7 @@ mod ze409_scan_tests {
             );
             let expected = match limit {
                 0 => (0, 0, 0),
+                // Both pulls touch the same immutable node-directory leaf.
                 1 => (1, 1, 1),
                 10 => (11, 11, 1),
                 _ => unreachable!("fixed LIMIT cases"),
@@ -2062,7 +2144,7 @@ mod ze409_scan_tests {
     }
 }
 
-mod relationship_speed {
+mod relationship_speed_main {
     use super::*;
     use zeppelin_embed::property_graph::query::runtime::WorkKind;
     use zeppelin_embed::property_graph::{

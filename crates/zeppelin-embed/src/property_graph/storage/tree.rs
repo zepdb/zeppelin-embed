@@ -190,8 +190,40 @@ pub fn encode_page(
     put(output, 56, &checksum.to_le_bytes())
 }
 
-/// Checks page framing without following child/overflow references or admitting a tree.
-/// Overflow streams and strict key ordering are mandatory later tree-owner checks.
+/// Reopen only after the current immutable source proves full page validation.
+/// The directory owner still checks identity, depth and ancestor bounds on use.
+pub(super) fn reopen_validated_page(
+    expected: TreeKind,
+    bytes: &[u8],
+) -> Result<FramedPage<'_>, FormatError> {
+    if bytes.len() != PAGE_BYTES || bytes.get(..4) != Some(b"ZGTP".as_slice()) {
+        return Err(invalid("page length or magic"));
+    }
+    if frame::read_u16("graph page", bytes, 4)? != 1 {
+        return Err(FormatError::new(
+            "graph page",
+            FormatCheck::Version,
+            "unsupported page version",
+        ));
+    }
+    if frame::read_u16("graph page", bytes, 6)? != expected as u16 {
+        return Err(FormatError::new(
+            "graph page",
+            FormatCheck::Family,
+            "wrong tree comparator kind",
+        ));
+    }
+    Ok(FramedPage {
+        bytes,
+        header: PageHeader {
+            kind: expected,
+            level: frame::read_u16("graph page", bytes, 16)?,
+            generation: GraphGeneration::new(frame::read_u64("graph page", bytes, 24)?),
+        },
+    })
+}
+
+/// Checks complete framing before any immutable-page proof can be published.
 pub fn decode_page(expected: TreeKind, bytes: &[u8]) -> Result<FramedPage<'_>, FormatError> {
     if bytes.len() != PAGE_BYTES || bytes.get(..4) != Some(b"ZGTP".as_slice()) {
         return Err(invalid("page length or magic"));

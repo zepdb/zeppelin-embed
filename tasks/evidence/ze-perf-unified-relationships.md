@@ -209,3 +209,102 @@ and clang-format pass without diagnostics. Logs: `ZE419-smoke-final.log`,
 `ZE419-plants.log`, `ZE419-oracle.log`, `ZE419final-*.log`. Clean-checkout
 verification remains before closing ZE-419. No production engine, format,
 ABI, or golden was changed.
+
+## S1 statement-scoped validation (ZE-412)
+
+ZE-419 is now closed: clean detached `f1ccec4b` checkout repeated the
+required smoke, 34.46 s compile and 96.35 s test, 14 operations,
+14/14 feature faults, zero violations, clean status before/after. This is
+the repaired BEFORE gate for S1. All lines of `ZE419-clean-smoke.log` read.
+
+Native query mappings now retain a charged directory-page bitset. Its exact
+size comes from the mapped length and 16 KiB page buckets: validated framed
+pages cannot overlap, each page spans 16 KiB plus framing, and only TreePage
+references may access these bits. The mapping's query-memory owner charges
+both actual backing capacity and the separately boxed control descriptor.
+Allocation refusal propagates; there is no fallback.
+
+First use keeps complete checksum/layout/key-order validation. Every
+traversal checks kind, depth, creation generation and extremal ancestor
+bounds. Only an already fully validated page may use the header path in
+later cursor reads. The proof ends with its query source. Preparation,
+recovery and trace sources keep the false/no-op defaults. Leaf point lookup
+now searches the proven sorted keys by binary search. Record-block
+checksums already had statement mapping admission through
+`ValidatedArtifact`; that existing path is unchanged.
+
+RED/GREEN on the S0 hardware, HEAD `f1ccec4b` plus uncommitted S1 changes:
+
+| Named regression | RED | GREEN |
+|---|---|---|
+| `relationship_speed::relationship_pattern_validates_each_page_once_per_statement` | 16/32 parallel edges: 273/529 full validations | 3/3, correct ordered endpoint IDs, 1 pass (0.44 s) |
+| `lifecycle::native_graph::tests::storage_faults::page_memo_does_not_cross_statements` | same-source repeated lookup: 2 to 4 validations | reused proof within each source; positive fresh validation in both statements, 1 pass (0.07 s) |
+| `lifecycle::native_graph::tests::storage_faults::corrupt_page_fails_on_first_use_after_memo` | warming repeated lookup: 2 to 4 | fresh statement rejects a flipped sealed-page checksum byte with typed FileChecksum, 1 pass (0.05 s) |
+| `cypher_entry_probe_fires_refusals_and_clean_control` | same pages consumed once/twice/once: 181/362/181 | equal positive full validations, independent count oracle and work-limit refusal, 1 pass (2.03 s) |
+
+An intermediate implementation reduced the first regression to 38/70,
+exposing framing-only cursor decodes that still repeated full checksums.
+Those reads now consume an existing proof and never publish a key proof.
+The new coverage key is
+`property-graph.cypher-entry.page-validation.statement-scope`.
+
+The touched Cypher-entry fixture also contained a baseline inconsistency:
+it ingests exactly 32 documents but expected zero Document nodes. The
+original test reproduces the same node-count failure on clean pre-S1
+`f1ccec4b`, with the baseline Cargo target (0.12 s). Its primitive expected
+counts now include those 32 fixture inputs. No count implementation or
+observed-engine-derived expectation was added. `S1-entry-count-baseline.log`
+and `S1-entry-green-final.log` contain the RED/GREEN proof.
+
+Commands:
+
+```sh
+cargo test -p zeppelin-embed-cypher --features zeppelin-embed/graph-cypher --test graph_search relationship_speed::relationship_pattern_validates_each_page_once_per_statement -- --exact --nocapture
+cargo test -p zeppelin-embed --features graph-cypher --lib lifecycle::native_graph::tests::storage_faults::page_memo_does_not_cross_statements -- --exact --nocapture
+cargo test -p zeppelin-embed --features graph-cypher --lib lifecycle::native_graph::tests::storage_faults::corrupt_page_fails_on_first_use_after_memo -- --exact --nocapture
+cargo test -p zeppelin-embed-workspace-tests --features graph-result-test-support --test adversarial_tests cypher_entry_probe_fires_refusals_and_clean_control -- --exact --nocapture
+```
+
+Logs in `.ctx/`: `S1-pages-red.log`, `S1-pages-green-final.log`,
+`S1-scope-{red,green}.log`, `S1-corruption-{red,green}.log`,
+`S1-entry-red-final.log`, `S1-entry-green-final.log`. All lines read. The
+AFTER smoke and remaining per-step gates are pending; no S1 commit or
+completion is claimed yet.
+
+The first complete Cypher run passed 19 tests and exposed three pins.
+The LIMIT case still expected repeated page validation (5/35); its exact
+scan/lookup counts remain 1/1 and 11/11, and the updated full-validation
+count is one for both prefixes. Exact GREEN: 1 pass, 0.52 s, including
+LIMIT 0 (0 scans/lookups/validations).
+
+Both ZE-402 eligibility tests refused at 100,000 documents because the
+added memo pointer enlarged each of 8,192 eagerly reserved mapping slots.
+The mapping duplicated an artifact ID already held in ValidatedArtifact.
+Using that retained proof's ID removes the duplicate and saves 131,072
+charged bytes; all memo backing/control bytes remain charged. Original
+24 MiB limits and Store/Cypher parity assertions stay unchanged. Exact
+GREEN: both tests pass, 119.31 s; peak bytes 25,092,915 hybrid and
+25,091,489 text at n=100,000. Logs S1-cypher-tests.log (RED),
+S1-eligible-green.log and S1-limit-green.log (GREEN), fully read.
+
+Required AFTER smoke passed: 14 operations, 14/14 feature faults, zero
+violations, 91.68 s; every line of S1-adversarial-after.log read. Final
+per-step gate rerun is in progress under S1-final-*.log.
+
+S1 final gate receipt (all output lines read, no warning/error/FAILED
+diagnostics outside expected adversarial fault observations): fmt, both
+Clippy commands, rustdoc and clang-format clean. Full Cypher: 22
+graph-search tests (635.82 s), 14 lowering tests, 12 search-execution
+tests. Format fixtures: 3 passed, 4 explicitly default-ignored historical
+reader jobs. FFI contracts: 21 passed. Unified pins: 19 passed (49.98 s),
+including the repaired native WAL fixture; both required registry pins
+passed 1 test each. Commands are the prescribed per-step gate sequence,
+run serially by .ctx/run-gates.py S1-final; complete logs S1-final-*.log.
+
+Final exact scope/corruption guards passed (0.06/0.04 s), directed Cypher
+probe passed (2.38 s), and required final AFTER property-graph smoke
+passed (92.86 s): 14 operations, 14/14 feature faults, zero violations.
+The existing fault sites still reject corrupted checksums and injected
+I/O failures. All lines of S1-final-{scope,corruption,entry,smoke}.log read.
+No persisted bytes, C ABI, golden, dependency or write-side proof changed.
+Query timings are deliberately measured after S4 and S5 as prescribed.

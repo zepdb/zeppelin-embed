@@ -239,6 +239,83 @@ fn create_store(path: &Path, vfs: &Arc<dyn Vfs>) -> Store {
     .expect("fresh native store")
 }
 
+fn page_probe(store: &Store, node: NodeId) -> Result<(u64, u64), TreeError> {
+    use crate::property_graph::query::runtime::WorkKind;
+    use crate::property_graph::storage::tree::directory::lookup_entry;
+    let lease = store.admit_native_read().unwrap();
+    let shared = GraphResources::from_store(store).unwrap();
+    let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+    let guard = control();
+    let mut runtime =
+        RuntimeContext::new(&lease, &guard, &memory, RuntimeLimits::default()).unwrap();
+    let capability = NativeReadCapability::admit(&lease, &runtime)?;
+    let mut resources = TreeResources::for_query(&mut runtime)?;
+    let source = NativeQuerySource::new(capability, &resources, 32)?;
+    let root = lease.bundle().roots().directory(TreeKind::Nodes)?;
+    let key = node.get().to_le_bytes();
+    assert!(lookup_entry(&source, root, &key, &mut resources)?.is_some());
+    drop(resources);
+    let first = runtime.counters().get(WorkKind::DirectoryPagesDecoded);
+    let mut resources = TreeResources::for_query(&mut runtime)?;
+    assert!(lookup_entry(&source, root, &key, &mut resources)?.is_some());
+    drop(resources);
+    let repeated = runtime.counters().get(WorkKind::DirectoryPagesDecoded);
+    Ok((first, repeated))
+}
+
+#[test]
+fn page_memo_does_not_cross_statements() {
+    let parent = tempfile::tempdir().unwrap();
+    let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+    let store = create_store(&parent.path().join("native"), &vfs);
+    let node = commit_node(&store, "memo", "memo scope");
+    for _ in 0..2 {
+        let (first, repeated) = page_probe(&store, node).unwrap();
+        assert!(first > 0, "each statement must validate its first page");
+        assert_eq!(
+            first, repeated,
+            "the same statement must reuse its page proof"
+        );
+    }
+    store.close().unwrap();
+}
+
+#[test]
+fn corrupt_page_fails_on_first_use_after_memo() {
+    use crate::format::frame::FormatCheck;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+    let store = create_store(&path, &vfs);
+    let node = commit_node(&store, "memo-corruption", "first-use checksum");
+    let (first, repeated) = page_probe(&store, node).unwrap();
+    assert!(first > 0);
+    assert_eq!(first, repeated, "warm the statement-scoped page memo");
+    let lease = store.admit_native_read().unwrap();
+    let reference = lease
+        .bundle()
+        .roots()
+        .directory(TreeKind::Nodes)
+        .unwrap()
+        .reference()
+        .unwrap();
+    drop(lease);
+    let victim = path.join(format!("graph-{:032x}.zgraph", reference.artifact.get()));
+    let original = std::fs::read(&victim).unwrap();
+    let mut damaged = original.clone();
+    // Flip the page checksum byte after the warming statement has released
+    // its mapping. The next source must reject the changed immutable artifact.
+    damaged[reference.offset as usize + 24 + 56] ^= 1;
+    std::fs::write(&victim, &damaged).unwrap();
+    let error = page_probe(&store, node).unwrap_err();
+    std::fs::write(&victim, &original).unwrap();
+    let TreeError::Format(error) = error else {
+        panic!("typed checksum error expected: {error:?}");
+    };
+    assert_eq!(error.check(), FormatCheck::FileChecksum);
+    store.close().unwrap();
+}
+
 fn reopen_store(path: &Path, vfs: &Arc<dyn Vfs>) -> Store {
     Store::open_native_graph_with_infrastructure(
         path,
