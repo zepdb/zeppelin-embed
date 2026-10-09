@@ -46,11 +46,11 @@ fn plants_trip_named_comparators() {
     let mut graph = Graph::default();
     graph.apply(&batches[0]).unwrap();
     let good = graph.snapshot();
-    compare_complete_prefix(&batches, &[1], &good).unwrap();
+    compare_complete_prefix(0, &batches, &[1], &good).unwrap();
     let mut partial = good.clone();
     partial.nodes.pop();
     assert!(
-        compare_complete_prefix(&batches, &[0, 1], &partial)
+        compare_complete_prefix(0, &batches, &[0, 1], &partial)
             .unwrap_err()
             .starts_with(COMPLETE_PREFIX)
     );

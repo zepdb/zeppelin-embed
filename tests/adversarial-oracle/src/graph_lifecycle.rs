@@ -10,11 +10,15 @@ pub const OUTCOME: &str = "outcome";
 
 /// Input batches are atomic; only the explicit admissible complete cutoffs may recover.
 pub fn compare_complete_prefix(
+    initial_generation: u64,
     batches: &[Vec<Mutation>],
     admissible: &[usize],
     observed: &Snapshot,
 ) -> Result<(), String> {
-    let mut graph = Graph::default();
+    let mut graph = Graph {
+        generation: initial_generation,
+        ..Graph::default()
+    };
     let mut snapshots = vec![graph.snapshot()];
     for batch in batches {
         graph

@@ -176,8 +176,17 @@ pub fn compare(
 ) -> Result<Vec<Value>, String> {
     let present = !fault || committed(boundary);
     let actual_snapshot = snapshot(report.observation.as_ref())?;
-    oracle::compare_complete_prefix(&[input(fixture)], &[usize::from(present)], &actual_snapshot)?;
-    let mut model = primitive::Graph::default();
+    // Native creation publishes an empty generation-one store before this batch.
+    oracle::compare_complete_prefix(
+        1,
+        &[input(fixture)],
+        &[usize::from(present)],
+        &actual_snapshot,
+    )?;
+    let mut model = primitive::Graph {
+        generation: 1,
+        ..primitive::Graph::default()
+    };
     if present {
         model
             .apply(&input(fixture))
@@ -186,6 +195,16 @@ pub fn compare(
     let expected_snapshot = model.snapshot();
     if let Some(a) = &report.observation {
         super::graph_recovery::compare_batch(fixture, a)?;
+    }
+    // Checkpoint replacement publishes a generation without rewriting identity
+    // history. Rename faults precede publication; selector-sync faults follow it.
+    if matches!(boundary, Boundary::CheckpointSync)
+        || (!fault && matches!(boundary, Boundary::CheckpointReplace))
+    {
+        model.generation += 1;
+    }
+    if report.generation_before_retry != model.generation {
+        return Err("identity-history: recovered store generation differs".into());
     }
     let retry = model
         .apply(&input(fixture))
@@ -679,6 +698,19 @@ pub fn validate_retained(directory: &Path, attestation: &Value) -> Result<(), St
     }
     Ok(())
 }
+#[test]
+fn fault_vfs_qualifies_unified_native_wal() {
+    let (fixture, _) = super::graph_recovery::schedule_for(0);
+    let observation = fault_vfs_observation(&fixture).unwrap();
+    assert_eq!(observation["fires"].as_u64(), Some(1));
+    assert_eq!(observation["controls"].as_u64(), Some(1));
+    assert_eq!(
+        observation["barrier_power_error"].as_str(),
+        Some("NotFound")
+    );
+    assert_eq!(observation["visible_bytes"], observation["media_bytes"]);
+}
+
 /// The memory VFS cannot map a native graph. Qualify its byte/barrier model using
 /// the real executor's WAL bytes, separately from directory loss and SIGKILL.
 fn fault_vfs_observation(fixture: &Fixture) -> Result<Value, String> {
@@ -699,11 +731,11 @@ fn fault_vfs_observation(fixture: &Fixture) -> Result<Value, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?
         .into_iter()
-        .find(|e| e.file_name().to_string_lossy().starts_with("graph-wal-"))
+        .find(|e| e.file_name().to_string_lossy().starts_with("wal.ze"))
         .ok_or("native WAL missing")?;
     let bytes = std::fs::read(entry.path()).map_err(|e| e.to_string())?;
     let vfs = zeppelin_embed::vfs::fault::FaultVfs::new();
-    let path = Path::new("graph-wal-control.ze");
+    let path = Path::new("wal.ze-control");
     let mut file = vfs.open_append(path).map_err(|e| e.to_string())?;
     file.append(&bytes).map_err(|e| e.to_string())?;
     file.sync(SyncKind::Barrier).map_err(|e| e.to_string())?;

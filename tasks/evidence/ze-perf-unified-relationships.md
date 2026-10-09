@@ -115,3 +115,97 @@ check `every_family_requires_every_layered_coverage_key` failed with
 `property-graph does not require fault.layer.io` at unchanged HEAD 4ab78da3.
 The two requested registry pins passed; no coverage contract was relaxed.
 Its complete diagnostic is `.ctx/S0-every_family_requires_every_layered_coverage_key.log`.
+
+## S1 prerequisite diagnostics (ZE-412; ZE-419)
+
+The required pre-change adversarial smoke failed before any engine edit:
+
+```sh
+scripts/adversarial.sh smoke --campaign property-graph --profile none
+```
+
+Exit 101 on `codex/rel-speed` HEAD `27a68716`:
+
+```text
+campaign=property-graph seed=0 profile=none: identity-history: receipt history differs
+```
+
+The same failure was reproduced on a clean detached worktree at original
+main/plan baseline `4ab78da3070ad1a9576ec1493c571001736475a3`, with a fresh
+Cargo target and clean `git status --porcelain`:
+
+```sh
+CARGO_TARGET_DIR=/Users/aghatage/Documents/code/zeppelin-embed-worktrees/rel-speed-baseline-target scripts/adversarial.sh smoke --campaign property-graph --profile none
+```
+
+Worktree: `/Users/aghatage/Documents/code/zeppelin-embed-worktrees/rel-speed-baseline`.
+It compiled in 35.47 s and failed in 0.49 s, exit 101, with the same exact
+seed/profile/diagnostic. All log lines were read; logs are
+`.ctx/S1-adversarial-before.log` and `.ctx/S1-adversarial-clean-baseline.log`
+in the relationship worktree. The report is at
+`tests/adversarial_tests.rs:8636`; the independent receipt-history comparison
+is `tests/adversarial-oracle/src/graph_lifecycle.rs:54`.
+
+At the initial failure, engine and adversarial source were byte-identical to the original main
+baseline. Main advanced to `e2db37a6` during S0; that commit changes release
+versions/changelog, not the relevant logic. The failure precedes the proposed
+page memo and concerns write-receipt history, outside the plan's named query
+read-path root causes. The initial response stopped without diagnosis. That
+was premature: the STOP clause applies to gates that cannot be fixed. The
+bounded diagnosis below identifies test-fixture drift against existing
+contracts, with no engine change or coverage relaxation.
+
+ZE-419 records the prerequisite diagnosis/fix. ZE-412 returned to todo and is
+blocked by it; ZE-413..416 remain blocked in order. A first page-validation
+counter regression is drafted but unrun and uncommitted. No S1 engine change
+was made. The relationship goal, final main gates/full suite, target
+qualification, fast-forward landing and push remain incomplete.
+
+### ZE-419 test-fixture alignment
+
+The native empty-store creation publishes generation 1
+(`lifecycle/native_graph/persistence.rs::create_with_high_waters`). The
+primitive lifecycle model started at 0. Temporary receipt diagnostics showed
+identical entity IDs, revisions and replay flags, but expected installing
+generations 1/2 versus actual 2/3 at ArtifactCreate fault. The existing lower
+recovery comparator already pins first installing generation 2. Checkpoint
+replacement also advances the store generation without changing entity
+installing generations; rename faults precede replacement and selector-sync
+faults follow it.
+
+The test-only prefix comparator now takes an explicit initial generation.
+Standalone logical fixtures retain 0; native fixtures use 1. The lifecycle
+runner models checkpoint publication and independently verifies recovered
+generation. Complete-state and receipt equality remain strict.
+
+Named regression:
+`lifecycle_oracle_preserves_native_creation_and_checkpoint_generations`.
+RED: ArtifactCreate fault receipt-generation mismatch (0.16 s).
+GREEN: all eight fault/control cases (1.28 s), covering ArtifactCreate,
+WalSync, CheckpointReplace and CheckpointSync.
+
+The smoke then progressed to a second obsolete fixture assumption: its
+FaultVfs byte probe searched for `graph-wal-*`, while unified native stores
+use `wal.ze*`. The probe now uses the existing recovery fixture's file
+selection. Named regression:
+`adversarial::graph_lifecycle::fault_vfs_qualifies_unified_native_wal`.
+RED: `native WAL missing` (0.11 s). GREEN: 1 passed (0.13 s), retaining
+barrier power-loss and full-sync byte-equality assertions.
+
+Commands for these regressions:
+
+```sh
+cargo test -p zeppelin-embed-workspace-tests --features graph-result-test-support --test adversarial_tests lifecycle_oracle_preserves_native_creation_and_checkpoint_generations -- --exact --nocapture
+cargo test -p zeppelin-embed-workspace-tests --features graph-result-test-support --test adversarial_tests adversarial::graph_lifecycle::fault_vfs_qualifies_unified_native_wal -- --exact --nocapture
+```
+
+Raw logs: `.ctx/ZE419-diagnostic-red.log`, `ZE419-regression-red.log`,
+`ZE419-regression-green.log`, `ZE419-wal-red.log`, `ZE419-wal-green.log`.
+Full logs read. Required smoke now passes: 14 operations, 14/14 feature
+faults, zero violations (97.99 s). Comparator plants still reject partial
+batches, reused IDs, early unlink and lying outcomes (1 passed, 0.62 s).
+Standalone oracle plants pass (1 test). Both Clippy commands, fmt, rustdoc
+and clang-format pass without diagnostics. Logs: `ZE419-smoke-final.log`,
+`ZE419-plants.log`, `ZE419-oracle.log`, `ZE419final-*.log`. Clean-checkout
+verification remains before closing ZE-419. No production engine, format,
+ABI, or golden was changed.

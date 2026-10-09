@@ -19981,6 +19981,26 @@ fn ze65_faults_fire_and_match_same_seed_control() {
 
 #[cfg(feature = "graph-cypher")]
 #[test]
+fn lifecycle_oracle_preserves_native_creation_and_checkpoint_generations() {
+    use zeppelin_embed::graph_commit_recovery_test_support::{Boundary, run_boundary};
+    let (fixture, _) = adversarial::graph_recovery::schedule_for(0);
+    for boundary in [
+        Boundary::ArtifactCreate,
+        Boundary::WalSync,
+        Boundary::CheckpointReplace,
+        Boundary::CheckpointSync,
+    ] {
+        for fault in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let report = run_boundary(&root.path().join("native"), &fixture, boundary, fault);
+            adversarial::graph_lifecycle::compare(&fixture, boundary, &report, fault)
+                .unwrap_or_else(|error| panic!("{boundary:?} fault={fault}: {error}"));
+        }
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
 fn ze75_episode_retains_replayable_graph_lifecycle_evidence() {
     let root = tempfile::tempdir().unwrap();
     let campaign = CampaignKind::from_key("property-graph").unwrap();
@@ -20009,13 +20029,16 @@ fn ze75_planted_faults_trip_named_comparators() {
     .unwrap();
     let batches = [adversarial::graph_lifecycle::input(&fixture)];
     let good = adversarial::graph_lifecycle::snapshot(clean.observation.as_ref()).unwrap();
-    o::compare_complete_prefix(&batches, &[1], &good).unwrap();
+    o::compare_complete_prefix(1, &batches, &[1], &good).unwrap();
     let mut partial = good;
     partial.relationships.clear();
-    let red = o::compare_complete_prefix(&batches, &[0, 1], &partial).unwrap_err();
+    let red = o::compare_complete_prefix(1, &batches, &[0, 1], &partial).unwrap_err();
     assert!(red.starts_with(o::COMPLETE_PREFIX));
     println!("RED partial batch: {red}");
-    let mut model = zeppelin_embed_adversarial_oracle::graph_fixture::Graph::default();
+    let mut model = zeppelin_embed_adversarial_oracle::graph_fixture::Graph {
+        generation: 1,
+        ..Default::default()
+    };
     model.apply(&batches[0]).unwrap();
     let retry = model.apply(&batches[0]).unwrap();
     let expected_ids: Vec<_> = retry
