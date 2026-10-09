@@ -20468,3 +20468,26 @@ mod unified_store {
         }
     }
 }
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn relationship_page_memo_has_statement_scoped_adversarial_receipts() {
+    use zeppelin_embed::property_graph::query::completed::GraphQueryOptions;
+    use zeppelin_embed_cypher::{CompileLimits, execute};
+    let key = "property-graph.cypher-entry.page-validation.statement-local";
+    assert!(adversarial::coverage::required_smoke_coverage().any(|registered| registered == key));
+    assert!(coverage_key_expectations::expected_smoke_keys().contains(&key));
+    let directory = tempfile::tempdir().unwrap();
+    let store =
+        Store::create_graph_store(directory.path().join("graph"), OpenOptions::new()).unwrap();
+    execute(
+        &store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &GraphQueryOptions::default(),
+        "CREATE (:A)-[:R]->(:B)",
+        &[],
+        CompileLimits::default(),
+    )
+    .unwrap();
+    adversarial::graph_cypher_entry::page_memo_controls(&store).unwrap();
+}

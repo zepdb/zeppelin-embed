@@ -270,6 +270,25 @@ pub fn decode_page(expected: TreeKind, bytes: &[u8]) -> Result<FramedPage<'_>, F
     Ok(page)
 }
 
+/// Reopen a page whose immutable layout and ordering were already proved by
+/// this statement's source. Identity is checked again at every tree access.
+pub(crate) fn reopen_validated_page(
+    expected: TreeKind,
+    bytes: &[u8],
+) -> Result<FramedPage<'_>, FormatError> {
+    if bytes.len() != PAGE_BYTES || frame::read_u16("graph page", bytes, 6)? != expected as u16 {
+        return Err(invalid("validated page width or kind"));
+    }
+    Ok(FramedPage {
+        bytes,
+        header: PageHeader {
+            kind: expected,
+            level: frame::read_u16("graph page", bytes, 16)?,
+            generation: GraphGeneration::new(frame::read_u64("graph page", bytes, 24)?),
+        },
+    })
+}
+
 /// Compares complete inline keys using declared numeric fields, never LE byte order.
 /// This does not resolve overflow keys or establish whole-tree routing invariants.
 pub fn compare_inline_keys(

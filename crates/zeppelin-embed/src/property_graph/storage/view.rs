@@ -541,6 +541,11 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         cursor.scan(self.lease, self.source, self.catalog, output, runtime)
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
+    pub(crate) fn retained_validation_bytes(&self) -> usize {
+        self.source.retained_validation_bytes()
+    }
+
     pub(crate) fn expansion_cursor(
         &'s self,
         node: NodeId,
@@ -551,6 +556,20 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         cursor::ExpandCursor::new(self.lease, node, direction, selection, runtime)
     }
 
+    /// The incident source cursor already checked this node's authoritative
+    /// Live state in this same immutable statement view.
+    pub(crate) fn expansion_cursor_from_incident_source(
+        &'s self,
+        node: NodeId,
+        selection: RelationshipTypeSelection<'_>,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<ExpandCursor<'s, 'm, 'g>, TreeError> {
+        let mut cursor =
+            self.expansion_cursor(node, DirectionSelection::Out, selection, runtime)?;
+        cursor.source_was_checked();
+        Ok(cursor)
+    }
+
     pub(crate) fn expand(
         &self,
         cursor: &mut ExpandCursor<'s, 'm, 'g>,
@@ -558,6 +577,22 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<(usize, CursorState), TreeError> {
         cursor.scan(self.lease, self.source, self.catalog, output, runtime)
+    }
+    pub(crate) fn expand_with_scratch(
+        &self,
+        cursor: &mut ExpandCursor<'s, 'm, 'g>,
+        output: &mut [super::adjacency::RelationshipRow],
+        scratch: &mut Option<super::adjacency::RangeScratch<'m>>,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<(usize, CursorState), TreeError> {
+        cursor.scan_with_scratch(
+            self.lease,
+            self.source,
+            self.catalog,
+            output,
+            scratch,
+            runtime,
+        )
     }
 }
 

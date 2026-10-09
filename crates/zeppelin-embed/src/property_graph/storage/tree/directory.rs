@@ -67,6 +67,16 @@ pub(crate) const RESERVED_PINNED_SLOTS: usize = 4;
 /// charges mapping/cache capacity. A successful callback must return an exact
 /// framed block; tree consumers independently reject substituted references.
 pub trait BlockSource {
+    /// Statement-local proof for an exact immutable directory page. Write,
+    /// recovery and trace sources always perform full validation.
+    fn page_validated(&self, _reference: PhysicalRef) -> Result<bool, TreeError> {
+        Ok(false)
+    }
+    /// Called only after checksum, layout, key ordering and bounds succeed.
+    fn mark_page_validated(&self, _reference: PhysicalRef) -> Result<(), TreeError> {
+        Ok(())
+    }
+
     /// Resolve only immutable admitted-base or current-preparation objects.
     fn resolve<'a>(
         &'a self,
@@ -492,7 +502,9 @@ impl<'a> TreeResources<'a> {
                 context.checkpoint().map_err(TreeError::Runtime)?;
             }
         }
-        let next = self.work.checked_add(units).ok_or(TreeError::Work)?;
+        let Some(next) = self.work.checked_add(units) else {
+            return Err(TreeError::Work);
+        };
         if matches!(
             self.control,
             TreeControl::Direct { limit, .. } if next > limit
@@ -735,59 +747,131 @@ pub use fence_input::{
     FenceKey, insert_fence, insert_fence_checked, lookup_fence, lookup_fence_entry,
 };
 use keys::{compare, validate_key};
+#[allow(clippy::too_many_arguments)]
 fn checked_page<'a>(
     source: &impl BlockSource,
     root: DirectoryRoot,
     identity: ArtifactIdentity,
+    reference: PhysicalRef,
     bytes: &'a [u8],
     lower: Option<Key<'_>>,
     upper: Option<Key<'_>>,
     resources: &mut TreeResources<'_>,
 ) -> Result<super::FramedPage<'a>, TreeError> {
     resources.step(1)?;
-    let page = decode_page(root.kind, bytes)?;
-    resources.read_event(NativeReadEvent::PageDecoded)?;
+    let validated = source.page_validated(reference)?;
+    let page = if validated {
+        super::reopen_validated_page(root.kind, bytes)?
+    } else {
+        let page = decode_page(root.kind, bytes)?;
+        resources.read_event(NativeReadEvent::PageDecoded)?;
+        page
+    };
     if page.header().generation != identity.generation || page.header().level as usize >= MAX_DEPTH
     {
         return Err(TreeError::Invalid("page creation generation or depth"));
     }
-    let mut previous = None;
-    for index in 0..count(bytes)? {
-        resources.step(1)?;
-        let key = match owned_page_cell(bytes, page.header(), index)? {
+    let cells = count(bytes)?;
+    if !validated {
+        let numeric = root.kind != TreeKind::KeyFences;
+        let finite_keys = cells.saturating_sub(usize::from(page.header().level > 0));
+        // Numeric key shape was checked by decode_page. Charge the same cell,
+        // validation and comparison units together; fence keys retain bounded
+        // chunk checkpoints while resolving their variable-length payloads.
+        resources.step(if numeric {
+            (cells + finite_keys + finite_keys.saturating_sub(1)) as u64
+        } else {
+            cells as u64
+        })?;
+        let mut previous = None;
+        for index in 0..cells {
+            let key = match owned_page_cell(bytes, page.header(), index)? {
+                Cell::Leaf { key, .. } => Some(key),
+                Cell::Branch { upper, .. } => upper,
+            };
+            if let Some(key) = key {
+                if !numeric {
+                    validate_key(
+                        source,
+                        DirectoryRoot {
+                            generation: identity.generation,
+                            ..root
+                        },
+                        key,
+                        resources,
+                    )?;
+                }
+                if let Some(old) = previous {
+                    let order = if numeric {
+                        let (Key::Inline(old), Key::Inline(key)) = (old, key) else {
+                            return Err(TreeError::Invalid("overflow numeric comparator"));
+                        };
+                        super::compare_inline_keys(root.kind, old, key)?
+                    } else {
+                        compare(source, root, old, key, resources)?
+                    };
+                    if !order.is_lt() {
+                        return Err(TreeError::Invalid("duplicate or unordered directory key"));
+                    }
+                }
+                previous = Some(key);
+            }
+        }
+    }
+    // Sortedness bounds all finite keys by the extrema. A branch's final
+    // infinity separator has no key; its preceding separator is the maximum.
+    if cells > 0 {
+        let first = match owned_page_cell(bytes, page.header(), 0)? {
             Cell::Leaf { key, .. } => Some(key),
             Cell::Branch { upper, .. } => upper,
         };
-        if let Some(key) = key {
-            validate_key(
-                source,
-                DirectoryRoot {
-                    generation: identity.generation,
-                    ..root
-                },
-                key,
-                resources,
-            )?;
-            if let Some(old) = previous
-                && !compare(source, root, old, key, resources)?.is_lt()
-            {
-                return Err(TreeError::Invalid("duplicate or unordered directory key"));
+        let mut last = match owned_page_cell(bytes, page.header(), cells - 1)? {
+            Cell::Leaf { key, .. } => Some(key),
+            Cell::Branch { upper, .. } => upper,
+        };
+        if last.is_none() && cells > 1 {
+            last = match owned_page_cell(bytes, page.header(), cells - 2)? {
+                Cell::Branch { upper, .. } => upper,
+                Cell::Leaf { key, .. } => Some(key),
+            };
+        }
+        if let (Some(first), Some(lower)) = (first, lower) {
+            let order = compare(source, root, first, lower, resources)?;
+            if order.is_lt() || (page.header().level > 0 && order.is_eq()) {
+                return Err(TreeError::Invalid("key below ancestor lower bound"));
             }
-            if let Some(lower) = lower {
-                let order = compare(source, root, key, lower, resources)?;
-                if order.is_lt() || (page.header().level > 0 && order.is_eq()) {
-                    return Err(TreeError::Invalid("key below ancestor lower bound"));
-                }
-            }
-            if let Some(upper) = upper
-                && !compare(source, root, key, upper, resources)?.is_lt()
-            {
-                return Err(TreeError::Invalid("key exceeds ancestor upper bound"));
-            }
-            previous = Some(key);
+        }
+        if let (Some(last), Some(upper)) = (last, upper)
+            && !compare(source, root, last, upper, resources)?.is_lt()
+        {
+            return Err(TreeError::Invalid("key exceeds ancestor upper bound"));
         }
     }
+    source.mark_page_validated(reference)?;
     Ok(page)
+}
+
+// Reopen a cursor page whose path was already semantically validated. Query
+// mappings retain that proof; other sources keep their original framing pass.
+fn cursor_page<'a>(
+    source: &impl BlockSource,
+    root: DirectoryRoot,
+    block: FramedBlock<'a>,
+    resources: &mut TreeResources<'_>,
+) -> Result<super::FramedPage<'a>, TreeError> {
+    if source.page_validated(block.reference())? {
+        let page = super::reopen_validated_page(root.kind, block.payload())?;
+        if page.header().generation != block.identity().generation
+            || page.header().level as usize >= MAX_DEPTH
+        {
+            return Err(TreeError::Invalid("page creation generation or depth"));
+        }
+        Ok(page)
+    } else {
+        let page = decode_page(root.kind, block.payload())?;
+        resources.read_event(NativeReadEvent::PageDecoded)?;
+        Ok(page)
+    }
 }
 
 /// Fully validate one directory page inside a scoped source callback and
@@ -816,6 +900,7 @@ pub(crate) fn trace_page_scoped<R>(
             source,
             root,
             identity,
+            block.reference(),
             block.payload(),
             lower,
             upper,
@@ -1224,7 +1309,16 @@ fn copy_inspect_trace_page(
         output.copy_from_slice(block.payload());
         Ok(block.identity())
     })?;
-    let page = checked_page(source, root, identity, output, None, None, resources)?;
+    let page = checked_page(
+        source,
+        root,
+        identity,
+        frame.reference,
+        output,
+        None,
+        None,
+        resources,
+    )?;
     let cells = count(output)?;
     for index in 0..cells {
         let key = match page.cell(index)? {
@@ -1276,17 +1370,16 @@ impl Path {
         if index >= self.len {
             return Err(TreeError::Invalid("path index exceeds live extent"));
         }
-        self.entries
-            .get(index)
-            .copied()
-            .flatten()
-            .ok_or(TreeError::Invalid("path extent"))
+        let Some(entry) = self.entries.get(index).copied().flatten() else {
+            return Err(TreeError::Invalid("path extent"));
+        };
+        Ok(entry)
     }
     fn push(&mut self, entry: PathEntry) -> Result<(), TreeError> {
-        *self
-            .entries
-            .get_mut(self.len)
-            .ok_or(TreeError::Invalid("directory depth limit"))? = Some(entry);
+        let Some(slot) = self.entries.get_mut(self.len) else {
+            return Err(TreeError::Invalid("directory depth limit"));
+        };
+        *slot = Some(entry);
         self.len += 1;
         Ok(())
     }
@@ -1330,6 +1423,7 @@ fn find_path_inner<S: BlockSource>(
             source,
             root,
             block.identity(),
+            block.reference(),
             bytes,
             lower,
             upper,
@@ -1417,6 +1511,7 @@ fn find_path_inner<S: BlockSource>(
                         source,
                         child_root,
                         block.identity(),
+                        block.reference(),
                         block.payload(),
                         prior,
                         child_upper,
@@ -1428,17 +1523,15 @@ fn find_path_inner<S: BlockSource>(
                     Ok(())
                 })?;
             }
-            if selected.is_none()
-                && (bound.is_none()
-                    || key
-                        .compare_stored(
-                            source,
-                            root,
-                            bound.ok_or(TreeError::Invalid("bound"))?,
-                            resources,
-                        )?
-                        .is_lt())
-            {
+            let routes_here = if selected.is_none() {
+                match bound {
+                    Some(bound) => key.compare_stored(source, root, bound, resources)?.is_lt(),
+                    None => true,
+                }
+            } else {
+                false
+            };
+            if routes_here {
                 selected = Some((index, child, prior, bound.or(upper)));
                 if validator.is_none() {
                     break;
@@ -1446,8 +1539,9 @@ fn find_path_inner<S: BlockSource>(
             }
             prior = bound;
         }
-        let (child_index, child, child_lower, child_upper) =
-            selected.ok_or(TreeError::Invalid("missing branch route"))?;
+        let Some((child_index, child, child_lower, child_upper)) = selected else {
+            return Err(TreeError::Invalid("missing branch route"));
+        };
         path.push(PathEntry {
             reference,
             child: child_index,
@@ -1526,36 +1620,59 @@ fn lookup_probe_entry<'a>(
         source,
         root,
         block.identity(),
+        block.reference(),
         block.payload(),
         None,
         None,
         resources,
     )?;
-    for index in 0..count(block.payload())? {
-        resources.step(1)?;
+    let mut low = 0;
+    let mut high = count(block.payload())?;
+    let numeric = root.kind != TreeKind::KeyFences;
+    let mut probe_work = 0;
+    let mut found = None;
+    while low < high {
+        if !numeric {
+            resources.step(1)?;
+        }
+        let middle = low + (high - low) / 2;
         let Cell::Leaf { key: stored, value } =
-            owned_page_cell(block.payload(), page.header(), index)?
+            owned_page_cell(block.payload(), page.header(), middle)?
         else {
             return Err(TreeError::Invalid("leaf required"));
         };
-        match key
-            .compare_stored(source, root, stored, resources)?
-            .reverse()
-        {
+        let order = if numeric {
+            let (ProbeKey::Stored(Key::Inline(probe)), Key::Inline(stored)) = (key, stored) else {
+                return Err(TreeError::Invalid("overflow numeric comparator"));
+            };
+            // Binary search touches at most one bounded 16 KiB page. Preserve
+            // the two work units per probe without checkpointing each cell.
+            probe_work += 2;
+            super::compare_inline_keys(root.kind, probe, stored)?
+        } else {
+            key.compare_stored(source, root, stored, resources)?
+        };
+        match order {
             std::cmp::Ordering::Equal => {
-                resources.step(0)?;
-                return Ok(Some(DirectoryEntry {
+                found = Some(DirectoryEntry {
                     root,
                     key: stored,
                     value,
                     generation: page.header().generation,
-                }));
+                });
+                break;
             }
-            std::cmp::Ordering::Greater => return Ok(None),
-            std::cmp::Ordering::Less => {}
+            std::cmp::Ordering::Greater => low = middle + 1,
+            std::cmp::Ordering::Less => high = middle,
         }
     }
-    Ok(None)
+    if numeric {
+        resources.step(probe_work)?;
+    }
+    if found.is_some() {
+        resources.step(0)?;
+    }
+    Ok(found)
 }
 
 #[allow(
@@ -1792,7 +1909,16 @@ fn copy_page(
         return Err(TreeError::Invalid("page width"));
     }
     bytes.copy_from_slice(block.payload());
-    let page = checked_page(source, root, block.identity(), bytes, None, None, resources)?;
+    let page = checked_page(
+        source,
+        root,
+        block.identity(),
+        block.reference(),
+        bytes,
+        None,
+        None,
+        resources,
+    )?;
     Ok(page.header())
 }
 
@@ -2221,6 +2347,7 @@ impl<V> BulkEdit<'_, '_, V> {
                         store,
                         child_root,
                         block.identity(),
+                        block.reference(),
                         block.payload(),
                         prior,
                         bound.or(upper),
@@ -2642,19 +2769,18 @@ fn insert_key<S: BlockSink>(
 // Existing framing owns slot geometry; this helper preserves the copied bytes'
 // lifetime after a temporary FramedPage has been discarded.
 fn owned_page_cell(bytes: &[u8], header: PageHeader, index: usize) -> Result<Cell<'_>, TreeError> {
-    let slot = index
-        .checked_mul(8)
-        .and_then(|n| n.checked_add(64))
-        .ok_or(TreeError::Memory)?;
+    let Some(slot) = index.checked_mul(8).and_then(|n| n.checked_add(64)) else {
+        return Err(TreeError::Memory);
+    };
     let offset = crate::format::frame::read_u32("graph directory", bytes, slot)? as usize;
     let length = crate::format::frame::read_u32("graph directory", bytes, slot + 4)? as usize;
-    let end = offset.checked_add(length).ok_or(TreeError::Memory)?;
-    Ok(super::parse_cell(
-        header,
-        bytes
-            .get(offset..end)
-            .ok_or(TreeError::Invalid("cell extent"))?,
-    )?)
+    let Some(end) = offset.checked_add(length) else {
+        return Err(TreeError::Memory);
+    };
+    let Some(cell) = bytes.get(offset..end) else {
+        return Err(TreeError::Invalid("cell extent"));
+    };
+    Ok(super::parse_cell(header, cell)?)
 }
 
 /// Remove a compact entry from a private tree candidate. Identity-owned fence
@@ -2987,8 +3113,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
         if let Some(lower) = lower {
             let entry = cursor.path.get(cursor.path.len - 1)?;
             let block = checked_block(source, root, entry.reference, resources)?;
-            let page = decode_page(root.kind, block.payload())?;
-            resources.read_event(NativeReadEvent::PageDecoded)?;
+            let page = cursor_page(source, root, block, resources)?;
             while cursor.index < cursor.leaf_count {
                 let Cell::Leaf { key, .. } = page.cell(cursor.index)? else {
                     return Err(TreeError::Invalid("cursor leaf expected"));
@@ -3078,8 +3203,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
         }
         let entry = self.path.get(self.path.len - 1)?;
         let block = checked_block(self.source, self.root, entry.reference, resources)?;
-        let header = decode_page(self.root.kind, block.payload())?.header();
-        resources.read_event(NativeReadEvent::PageDecoded)?;
+        let header = cursor_page(self.source, self.root, block, resources)?.header();
         let Cell::Leaf { key, value } = owned_page_cell(block.payload(), header, self.index)?
         else {
             return Err(TreeError::Invalid("cursor leaf expected"));
@@ -3104,6 +3228,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
                 self.source,
                 self.root,
                 block.identity(),
+                block.reference(),
                 block.payload(),
                 None,
                 None,
@@ -3135,6 +3260,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
                 self.source,
                 self.root,
                 block.identity(),
+                block.reference(),
                 block.payload(),
                 lower,
                 upper,
@@ -3187,6 +3313,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
                 self.source,
                 self.root,
                 block.identity(),
+                block.reference(),
                 block.payload(),
                 None,
                 None,
@@ -3216,8 +3343,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
                 continue;
             };
             let block = checked_block(self.source, self.root, entry.reference, resources)?;
-            let page = decode_page(self.root.kind, block.payload())?;
-            resources.read_event(NativeReadEvent::PageDecoded)?;
+            let page = cursor_page(self.source, self.root, block, resources)?;
             let Cell::Branch { child, .. } = page.cell(prior)? else {
                 return Err(TreeError::Invalid("cursor predecessor"));
             };
@@ -3239,8 +3365,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
         for depth in (0..self.path.len.saturating_sub(1)).rev() {
             let mut entry = self.path.get(depth)?;
             let block = checked_block(self.source, self.root, entry.reference, resources)?;
-            let page = decode_page(self.root.kind, block.payload())?;
-            resources.read_event(NativeReadEvent::PageDecoded)?;
+            let page = cursor_page(self.source, self.root, block, resources)?;
             let next = entry
                 .child
                 .checked_add(1)
@@ -4418,5 +4543,141 @@ pub(crate) mod tests {
             result.push((key.to_vec(), entry.value().to_vec()));
         }
         result
+    }
+    #[test]
+    fn cancellation_is_observed_within_one_page() {
+        use crate::property_graph::query::runtime::{RetainedView, RuntimeLimits};
+        use crate::property_graph::query::{QueryError, QueryView};
+        struct View {
+            view: QueryView,
+            polls: std::cell::Cell<usize>,
+            cancel_at: Option<usize>,
+            token: CancelToken,
+        }
+        impl RetainedView for View {
+            fn query_view(&self) -> &QueryView {
+                &self.view
+            }
+            fn check_active(&self) -> Result<(), QueryError> {
+                let polls = self.polls.get() + 1;
+                self.polls.set(polls);
+                if self.cancel_at == Some(polls) {
+                    self.token.cancel();
+                }
+                Ok(())
+            }
+        }
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let keys: Vec<_> = (1_u128..=128).map(u128::to_le_bytes).collect();
+        let cells: Vec<_> = keys
+            .iter()
+            .map(|key| Cell::Leaf {
+                key: Key::Inline(key),
+                value: &[],
+            })
+            .collect();
+        let mut bytes = [0; PAGE_BYTES];
+        encode_page(
+            PageHeader {
+                kind: TreeKind::Nodes,
+                level: 0,
+                generation: GraphGeneration::new(1),
+            },
+            &cells,
+            &mut bytes,
+        )
+        .unwrap();
+        let reference = objects
+            .append(
+                BlockKind::TreePage,
+                GraphGeneration::new(1),
+                &bytes,
+                &mut resources,
+            )
+            .unwrap();
+        let block = objects.resolve(reference, &mut resources).unwrap();
+        let root = DirectoryRoot::from_reference(
+            objects.store,
+            TreeKind::Nodes,
+            GraphGeneration::new(1),
+            Some(reference),
+        )
+        .unwrap();
+        drop(resources);
+        let memory = QueryMemory::new(&shared, 1024 * 1024).unwrap();
+        for cancel_at in [None, Some(4)] {
+            let token = CancelToken::new();
+            let control = QueryControl::Cancel(token.clone());
+            let view = View {
+                view: QueryView::new(objects.store, GraphGeneration::new(1)),
+                polls: std::cell::Cell::new(0),
+                cancel_at,
+                token,
+            };
+            let mut context =
+                RuntimeContext::new(&view, &control, &memory, RuntimeLimits::default()).unwrap();
+            let mut resources = TreeResources::for_query(&mut context).unwrap();
+            let result = checked_page(
+                &objects,
+                root,
+                block.identity(),
+                reference,
+                block.payload(),
+                None,
+                None,
+                &mut resources,
+            );
+            if cancel_at.is_some() {
+                assert!(matches!(
+                    result,
+                    Err(TreeError::Runtime(RuntimeError::Value(
+                        QueryError::Cancelled
+                    )))
+                ));
+                assert!(
+                    resources.work() <= 1,
+                    "cancel before the next page's cell work"
+                );
+            } else {
+                assert!(result.is_ok());
+                eprintln!(
+                    "ZE417 page cells=128 checkpoints={} units={}",
+                    view.polls.get(),
+                    resources.work()
+                );
+                assert!(
+                    view.polls.get() <= 6,
+                    "numeric cell validation must checkpoint by page"
+                );
+                assert_eq!(resources.work(), 384);
+            }
+        }
+        for id in [128_u128, 129] {
+            let token = CancelToken::new();
+            let control = QueryControl::Cancel(token.clone());
+            let view = View {
+                view: QueryView::new(objects.store, GraphGeneration::new(1)),
+                polls: std::cell::Cell::new(0),
+                cancel_at: None,
+                token,
+            };
+            let mut context =
+                RuntimeContext::new(&view, &control, &memory, RuntimeLimits::default()).unwrap();
+            let mut resources = TreeResources::for_query(&mut context).unwrap();
+            let found = lookup_entry(&objects, root, &id.to_le_bytes(), &mut resources).unwrap();
+            assert_eq!(found.is_some(), id == 128);
+            eprintln!(
+                "ZE417 lookup id={id} checkpoints={} units={}",
+                view.polls.get(),
+                resources.work()
+            );
+            assert!(
+                view.polls.get() <= 20,
+                "numeric leaf probes must checkpoint by page"
+            );
+            assert_eq!(resources.work(), 788);
+        }
     }
 }

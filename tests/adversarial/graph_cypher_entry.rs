@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 24] = [
+pub const REQUIRED_COVERAGE: [&str; 25] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -34,6 +34,7 @@ pub const REQUIRED_COVERAGE: [&str; 24] = [
     "property-graph.cypher-entry.id-scan-limit.fire",
     "property-graph.cypher-entry.id-cancel.fire",
     "property-graph.cypher-entry.incident-source.read",
+    "property-graph.cypher-entry.page-validation.statement-local",
     "property-graph.cypher-entry.incident-source.limit.fire",
     "property-graph.cypher-entry.incident-source.exclusions",
     "property-graph.cypher-entry.global-count",
@@ -88,10 +89,11 @@ fn read(store: &Store) -> Result<(Vec<i64>, u64), String> {
         return Err(String::from("cypher entry read changed the store"));
     }
     let rows = values(&result)?;
-    let expected = i64::try_from(rows.len()).map_err(|error| error.to_string())? + 2;
+    // `once` ingests 32 implicit Document nodes as well as Guard and D.
+    let expected = i64::try_from(rows.len()).map_err(|error| error.to_string())? + 2 + 32;
     for (text, count) in [
         ("MATCH (n) RETURN count(n)", expected),
-        ("MATCH (n:Document) RETURN count(*)", 0),
+        ("MATCH (n:Document) RETURN count(*)", 32),
         ("MATCH (n) WHERE true RETURN count(n)", expected),
     ] {
         let counted = run(store, text, &[]).map_err(|error| error.to_string())?;
@@ -181,6 +183,7 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
                     .collect(),
             ))
             .map_err(|error| error.to_string())?;
+        page_memo_controls(&store)?;
         probe_document_scan(&store)?;
         generations.push(read(&store)?.1);
         probe_id_lookup(&store)?;
@@ -540,6 +543,30 @@ fn incident_source_controls(store: &Store) -> Result<(), String> {
     // Paired clean execution after refusal uses the same retained storage path.
     if values(&run(store, outgoing, &[]).map_err(|error| error.to_string())?)? != [1] {
         return Err(String::from("incident source clean control changed"));
+    }
+    Ok(())
+}
+
+/// Receipt for repeated reads of immutable directory pages within one statement,
+/// followed by a fresh statement that must validate those pages again.
+pub fn page_memo_controls(store: &Store) -> Result<(), String> {
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    for query in [
+        "MATCH ()-[r]->() RETURN count(r)",
+        "MATCH ()-[r]->(), ()-[s]->() RETURN count(r)",
+    ] {
+        for _ in 0..2 {
+            let result = run(store, query, &[]).map_err(|error| error.to_string())?;
+            let pages = result
+                .metadata()
+                .counters
+                .get(WorkKind::DirectoryPagesDecoded);
+            if !(1..=3).contains(&pages) {
+                return Err(format!(
+                    "page validation statement receipt: {pages} for {query}"
+                ));
+            }
+        }
     }
     Ok(())
 }

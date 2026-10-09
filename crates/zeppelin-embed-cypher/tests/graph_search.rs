@@ -15,6 +15,7 @@ use zeppelin_embed_cypher::{CompileLimits, execute};
 fn control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
 }
+
 mod support;
 struct Directory(std::path::PathBuf);
 impl Directory {
@@ -30,8 +31,8 @@ impl Drop for Directory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-fn fixture() -> (Directory, Store) {
-    let directory = Directory::new();
+
+fn fixture_epoch() -> StoreEpoch {
     let tower = zeppelin_embed::epoch::EmbeddingTower {
         model_id: "ze366".into(),
         model_version: "1".into(),
@@ -44,14 +45,18 @@ fn fixture() -> (Directory, Store) {
         compute_units: zeppelin_embed::epoch::ComputeUnits::Cpu,
         os_build: None,
     };
-    let epoch = StoreEpoch {
+    StoreEpoch {
         embedding: EmbeddingEpoch {
             query: tower.clone(),
             document: tower,
             alignment_digest: vec![],
         },
         tokenizer: zeppelin_embed::fts::tokenizer::TokenizerConfig::text_default().epoch(),
-    };
+    }
+}
+fn fixture() -> (Directory, Store) {
+    let directory = Directory::new();
+    let epoch = fixture_epoch();
     let store = Store::open(
         directory.path(),
         OpenOptions::new()
@@ -1018,7 +1023,7 @@ mod incident_sources {
         ApplicationKey, EntityKind, GraphName, GraphRevision, NodeId, NodeRef,
     };
 
-    fn rows(result: &CompletedGraphResult) -> Vec<Vec<u128>> {
+    pub(super) fn rows(result: &CompletedGraphResult) -> Vec<Vec<u128>> {
         (0..result.metadata().rows as usize)
             .map(|row| {
                 (0..result.pools().columns.len())
@@ -2005,8 +2010,8 @@ mod ze409_scan_tests {
             );
             let expected = match limit {
                 0 => (0, 0, 0),
-                1 => (1, 1, 5),
-                10 => (11, 11, 35),
+                1 => (1, 1, 1),
+                10 => (11, 11, 1),
                 _ => unreachable!("fixed LIMIT cases"),
             };
             assert_eq!(
@@ -2031,5 +2036,293 @@ mod ze409_scan_tests {
             .expect("cancelled scan must fail");
             assert!(error.to_string().contains("Cancelled"), "{error}");
         }
+    }
+}
+
+mod relationship_speed {
+    use super::*;
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    use zeppelin_embed::property_graph::{
+        ApplicationKey, EntityKind, GraphName, GraphRevision, NodeId, NodeRef,
+    };
+
+    use zeppelin_embed::property_graph::staging::{
+        StructuredOperation, StructuredWrite, WriteImage,
+    };
+
+    fn edges(count: usize) -> (Directory, Store) {
+        let (directory, store) = fixture();
+        store.enable_graph().unwrap();
+        run(&store, "CREATE (:Source), (:Target)");
+        let source = ids(&run(&store, "MATCH (n:Source) RETURN n"))[0];
+        let target = ids(&run(&store, "MATCH (n:Target) RETURN n"))[0];
+        let keys: Vec<_> = (0..count).map(|i| format!("edge-{i}")).collect();
+        let writes: Vec<_> = keys
+            .iter()
+            .map(|key| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze417", key).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    relationship_type: GraphName::new("LINK").unwrap(),
+                    properties: &[],
+                    source: NodeRef::Existing(NodeId::new(source).unwrap()),
+                    target: NodeRef::Existing(NodeId::new(target).unwrap()),
+                }),
+            })
+            .collect();
+        for batch in writes.chunks(100) {
+            store.graph_apply(batch, &control()).unwrap();
+        }
+        (directory, store)
+    }
+
+    #[test]
+    fn relationship_pattern_validates_each_page_once_per_statement() {
+        let mut decoded = Vec::new();
+        for count in [32, 64] {
+            let (_directory, store) = edges(count);
+            let result = run(&store, "MATCH ()-[r]->() RETURN count(r)");
+            let pages = result
+                .metadata()
+                .counters
+                .get(WorkKind::DirectoryPagesDecoded);
+            eprintln!(
+                "ZE417 E={count} pages={pages} lookups={} peak={}",
+                result.metadata().counters.get(WorkKind::Lookups),
+                result.metadata().peak_query_bytes
+            );
+            decoded.push(pages);
+        }
+        assert_eq!(
+            decoded[0], decoded[1],
+            "same immutable page set, doubled edges"
+        );
+    }
+
+    #[test]
+    fn page_memo_does_not_cross_statements() {
+        let (_directory, store) = edges(32);
+        let first = run(&store, "MATCH ()-[r]->() RETURN count(r)")
+            .metadata()
+            .counters
+            .get(WorkKind::DirectoryPagesDecoded);
+        let second = run(&store, "MATCH ()-[r]->() RETURN count(r)")
+            .metadata()
+            .counters
+            .get(WorkKind::DirectoryPagesDecoded);
+        assert!(second > 0);
+        assert_eq!(first, second);
+    }
+    #[test]
+    fn corrupt_page_fails_on_first_use_after_memo() {
+        use zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind;
+        use zeppelin_embed::property_graph::storage::artifact::{self, BlockKind, ContainerKind};
+        let (directory, store) = edges(32);
+        let query = "MATCH ()-[r]->() RETURN count(r)";
+        drop(run(&store, query));
+        let mut originals = Vec::new();
+        for entry in std::fs::read_dir(directory.path()).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "zgraph") {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            let frame = artifact::decode(ContainerKind::Object, None, &bytes).unwrap();
+            let mut index = 0;
+            while let Ok(reference) = frame.reference(index) {
+                if reference.kind == BlockKind::TreePage {
+                    let mut damaged = bytes.clone();
+                    damaged[reference.offset as usize + 24 + 56] ^= 1;
+                    std::fs::write(&path, damaged).unwrap();
+                    originals.push((path, bytes));
+                    break;
+                }
+                index += 1;
+            }
+        }
+        assert!(!originals.is_empty());
+        let error = execute(
+            &store,
+            &control(),
+            &GraphQueryOptions::default(),
+            query,
+            &[],
+            CompileLimits::default(),
+        )
+        .err()
+        .unwrap();
+        assert!(
+            matches!(&error, zeppelin_embed_cypher::StatementError::Query(error) if error.kind() == GraphQueryErrorKind::Corruption),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Checksum"), "{error}");
+        eprintln!("ZE417 first-use error: {error}");
+        for (path, bytes) in originals {
+            std::fs::write(path, bytes).unwrap();
+        }
+        drop(run(&store, query));
+    }
+
+    #[test]
+    fn expand_scratch_is_reserved_once_per_operator() {
+        use zeppelin_embed::property_graph::query::pattern_test_support::observe_expand_scratch;
+        let mut peaks = Vec::new();
+        for anchors in [32, 64] {
+            let (_directory, store) = fixture();
+            store.enable_graph().unwrap();
+            let create = format!("CREATE {}", vec!["()-[:LINK]->()"; anchors].join(","));
+            run(&store, &create);
+            let query = "MATCH ()-[r]->() RETURN count(r)";
+            let (result, (reservations, units)) = observe_expand_scratch(|| run(&store, query));
+            eprintln!(
+                "ZE417 anchors={anchors} scratch={reservations} units={units} peak={}",
+                result.metadata().peak_query_bytes
+            );
+            assert_eq!(
+                reservations, 1,
+                "one reservation per Expand, across all anchors and pulls"
+            );
+            assert_eq!(units, 196_608);
+            peaks.push(result.metadata().peak_query_bytes);
+        }
+        assert!(
+            peaks[1].abs_diff(peaks[0]) <= 4096,
+            "only new-page memo bytes may grow: {peaks:?}"
+        );
+        let (_directory, store) = edges(1);
+        let (result, scratch) =
+            observe_expand_scratch(|| run(&store, "MATCH ()-[r:UNKNOWN_TYPE]->() RETURN count(r)"));
+        assert_eq!(result.cell(0, 0), Some(&Value::I64(0)));
+        assert_eq!(
+            scratch,
+            (0, 0),
+            "an already exhausted Expand needs no scratch"
+        );
+    }
+
+    #[test]
+    fn outgoing_expand_reads_each_relationship_once() {
+        for count in [32, 64, 300] {
+            let (_directory, store) = edges(count);
+            let result = run(&store, "MATCH ()-[r]->() RETURN count(r)");
+            let lookups = result.metadata().counters.get(WorkKind::Lookups);
+            eprintln!("ZE417 E={count} S=1 lookups={lookups}");
+            assert!(
+                lookups <= 2 * count as u64 + 2 + 4,
+                "one relationship and neighbor read per edge: {lookups}"
+            );
+        }
+        let (_directory, store) = fixture();
+        store.enable_graph().unwrap();
+        run(
+            &store,
+            &format!("CREATE {}", vec!["()-[:LINK]->()"; 32].join(",")),
+        );
+        for query in [
+            "MATCH ()-[r]->() RETURN count(r)",
+            "MATCH ()-[r:LINK]->() RETURN count(r)",
+        ] {
+            let result = run(&store, query);
+            let lookups = result.metadata().counters.get(WorkKind::Lookups);
+            eprintln!("ZE417 E=32 S=32 lookups={lookups} {query}");
+            assert!(
+                lookups <= 3 * 32 + 4,
+                "sparse outgoing per-edge bound: {lookups}"
+            );
+        }
+    }
+
+    #[test]
+    fn outgoing_expand_matches_original_sources_after_delete_and_reopen() {
+        use zeppelin_embed::property_graph::query::pattern_test_support::with_original_node_sources;
+        let (directory, store) = edges(300);
+        let epoch = store.epoch_identity().unwrap();
+        store
+            .ingest(
+                IngestBatch::new(
+                    (0..10)
+                        .map(|id| {
+                            IngestDocument::new(
+                                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                                vec![0.0, 0.0],
+                            )
+                        })
+                        .collect(),
+                )
+                .with_epoch(epoch),
+            )
+            .unwrap();
+        store.seal().unwrap();
+        let topology = [
+            (0, 1, "LINK"),
+            (0, 1, "LINK"),
+            (0, 0, "OTHER"),
+            (2, 3, "LINK"),
+            (4, 5, "LINK"),
+            (6, 7, "LINK"),
+        ];
+        let keys: Vec<_> = (0..topology.len())
+            .map(|i| format!("document-{i}"))
+            .collect();
+        let writes: Vec<_> = topology
+            .iter()
+            .zip(&keys)
+            .map(|(&(source, target, kind), key)| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze417-doc", key).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    relationship_type: GraphName::new(kind).unwrap(),
+                    properties: &[],
+                    source: NodeRef::Existing(NodeId::from(DocId::new(source))),
+                    target: NodeRef::Existing(NodeId::from(DocId::new(target))),
+                }),
+            })
+            .collect();
+        store.graph_apply(&writes, &control()).unwrap();
+        run(
+            &store,
+            "MATCH (a)-[r]->(b) WHERE ze.node_id(a) = '00000000000000000000000000000006' DELETE r",
+        );
+        for id in [3, 4] {
+            run(
+                &store,
+                &format!("MATCH (n) WHERE ze.node_id(n) = '{id:032x}' DETACH DELETE n"),
+            );
+        }
+        store.close().unwrap();
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::read_only().with_epoch(fixture_epoch()),
+        )
+        .unwrap();
+        for query in [
+            "MATCH (a)-[r]->(b) RETURN a,r,b",
+            "MATCH (a)-[r:LINK]->(b) RETURN a,r,b",
+            "MATCH (a)-[r]->(b)-[s]->(c) RETURN a,r,b,s,c",
+            "MATCH (a)<-[r]-(b) RETURN a,r,b",
+            "MATCH (a)-[r]-(b) RETURN a,r,b",
+        ] {
+            let actual = run(&store, query);
+            let expected = with_original_node_sources(|| run(&store, query));
+            assert_eq!(
+                super::incident_sources::rows(&actual),
+                super::incident_sources::rows(&expected),
+                "{query}"
+            );
+            for limit in [0, 1, 10, 256, 301] {
+                let limited = format!("{query} LIMIT {limit}");
+                assert_eq!(
+                    super::incident_sources::rows(&run(&store, &limited)),
+                    super::incident_sources::rows(&with_original_node_sources(|| run(
+                        &store, &limited
+                    ))),
+                    "{limited}"
+                );
+            }
+        }
+        let result = run(&store, "MATCH ()-[r]->() RETURN count(r)");
+        assert_eq!(result.cell(0, 0), Some(&Value::I64(303)));
     }
 }

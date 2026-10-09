@@ -18,7 +18,7 @@ use crate::property_graph::catalog::{LabelId, RelTypeId, Symbol, SymbolKind};
 use crate::property_graph::staging::{
     GraphBatchReadView, StageError, StatementImages, WriteControl, WritePhase,
 };
-use crate::property_graph::storage::adjacency::RelationshipRow;
+use crate::property_graph::storage::adjacency::{RangeScratch, RelationshipRow};
 use crate::property_graph::storage::tree::directory::TreeResources;
 use crate::property_graph::storage::{
     CursorState, DirectionSelection, ExpandCursor, GraphReadView, LabelSelection, NodeCursor,
@@ -189,9 +189,11 @@ enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
         relationship: SlotId,
         pattern: PatternId,
         direction: Direction,
+        incident_source: bool,
         all_types: bool,
         types: QueryArena<'m, 'g, RelTypeId>,
         cursor: Option<ExpandCursor<'s, 'm, 'g>>,
+        scratch: Option<RangeScratch<'m>>,
         bound: Option<NodeId>,
     },
     BoundedExpand {
@@ -705,9 +707,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 relationship,
                 pattern,
                 direction,
+                incident_source,
                 all_types,
                 types,
                 cursor,
+                scratch,
                 bound,
             } => self.next_expand(
                 index,
@@ -717,9 +721,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 *relationship,
                 *pattern,
                 *direction,
+                *incident_source,
                 *all_types,
                 types,
                 cursor,
+                scratch,
                 bound,
                 context,
             ),
@@ -1253,16 +1259,20 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         relationship_slot: SlotId,
         pattern: PatternId,
         direction: Direction,
+        incident_source: bool,
         all_types: bool,
         types: &QueryArena<'m, 'g, RelTypeId>,
         cursor: &mut Option<ExpandCursor<'s, 'm, 'g>>,
+        scratch: &mut Option<RangeScratch<'m>>,
         bound: &mut Option<NodeId>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<bool, NativeExecutionError> {
         loop {
             if let Some(active) = cursor.as_mut() {
                 let mut relationships = [empty_relationship()?];
-                let (count, state) = self.view.expand(active, &mut relationships, context)?;
+                let (count, state) =
+                    self.view
+                        .expand_with_scratch(active, &mut relationships, scratch, context)?;
                 if state == CursorState::Done {
                     *cursor = None;
                 }
@@ -1310,12 +1320,17 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             } else {
                 RelationshipTypeSelection::Any(types.as_slice())
             };
-            *cursor = Some(self.view.expansion_cursor(
-                source,
-                direction_selection(direction),
-                selection,
-                context,
-            )?);
+            *cursor = Some(if incident_source {
+                self.view
+                    .expansion_cursor_from_incident_source(source, selection, context)?
+            } else {
+                self.view.expansion_cursor(
+                    source,
+                    direction_selection(direction),
+                    selection,
+                    context,
+                )?
+            });
         }
     }
 
@@ -2767,9 +2782,11 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 relationship,
                 pattern,
                 direction,
+                incident_source: incident_sources,
                 all_types: relationship_types.is_empty(),
                 types,
                 cursor: None,
+                scratch: None,
                 bound: None,
             }
         }

@@ -354,6 +354,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.cypher-entry.incident-source.exclusions",
     "property-graph.cypher-entry.incident-source.limit.fire",
     "property-graph.cypher-entry.incident-source.read",
+    "property-graph.cypher-entry.page-validation.statement-local",
     "property-graph.cypher-entry.list-type.fire",
     "property-graph.cypher-entry.limit0-write.commit",
     "property-graph.cypher-entry.id-lookup",

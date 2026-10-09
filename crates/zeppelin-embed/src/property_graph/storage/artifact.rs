@@ -269,6 +269,10 @@ impl ArtifactFrame<'_> {
 }
 
 impl ValidatedArtifact {
+    pub(crate) const fn artifact(self) -> ArtifactId {
+        self.identity.artifact
+    }
+
     pub(crate) fn framed_block<'a>(
         self,
         bytes: &'a [u8],

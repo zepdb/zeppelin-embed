@@ -12,13 +12,14 @@ mod pattern;
 #[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 /// Tooling-only native pattern directed probes.
 pub mod pattern_test_support {
+    pub use super::pattern::test_support::observe_expand_scratch;
     pub use super::pattern::test_support::{
         ProbeReport, observe_document_visits, run_actual_probe, with_original_node_sources,
     };
 }
 
 #[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
-pub(crate) use pattern::test_support::note_document_visit;
+pub(crate) use pattern::test_support::{note_document_visit, note_expand_scratch};
 
 #[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 /// Tooling-only native relational directed probes.

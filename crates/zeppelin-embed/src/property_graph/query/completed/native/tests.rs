@@ -1273,10 +1273,10 @@ impl<T, C: NativeReadConsumer<T>> NativeReadConsumer<T> for ReleaseMeasured<C> {
         view: &GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<T, crate::property_graph::storage::tree::directory::TreeError> {
-        let baseline = runtime.memory().reserved_bytes();
+        let baseline = runtime.memory().reserved_bytes() - view.retained_validation_bytes();
         let result = self.consumer.consume(view, runtime);
         self.released.store(
-            runtime.memory().reserved_bytes() == baseline,
+            runtime.memory().reserved_bytes() - view.retained_validation_bytes() == baseline,
             Ordering::SeqCst,
         );
         result

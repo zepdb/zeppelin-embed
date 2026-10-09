@@ -680,7 +680,8 @@ impl NativeReadConsumer<Result<ProbeExecution, RuntimeFailure<NativeExecutionErr
                 "pattern probe root facts",
             ),
         )?)?;
-        let operator_baseline = runtime.memory().reserved_bytes();
+        let operator_baseline =
+            runtime.memory().reserved_bytes() - view.retained_validation_bytes();
         let source = NativePattern::new(
             view,
             &admitted,
@@ -741,7 +742,10 @@ impl NativeReadConsumer<Result<ProbeExecution, RuntimeFailure<NativeExecutionErr
             },
         );
         drop(source);
-        let released = u64::from(runtime.memory().reserved_bytes() == operator_baseline);
+        let released = u64::from(
+            runtime.memory().reserved_bytes() - view.retained_validation_bytes()
+                == operator_baseline,
+        );
         Ok(execution.map(|execution| ProbeExecution {
             execution,
             released,
@@ -888,7 +892,8 @@ impl NativeReadConsumer<Result<ScanExecution, RuntimeFailure<NativeExecutionErro
         .map_err(|_| {
             crate::property_graph::storage::tree::directory::TreeError::Invalid("late map admit")
         })?;
-        let operator_baseline = runtime.memory().reserved_bytes();
+        let operator_baseline =
+            runtime.memory().reserved_bytes() - view.retained_validation_bytes();
         let source = NativePattern::new(
             view,
             &admitted,
@@ -949,7 +954,10 @@ impl NativeReadConsumer<Result<ScanExecution, RuntimeFailure<NativeExecutionErro
             },
         );
         drop(source);
-        let released = u64::from(runtime.memory().reserved_bytes() == operator_baseline);
+        let released = u64::from(
+            runtime.memory().reserved_bytes() - view.retained_validation_bytes()
+                == operator_baseline,
+        );
         Ok(execution.map(|execution| ScanExecution {
             execution,
             released,
@@ -1482,4 +1490,35 @@ pub fn with_original_node_sources<T>(run: impl FnOnce() -> T) -> T {
 
 pub(super) fn original_node_sources() -> bool {
     ORIGINAL_NODE_SOURCES.with(std::cell::Cell::get)
+}
+
+std::thread_local! {
+    static EXPAND_SCRATCH: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn note_expand_scratch(bytes: u64) {
+    EXPAND_SCRATCH.with(|observed| {
+        if let Some((reservations, units)) = observed.get() {
+            observed.set(Some((
+                reservations.saturating_add(1),
+                units.saturating_add(bytes),
+            )));
+        }
+    });
+}
+
+/// Observe query expansion scratch admissions and their initialized byte work.
+pub fn observe_expand_scratch<T>(run: impl FnOnce() -> T) -> (T, (u64, u64)) {
+    struct Restore(Option<(u64, u64)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            EXPAND_SCRATCH.with(|observed| observed.set(self.0));
+        }
+    }
+    let _restore = Restore(EXPAND_SCRATCH.with(|observed| observed.replace(Some((0, 0)))));
+    let result = run();
+    (
+        result,
+        EXPAND_SCRATCH.with(|observed| observed.get().unwrap_or((0, 0))),
+    )
 }

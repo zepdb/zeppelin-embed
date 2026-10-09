@@ -217,12 +217,14 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
     /// replays visible rows from the beginning, and `After` avoids incrementing
     /// `u128::MAX` at a descriptor boundary.
     #[allow(dead_code, reason = "used by the crate-private ZE-45 scoped adapter")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn expand_from<'m, 'g>(
         &self,
         query: AdjacencyQuery,
         resume: Option<ExpansionResume>,
-        output: &mut QueryArena<'m, 'g, AdjacencyRow>,
+        output: &mut QueryArena<'m, 'g, RelationshipRow>,
         scratch: &mut RangeScratch<'_>,
+        bound_live: &mut Option<bool>,
         r: &mut TreeResources<'_>,
     ) -> Result<(usize, Option<ExpansionResume>), TreeError> {
         scratch.require_owner(r)?;
@@ -254,6 +256,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
             None => range::directory_key(probe)?,
         };
         if resume.is_none()
+            && query.relationships.lower.get() > 1
             && query.relationship_type.is_some()
             && let Some(entry) = lookup_predecessor(self.source, root, &start, r)?
         {
@@ -307,9 +310,9 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
                 if beyond(edge.rel, query.relationships.upper) {
                     break;
                 }
-                let authoritative = self
-                    .raw_relationship(edge.rel, r)?
-                    .ok_or(TreeError::Missing)?;
+                let Some(authoritative) = self.raw_relationship(edge.rel, r)? else {
+                    return Err(TreeError::Missing);
+                };
                 let (bound, neighbor) = match query.direction {
                     Direction::Out => (authoritative.source, authoritative.target),
                     Direction::In => (authoritative.target, authoritative.source),
@@ -320,19 +323,27 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
                 {
                     return Err(invalid("adjacency differs from authoritative relationship"));
                 }
-                if !self.visible(authoritative, r)? {
+                let live = match *bound_live {
+                    Some(live) => live,
+                    None => {
+                        let live = self.endpoint_live(query.node, r)?;
+                        *bound_live = Some(live);
+                        live
+                    }
+                };
+                let neighbor_live = if neighbor == query.node {
+                    live
+                } else {
+                    self.endpoint_live(neighbor, r)?
+                };
+                if !live || !neighbor_live {
                     continue;
                 }
-                r.step(std::mem::size_of::<AdjacencyRow>() as u64)?;
+                r.step(std::mem::size_of::<RelationshipRow>() as u64)?;
                 r.read_event(NativeReadEvent::CopiedBytes(
-                    std::mem::size_of::<AdjacencyRow>() as u64,
+                    std::mem::size_of::<RelationshipRow>() as u64,
                 ))?;
-                output
-                    .push(AdjacencyRow {
-                        relationship_type: key.rel_type,
-                        edge: *edge,
-                    })
-                    .map_err(|_| TreeError::Memory)?;
+                output.push(authoritative).map_err(|_| TreeError::Memory)?;
                 count += 1;
                 if count == output.capacity() {
                     let next = range.edges().get(index + 1).map_or(
@@ -476,7 +487,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         node: NodeId,
         r: &mut TreeResources<'_>,
     ) -> Result<bool, TreeError> {
-        let state = lookup_node_state(
+        let Some(state) = lookup_node_state(
             self.source,
             self.roots,
             node,
@@ -484,7 +495,9 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
             self.document,
             r,
         )?
-        .ok_or(TreeError::Missing)?;
+        else {
+            return Err(TreeError::Missing);
+        };
         Ok(matches!(state, NodeRecordState::Live(_)))
     }
     pub(super) fn visible(

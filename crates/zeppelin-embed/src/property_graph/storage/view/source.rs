@@ -11,12 +11,17 @@ use crate::property_graph::storage::artifact::{
 use crate::property_graph::storage::tree::directory::{
     BlockSource, QueryOwner, TreeError, TreeResources,
 };
-use std::{cell::OnceCell, ffi::OsString, fmt::Write as _, path::PathBuf};
+use std::{
+    cell::{Cell, OnceCell},
+    ffi::OsString,
+    fmt::Write as _,
+    path::PathBuf,
+};
 
-struct MappedArtifact {
-    artifact: ArtifactId,
+struct MappedArtifact<'m, 'g> {
     mapping: NativeReadonlyMapping,
     validation: ValidatedArtifact,
+    validated_pages: Box<[QueryArena<'m, 'g, Cell<u8>>; 1]>,
 }
 
 fn charged_artifact_path<'m, 'g>(
@@ -72,7 +77,7 @@ pub(crate) struct NativeQuerySource<'a, 'm, 'g> {
     memory: &'m QueryMemory<'g>,
     owner: QueryOwner<'m, 'g>,
     runtime: RuntimeInstanceId,
-    slots: QueryArena<'m, 'g, OnceCell<MappedArtifact>>,
+    slots: QueryArena<'m, 'g, OnceCell<MappedArtifact<'m, 'g>>>,
 }
 
 /// Unforgeable proof that one retained lease, query-memory owner and runtime
@@ -131,6 +136,17 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
         })
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
+    pub(super) fn retained_validation_bytes(&self) -> usize {
+        self.slots
+            .as_slice()
+            .iter()
+            .filter_map(OnceCell::get)
+            .flat_map(|mapped| mapped.validated_pages.iter())
+            .map(QueryArena::reserved_bytes)
+            .sum()
+    }
+
     pub(super) const fn lease(&self) -> &'a NativeReadLease {
         self.lease
     }
@@ -141,6 +157,26 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
 
     pub(super) const fn runtime(&self) -> RuntimeInstanceId {
         self.runtime
+    }
+
+    fn page_bit(&self, reference: PhysicalRef) -> Result<(&Cell<u8>, u8), TreeError> {
+        let Some(mapped) = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.validation.artifact(),
+            || Ok(()),
+        )?
+        .and_then(OnceCell::get) else {
+            return Err(TreeError::Invalid("page memo mapping missing"));
+        };
+        let bit = usize::try_from(reference.offset).map_err(|_| TreeError::Memory)? / 24;
+        let Some(memo) = mapped.validated_pages.first() else {
+            return Err(TreeError::Memory);
+        };
+        let Some(byte) = memo.as_slice().get(bit / 8) else {
+            return Err(TreeError::Invalid("page memo offset outside mapping"));
+        };
+        Ok((byte, 1 << (bit % 8)))
     }
 
     fn check_owner(&self, resources: &mut TreeResources<'_>) -> Result<(), TreeError> {
@@ -154,7 +190,7 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
 
     fn decode<'s>(
         &'s self,
-        mapped: &'s MappedArtifact,
+        mapped: &'s MappedArtifact<'m, 'g>,
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'s>, TreeError> {
@@ -220,6 +256,17 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
 }
 
 impl BlockSource for NativeQuerySource<'_, '_, '_> {
+    fn page_validated(&self, reference: PhysicalRef) -> Result<bool, TreeError> {
+        let (byte, mask) = self.page_bit(reference)?;
+        Ok(byte.get() & mask != 0)
+    }
+
+    fn mark_page_validated(&self, reference: PhysicalRef) -> Result<(), TreeError> {
+        let (byte, mask) = self.page_bit(reference)?;
+        byte.set(byte.get() | mask);
+        Ok(())
+    }
+
     fn resolve<'a>(
         &'a self,
         reference: PhysicalRef,
@@ -229,7 +276,7 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
         let cell = crate::property_graph::storage::mapping_slot(
             self.slots.as_slice(),
             reference.artifact,
-            |mapped| mapped.artifact,
+            |mapped| mapped.validation.artifact(),
             || resources.step(1),
         )?
         .ok_or(TreeError::Memory)?;
@@ -251,10 +298,38 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
         drop(path);
         drop(path_charge);
         let validation = self.admit_mapping(&mapping, reference, resources)?;
+        // Framed blocks occupy at least 24 bytes, so distinct exact block
+        // references cannot share an offset / 24 slot. Resolve proves exact
+        // membership before a directory page can consult this bitset.
+        let memo_bytes = mapping.as_bytes().len().div_ceil(24).div_ceil(8);
+        let mut validated_pages = QueryArena::new(self.memory, memo_bytes)
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+            .map_err(TreeError::Runtime)?;
+        for _ in 0..memo_bytes {
+            validated_pages
+                .push(Cell::new(0))
+                .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+                .map_err(TreeError::Runtime)?;
+        }
+        // The arena charges its own control descriptor. Keep that descriptor
+        // out of the fixed mapping table. The validated frame also owns the
+        // artifact identity, so the table needs no duplicate identity field.
+        // A one-element, exact-capacity Vec makes boxing fallible and requires
+        // no allocation when converting to a fixed-size boxed array.
+        let mut memo = Vec::new();
+        memo.try_reserve_exact(1).map_err(|_| TreeError::Memory)?;
+        if memo.capacity() != 1 {
+            return Err(TreeError::Memory);
+        }
+        memo.push(validated_pages);
+        let validated_pages = memo
+            .into_boxed_slice()
+            .try_into()
+            .map_err(|_| TreeError::Memory)?;
         let mapped = MappedArtifact {
-            artifact: reference.artifact,
             mapping,
             validation,
+            validated_pages,
         };
         cell.set(mapped)
             .map_err(|_| TreeError::Invalid("native graph source slot initialized twice"))?;

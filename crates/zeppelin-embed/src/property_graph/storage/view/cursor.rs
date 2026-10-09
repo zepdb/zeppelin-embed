@@ -356,6 +356,7 @@ pub(crate) struct ExpandCursor<'view, 'm, 'g> {
     type_index: usize,
     phase: Direction,
     resume: Option<super::super::adjacency::ExpansionResume>,
+    bound_live: Option<bool>,
     exhausted: bool,
     failed: bool,
     _view: PhantomData<&'view ()>,
@@ -398,11 +399,16 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
                 DirectionSelection::Out | DirectionSelection::Undirected => Direction::Out,
             },
             resume: None,
+            bound_live: None,
             exhausted,
             failed: false,
             _view: PhantomData,
             _charge: charge,
         })
+    }
+
+    pub(super) fn source_was_checked(&mut self) {
+        self.bound_live = Some(true);
     }
 
     pub(super) fn scan<'lease>(
@@ -413,19 +419,35 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
         output: &mut [RelationshipRow],
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<(usize, CursorState), TreeError> {
-        let result = self.scan_inner(lease, source, catalog, output, runtime);
+        let mut scratch = None;
+        self.scan_with_scratch(lease, source, catalog, output, &mut scratch, runtime)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn scan_with_scratch<'lease>(
+        &mut self,
+        lease: &NativeReadLease,
+        source: &NativeQuerySource<'lease, 'm, 'g>,
+        catalog: &NativeCatalog<'_, 'm, 'g>,
+        output: &mut [RelationshipRow],
+        scratch: &mut Option<RangeScratch<'m>>,
+        runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<(usize, CursorState), TreeError> {
+        let result = self.scan_inner(lease, source, catalog, output, scratch, runtime);
         if result.is_err() {
             self.failed = true;
         }
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scan_inner<'lease>(
         &mut self,
         lease: &NativeReadLease,
         source: &NativeQuerySource<'lease, 'm, 'g>,
         catalog: &NativeCatalog<'_, 'm, 'g>,
         output: &mut [RelationshipRow],
+        scratch: &mut Option<RangeScratch<'m>>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<(usize, CursorState), TreeError> {
         lease
@@ -458,7 +480,12 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
                 .map_err(RuntimeError::Memory)
                 .map_err(TreeError::Runtime)?;
             let mut resources = TreeResources::for_query(runtime)?;
-            let mut scratch = RangeScratch::for_query(self.memory, &mut resources)?;
+            if scratch.is_none() {
+                *scratch = Some(RangeScratch::for_query(self.memory, &mut resources)?);
+            }
+            let Some(scratch) = scratch.as_mut() else {
+                return Err(TreeError::Memory);
+            };
             let relationship_type = self
                 .types
                 .as_ref()
@@ -484,39 +511,37 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
                 },
                 self.resume,
                 &mut adjacent,
-                &mut scratch,
+                scratch,
+                &mut self.bound_live,
                 &mut resources,
             )?;
             for row in adjacent.as_slice() {
                 if self.phase == Direction::In
                     && self.direction == DirectionSelection::Undirected
-                    && row.edge.neighbor == self.node
+                    && row.source == self.node
+                    && row.target == self.node
                 {
                     continue;
                 }
-                let relationship = reader
-                    .relationship(row.edge.rel, &mut resources)?
-                    .ok_or(TreeError::Invalid("visible adjacency relationship missing"))?;
-                private.push(relationship).map_err(|_| TreeError::Memory)?;
+                private.push(*row).map_err(|_| TreeError::Memory)?;
             }
             self.resume = resume;
-            drop(scratch);
             drop(resources);
             if self.resume.is_none() {
                 self.advance_query();
             }
         }
         let count = private.len();
-        let bytes = count
-            .checked_mul(std::mem::size_of::<RelationshipRow>())
-            .ok_or(TreeError::Work)?;
+        let Some(bytes) = count.checked_mul(std::mem::size_of::<RelationshipRow>()) else {
+            return Err(TreeError::Work);
+        };
         runtime
             .charge(WorkKind::CopiedBytes, bytes as u64)
             .map_err(TreeError::Runtime)?;
-        output
-            .get_mut(..count)
-            .ok_or(TreeError::Memory)?
-            .copy_from_slice(private.as_slice());
+        let Some(target) = output.get_mut(..count) else {
+            return Err(TreeError::Memory);
+        };
+        target.copy_from_slice(private.as_slice());
         Ok((
             count,
             if self.exhausted {
@@ -712,15 +737,18 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
                     break;
                 };
                 let mut key = [0_u8; 40];
-                key.get_mut(..16)
-                    .ok_or(TreeError::Memory)?
-                    .copy_from_slice(&next.to_le_bytes());
-                key.get_mut(16..24)
-                    .ok_or(TreeError::Memory)?
-                    .copy_from_slice(&1_u64.to_le_bytes());
-                key.get_mut(24..)
-                    .ok_or(TreeError::Memory)?
-                    .copy_from_slice(&1_u128.to_le_bytes());
+                let Some(node_key) = key.get_mut(..16) else {
+                    return Err(TreeError::Memory);
+                };
+                node_key.copy_from_slice(&next.to_le_bytes());
+                let Some(type_key) = key.get_mut(16..24) else {
+                    return Err(TreeError::Memory);
+                };
+                type_key.copy_from_slice(&1_u64.to_le_bytes());
+                let Some(rel_key) = key.get_mut(24..) else {
+                    return Err(TreeError::Memory);
+                };
+                rel_key.copy_from_slice(&1_u128.to_le_bytes());
                 Some(key)
             }
             None => None,
@@ -743,7 +771,7 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
             .key()
             .node;
         after = Some(node);
-        let state = lookup_node_state(
+        let Some(state) = lookup_node_state(
             source,
             roots,
             node,
@@ -751,7 +779,9 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
             lease.bundle().document(),
             resources,
         )?
-        .ok_or(TreeError::Missing)?;
+        else {
+            return Err(TreeError::Missing);
+        };
         if matches!(state, NodeRecordState::Live(_)) {
             output.push(node).map_err(|_| TreeError::Memory)?;
         }

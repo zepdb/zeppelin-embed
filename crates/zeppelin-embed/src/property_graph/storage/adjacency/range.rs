@@ -117,7 +117,7 @@ impl<'a> RangeScratch<'a> {
     /// initializing any edge slot. A failure drops every acquired reservation.
     pub fn for_query<'g>(
         memory: &'a QueryMemory<'g>,
-        r: &mut TreeResources<'a>,
+        r: &mut TreeResources<'_>,
     ) -> Result<Self, TreeError>
     where
         'g: 'a,
@@ -140,12 +140,16 @@ impl<'a> RangeScratch<'a> {
         let mut edges = QueryArena::new(memory, MAX_MERGED_ENTRIES)
             .map_err(RuntimeError::Memory)
             .map_err(TreeError::Runtime)?;
+        #[cfg(any(test, feature = "test-seams"))]
+        crate::property_graph::query::note_expand_scratch(
+            (MAX_MERGED_ENTRIES * std::mem::size_of::<Edge>()) as u64,
+        );
         let empty = Edge {
             rel: RelId::new(1).map_err(|_| invalid("adjacency scratch identity"))?,
             neighbor: NodeId::new(1).map_err(|_| invalid("adjacency scratch identity"))?,
         };
+        r.step((MAX_MERGED_ENTRIES * std::mem::size_of::<Edge>()) as u64)?;
         for _ in 0..MAX_MERGED_ENTRIES {
-            r.step(std::mem::size_of::<Edge>() as u64)?;
             edges
                 .push(empty)
                 .map_err(RuntimeError::Memory)
