@@ -855,3 +855,47 @@ Feature-gating AFTER smoke87.61s:14/14feature faults, zero violations;
 all38 lines read, including only scheduled fault diagnostics.
 Log `.ctx/S5-feature-fixed-after.log`. No optional S6 work added.
 Final main gates/size, once full suite, ancestry and push remain pending.
+
+### Final-suite accounting fixtures and descriptor limit
+
+On the same M3 Max/macOS host recorded above, the first final-main full
+workspace attempt at `a58623fd` reported seven failures before an unexpected
+SIGTERM (exit 143). It did not produce a terminal summary and is not credited
+as a pass. All 1353 lines of `.ctx/Final-main-full-suite.log` were read.
+
+Exact RED probes on unchanged main reproduced six old release-fixture
+assumptions: statement-lived validation memo capacity (65 or 130 bytes) was
+counted as leaked operator backing. The test-only correction subtracts the
+view's exact retained memo capacity when comparing operator/preparation
+release. Real plan footprints, budgets, typed failures, cancellation, zero
+partial rows, repeat-read peak accounting, and full source teardown checks
+remain intact. Production code is unchanged.
+
+Each probe used `cargo test -p zeppelin-embed --features graph-cypher --lib
+<qualified-selector> -- --exact --nocapture`. GREEN ran on the isolated branch
+with `ulimit -n 65536` inherited by Cargo; compilation took 15.11s without
+warnings. Qualified selectors and individual results:
+
+| Selector | RED | GREEN (seconds) |
+|---|---|---:|
+| `lifecycle::native_graph::tests::native_read_path_accounting_releases_transient_capacity` |3899 !=3769 retained bytes|1 pass,0.03|
+| `property_graph::query::pattern::mutation::tests::native_eager_cancel_during_drain_releases` |operator-release assertion|1 pass,0.06|
+| `property_graph::query::pattern::mutation::tests::native_eager_capacity_limit_rejects_without_partial_rows` |operator-release assertion|1 pass,0.05|
+| `property_graph::query::pattern::relational::tests::native_relational_directed_probe_can_fire` |101476 !=101411 retained bytes|1 pass,0.35|
+| `property_graph::query::pattern::relational::tests::native_relational_limits_controls_errors_release` |101476 !=101411 retained bytes|1 pass,0.76|
+| `property_graph::query::pattern::relational::tests::native_relational_eligibility_singleton_domains` |101476 !=101411 retained bytes|1 pass,0.42|
+
+The seventh selector,
+`lifecycle::native_graph::tests::recovery::ze393_duplicate_reader_references_reopen_within_the_recovery_allowance`,
+failed at maintenance with `Read(Io(EMFILE))` after 223.17s under the default
+4096-descriptor soft limit (hard unlimited; OS per-process maximum 245760).
+Unchanged recovery code passed after 216.29s with the 65536-descriptor limit:
+2000 nodes, 16 readers, 161621 protected references, 68 distinct marked artifacts;
+read-only reopen preserved bytes, writable reopen removed reclaim candidates,
+and a subsequent restart retained the data. No recovery gate is relaxed and
+no persisted format, C ABI, golden, or dependency is changed.
+
+All exact RED/GREEN logs were read completely:
+`.ctx/Full-failure-{RED,GREEN}-{1..7}.log`. The interrupted full-suite attempt
+will be repeated on final main with the higher descriptor limit. These focused
+passes alone do not constitute a full-workspace pass.

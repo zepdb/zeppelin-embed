@@ -5864,7 +5864,8 @@ pub(crate) mod tests {
         let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
         let view = GraphReadView::new(&source, &catalog).unwrap();
-        let steady = memory.reserved_bytes();
+        // Validated-page backing belongs to the statement, not the read call.
+        let steady = memory.reserved_bytes() - view.retained_validation_bytes();
         let opens_before = vfs.open_for_map_calls();
         let node = NodeId::new((1_u128 << 100) + 1).unwrap();
 
@@ -5878,14 +5879,20 @@ pub(crate) mod tests {
             b"second-accounted-lazy-open"
         );
         drop(resources);
-        assert_eq!(memory.reserved_bytes(), steady);
+        assert_eq!(
+            memory.reserved_bytes() - view.retained_validation_bytes(),
+            steady
+        );
         assert!(vfs.open_for_map_calls() >= opens_before + 2);
         let peak_after_open = memory.peak_reserved_bytes();
 
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
         assert!(view.lookup_node(node, &mut resources).unwrap().is_some());
         drop(resources);
-        assert_eq!(memory.reserved_bytes(), steady);
+        assert_eq!(
+            memory.reserved_bytes() - view.retained_validation_bytes(),
+            steady
+        );
         assert_eq!(memory.peak_reserved_bytes(), peak_after_open);
 
         let missing = PhysicalRef {
@@ -5901,7 +5908,10 @@ pub(crate) mod tests {
             Err(TreeError::Io(_))
         ));
         drop(resources);
-        assert_eq!(memory.reserved_bytes(), steady);
+        assert_eq!(
+            memory.reserved_bytes() - view.retained_validation_bytes(),
+            steady
+        );
         assert!(memory.peak_reserved_bytes() >= steady);
 
         drop(view);
