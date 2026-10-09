@@ -58,7 +58,7 @@ pub(crate) struct NodeCursor<'view, 'm, 'g> {
     memory: &'m QueryMemory<'g>,
     labels: QueryArena<'m, 'g, LabelId>,
     documents: Option<crate::lifecycle::native_graph::documents::DocumentCursor>,
-    incident_sources: bool,
+    incident_sources: Option<crate::property_graph::query::plan::Direction>,
     folder: Option<crate::lifecycle::native_graph::documents::FolderCandidates<'m, 'g>>,
     full_drain: bool,
     explicit_nodes: Option<QueryArena<'m, 'g, NodeId>>,
@@ -118,7 +118,7 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
                     .all(|label| label.get() == u64::MAX))
             .then(crate::lifecycle::native_graph::documents::DocumentCursor::default),
             labels,
-            incident_sources: false,
+            incident_sources: None,
             folder: None,
             full_drain: false,
             explicit_nodes: None,
@@ -133,10 +133,12 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
 
     pub(super) fn incident_sources<'lease>(
         lease: &NativeReadLease,
+        labels: LabelSelection<'_>,
+        direction: crate::property_graph::query::plan::Direction,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<Self, TreeError> {
-        let mut cursor = Self::new(lease, LabelSelection::All, runtime)?;
-        cursor.incident_sources = true;
+        let mut cursor = Self::new(lease, labels, runtime)?;
+        cursor.incident_sources = Some(direction);
         cursor.documents = None;
         Ok(cursor)
     }
@@ -257,12 +259,14 @@ impl<'view, 'm, 'g> NodeCursor<'view, 'm, 'g> {
             .map_err(TreeError::Runtime)?;
         let mut resources = TreeResources::for_query(runtime)?;
         if !self.graph_exhausted {
-            let count = if self.incident_sources {
+            let count = if let Some(direction) = self.incident_sources {
                 scan_incident_sources_after(
                     lease,
                     source,
                     catalog,
                     self.after,
+                    direction,
+                    self.labels.as_slice(),
                     &mut private,
                     &mut resources,
                 )?
@@ -717,59 +721,39 @@ impl<'view, 'm, 'g> RelCursor<'view, 'm, 'g> {
 
 /// OutRanges order is numeric source/type/lower. Seek after the entire source,
 /// including all its types and split ranges; descriptors are candidates only.
+#[allow(clippy::too_many_arguments)]
 fn scan_incident_sources_after<'lease, 'm, 'g>(
     lease: &NativeReadLease,
     source: &NativeQuerySource<'lease, 'm, 'g>,
     catalog: &NativeCatalog<'_, 'm, 'g>,
     mut after: Option<NodeId>,
+    direction: crate::property_graph::query::plan::Direction,
+    labels: &[LabelId],
     output: &mut QueryArena<'m, 'g, NodeId>,
     resources: &mut TreeResources<'_>,
 ) -> Result<usize, TreeError> {
-    use crate::property_graph::storage::adjacency::{RANGE_DESCRIPTOR_BYTES, RangeDescriptor};
+    use crate::property_graph::query::plan::Direction;
     use crate::property_graph::storage::records::NodeRecordState;
-    use crate::property_graph::storage::tree::{Key, TreeKind, directory::DirectoryCursor};
+    use crate::property_graph::storage::tree::TreeKind;
     let roots = lease.bundle().roots();
-    let root = roots.directory(TreeKind::OutRanges)?;
     while output.len() < output.capacity() {
-        let lower = match after {
-            Some(node) => {
-                let Some(next) = node.get().checked_add(1) else {
-                    break;
-                };
-                let mut key = [0_u8; 40];
-                let Some(node_key) = key.get_mut(..16) else {
-                    return Err(TreeError::Memory);
-                };
-                node_key.copy_from_slice(&next.to_le_bytes());
-                let Some(type_key) = key.get_mut(16..24) else {
-                    return Err(TreeError::Memory);
-                };
-                type_key.copy_from_slice(&1_u64.to_le_bytes());
-                let Some(rel_key) = key.get_mut(24..) else {
-                    return Err(TreeError::Memory);
-                };
-                rel_key.copy_from_slice(&1_u128.to_le_bytes());
-                Some(key)
-            }
-            None => None,
+        let next = |kind, resources: &mut TreeResources<'_>| {
+            next_incident_source(source, roots.directory(kind)?, after, resources)
         };
-        let mut cursor = DirectoryCursor::seek(
-            source,
-            root,
-            lower.as_ref().map(<[u8; 40]>::as_slice),
-            resources,
-        )?;
-        let Some(entry) = cursor.next_entry(resources)? else {
+        let node = match direction {
+            Direction::Outgoing => next(TreeKind::OutRanges, resources)?,
+            Direction::Incoming => next(TreeKind::InRanges, resources)?,
+            Direction::Either => match (
+                next(TreeKind::OutRanges, resources)?,
+                next(TreeKind::InRanges, resources)?,
+            ) {
+                (Some(out), Some(input)) => Some(out.min(input)),
+                (out, input) => out.or(input),
+            },
+        };
+        let Some(node) = node else {
             break;
         };
-        entry.require_root(root)?;
-        let Key::Inline(key) = entry.key() else {
-            return Err(TreeError::Invalid("overflow adjacency key"));
-        };
-        resources.step((40 + RANGE_DESCRIPTOR_BYTES) as u64)?;
-        let node = RangeDescriptor::decode(root.kind(), key, entry.value())?
-            .key()
-            .node;
         after = Some(node);
         let Some(state) = lookup_node_state(
             source,
@@ -782,9 +766,61 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
         else {
             return Err(TreeError::Missing);
         };
-        if matches!(state, NodeRecordState::Live(_)) {
+        if let NodeRecordState::Live(record) = state
+            && super::node_matches_labels(source, node, &record, labels, catalog, resources)?
+        {
             output.push(node).map_err(|_| TreeError::Memory)?;
         }
     }
     Ok(output.len())
+}
+
+/// Seek beyond all type/range keys of the previous node. Both direction trees
+/// use this ordering; choosing their minimum emits their union without repeats.
+fn next_incident_source(
+    source: &NativeQuerySource<'_, '_, '_>,
+    root: crate::property_graph::storage::tree::directory::DirectoryRoot,
+    after: Option<NodeId>,
+    resources: &mut TreeResources<'_>,
+) -> Result<Option<NodeId>, TreeError> {
+    use crate::property_graph::storage::adjacency::{RANGE_DESCRIPTOR_BYTES, RangeDescriptor};
+    use crate::property_graph::storage::tree::{Key, directory::DirectoryCursor};
+    let lower = match after {
+        Some(node) => {
+            let Some(next) = node.get().checked_add(1) else {
+                return Ok(None);
+            };
+            let mut key = [0_u8; 40];
+            key.get_mut(..16)
+                .ok_or(TreeError::Memory)?
+                .copy_from_slice(&next.to_le_bytes());
+            key.get_mut(16..24)
+                .ok_or(TreeError::Memory)?
+                .copy_from_slice(&1_u64.to_le_bytes());
+            key.get_mut(24..)
+                .ok_or(TreeError::Memory)?
+                .copy_from_slice(&1_u128.to_le_bytes());
+            Some(key)
+        }
+        None => None,
+    };
+    let mut cursor = DirectoryCursor::seek(
+        source,
+        root,
+        lower.as_ref().map(<[u8; 40]>::as_slice),
+        resources,
+    )?;
+    let Some(entry) = cursor.next_entry(resources)? else {
+        return Ok(None);
+    };
+    entry.require_root(root)?;
+    let Key::Inline(key) = entry.key() else {
+        return Err(TreeError::Invalid("overflow adjacency key"));
+    };
+    resources.step((40 + RANGE_DESCRIPTOR_BYTES) as u64)?;
+    Ok(Some(
+        RangeDescriptor::decode(root.kind(), key, entry.value())?
+            .key()
+            .node,
+    ))
 }

@@ -1041,6 +1041,10 @@ mod incident_sources {
     }
 
     fn sparse(n: u128) -> Vec<[u64; 3]> {
+        sparse_shapes(n, None)
+    }
+
+    pub(super) fn sparse_shapes(n: u128, s5: Option<usize>) -> Vec<[u64; 3]> {
         let directory = Directory::new();
         let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
         store
@@ -1058,7 +1062,8 @@ mod incident_sources {
             .unwrap();
         store.seal().unwrap();
         store.enable_graph().unwrap();
-        let keys: Vec<_> = (0..500).map(|i| format!("edge-{i}")).collect();
+        let edge_count = if s5.is_some() { 16 } else { 500 };
+        let keys: Vec<_> = (0..edge_count).map(|i| format!("edge-{i}")).collect();
         let writes: Vec<_> = keys
             .iter()
             .enumerate()
@@ -1070,8 +1075,10 @@ mod incident_sources {
                     relationship_type: GraphName::new("PERF_LINK").unwrap(),
                     properties: &[],
                     // Deliberately create in reverse source order.
-                    source: NodeRef::Existing(NodeId::new(999 - 2 * i as u128).unwrap()),
-                    target: NodeRef::Existing(NodeId::new(1000 - 2 * i as u128).unwrap()),
+                    source: NodeRef::Existing(
+                        NodeId::new(2 * edge_count - 1 - 2 * i as u128).unwrap(),
+                    ),
+                    target: NodeRef::Existing(NodeId::new(2 * edge_count - 2 * i as u128).unwrap()),
                 }),
             })
             .collect();
@@ -1080,19 +1087,35 @@ mod incident_sources {
         }
         store.close().unwrap();
         let store = Store::open(directory.path(), OpenOptions::read_only()).unwrap();
-        let queries = [
-            "MATCH ()-[r]->() RETURN count(r)",
-            "MATCH ()-[r:PERF_LINK]->() RETURN count(r)",
-            "MATCH (a)-[:PERF_LINK]->(b) RETURN a, b",
-            "MATCH (a)-[:PERF_LINK]->(b) RETURN a, b LIMIT 10",
-            "MATCH (a)-[:PERF_LINK]->(b)-[:PERF_LINK]->(c) RETURN count(c)",
-        ];
-        let expected_pairs: Vec<_> = (0..500).map(|i| vec![2 * i + 1, 2 * i + 2]).collect();
+        let queries = if s5.is_some() {
+            [
+                "MATCH (a)<-[r:PERF_LINK]-(b) RETURN count(r)",
+                "MATCH (a)-[r:PERF_LINK]-(b) RETURN count(r)",
+                "MATCH (a:Document)-[:PERF_LINK]->(b) RETURN a, b",
+                "MATCH (a:Document)-[:PERF_LINK]->(b) RETURN a, b LIMIT 10",
+                "MATCH (a:Missing)-[:PERF_LINK]->(b) RETURN count(b)",
+            ]
+        } else {
+            [
+                "MATCH ()-[r]->() RETURN count(r)",
+                "MATCH ()-[r:PERF_LINK]->() RETURN count(r)",
+                "MATCH (a)-[:PERF_LINK]->(b) RETURN a, b",
+                "MATCH (a)-[:PERF_LINK]->(b) RETURN a, b LIMIT 10",
+                "MATCH (a)-[:PERF_LINK]->(b)-[:PERF_LINK]->(c) RETURN count(c)",
+            ]
+        };
+        let expected_pairs: Vec<_> = (0..edge_count)
+            .map(|i| vec![2 * i + 1, 2 * i + 2])
+            .collect();
         let mut counters = Vec::new();
         for (i, query) in queries.iter().enumerate() {
+            if s5.is_some_and(|shape| shape != i) {
+                continue;
+            }
             let (result, document_visits) = observe_document_visits(|| run(&store, query));
             let expected = match i {
-                0 | 1 => vec![vec![500]],
+                1 if s5.is_some() => vec![vec![2 * edge_count]],
+                0 | 1 => vec![vec![edge_count]],
                 2 => expected_pairs.clone(),
                 3 => expected_pairs[..10].to_vec(),
                 _ => vec![vec![0]],
@@ -2233,9 +2256,7 @@ mod relationship_speed {
         }
     }
 
-    #[test]
-    fn outgoing_expand_matches_original_sources_after_delete_and_reopen() {
-        use zeppelin_embed::property_graph::query::pattern_test_support::with_original_node_sources;
+    fn deleted_and_reopened_store() -> (Directory, Store) {
         let (directory, store) = edges(300);
         let epoch = store.epoch_identity().unwrap();
         store
@@ -2283,6 +2304,11 @@ mod relationship_speed {
         store.graph_apply(&writes, &control()).unwrap();
         run(
             &store,
+            "MATCH (a) WHERE ze.node_id(a) = '00000000000000000000000000000000' SET a:Source",
+        );
+        run(&store, "CREATE (:Source)");
+        run(
+            &store,
             "MATCH (a)-[r]->(b) WHERE ze.node_id(a) = '00000000000000000000000000000006' DELETE r",
         );
         for id in [3, 4] {
@@ -2297,6 +2323,13 @@ mod relationship_speed {
             OpenOptions::read_only().with_epoch(fixture_epoch()),
         )
         .unwrap();
+        (directory, store)
+    }
+
+    #[test]
+    fn outgoing_expand_matches_original_sources_after_delete_and_reopen() {
+        use zeppelin_embed::property_graph::query::pattern_test_support::with_original_node_sources;
+        let (_directory, store) = deleted_and_reopened_store();
         for query in [
             "MATCH (a)-[r]->(b) RETURN a,r,b",
             "MATCH (a)-[r:LINK]->(b) RETURN a,r,b",
@@ -2325,4 +2358,80 @@ mod relationship_speed {
         let result = run(&store, "MATCH ()-[r]->() RETURN count(r)");
         assert_eq!(result.cell(0, 0), Some(&Value::I64(303)));
     }
+    fn s5_oracle(queries: &[&str]) {
+        use zeppelin_embed::property_graph::query::pattern_test_support::{
+            observe_document_visits, with_original_node_sources,
+        };
+        let (_directory, store) = deleted_and_reopened_store();
+        for query in queries {
+            for suffix in [
+                "",
+                " LIMIT 0",
+                " LIMIT 1",
+                " LIMIT 10",
+                " LIMIT 256",
+                " LIMIT 301",
+            ] {
+                let query = format!("{query}{suffix}");
+                let (actual, visits) = observe_document_visits(|| run(&store, &query));
+                let expected = with_original_node_sources(|| run(&store, &query));
+                assert_eq!(
+                    super::incident_sources::rows(&actual),
+                    super::incident_sources::rows(&expected),
+                    "{query}"
+                );
+                assert_eq!(visits, 0, "sparse sources: {query}");
+            }
+        }
+    }
+
+    #[test]
+    fn ze418_incoming_preserves_original_rows_and_limits() {
+        s5_oracle(&[
+            "MATCH (a)<-[r]-(b) RETURN a,r,b",
+            "MATCH (a)<-[r:LINK]-(b) RETURN a,r,b",
+        ]);
+    }
+
+    #[test]
+    fn ze418_undirected_preserves_original_rows_and_limits() {
+        s5_oracle(&[
+            "MATCH (a)-[r]-(b) RETURN a,r,b",
+            "MATCH (a)-[r:LINK]-(b) RETURN a,r,b",
+        ]);
+    }
+
+    #[test]
+    fn ze418_labelled_preserves_original_rows_and_limits() {
+        s5_oracle(&[
+            "MATCH (a:Document)-[r]->(b) RETURN a,r,b",
+            "MATCH (a:Document)<-[r]-(b) RETURN a,r,b",
+            "MATCH (a:Document)-[r]-(b) RETURN a,r,b",
+            "MATCH (a:Source)-[r]->(b) RETURN a,r,b",
+            "MATCH (a:Document:Source)-[r]->(b) RETURN a,r,b",
+            "MATCH (a:Missing)-[r]->(b) RETURN a,r,b",
+        ]);
+    }
+}
+
+#[test]
+fn ze418_sparse_incoming_ignores_isolated_documents() {
+    assert_eq!(
+        incident_sources::sparse_shapes(128, Some(0)),
+        incident_sources::sparse_shapes(256, Some(0))
+    );
+}
+#[test]
+fn ze418_sparse_undirected_ignores_isolated_documents() {
+    assert_eq!(
+        incident_sources::sparse_shapes(128, Some(1)),
+        incident_sources::sparse_shapes(256, Some(1))
+    );
+}
+#[test]
+fn ze418_sparse_labelled_ignores_isolated_documents() {
+    assert_eq!(
+        incident_sources::sparse_shapes(128, Some(2)),
+        incident_sources::sparse_shapes(256, Some(2))
+    );
 }

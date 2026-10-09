@@ -250,11 +250,15 @@ pub(super) fn force_join_strategy(choice: Option<JoinStrategy>) {
     FORCED_JOIN.with(|forced| forced.set(choice));
 }
 
-/// Only a fresh, unconstrained outgoing anchor can omit isolated nodes.
-pub(super) fn incident_source_scan(operators: &[Operator<'_>], expand: PlanNodeId) -> bool {
+/// Fresh read anchors may omit isolated nodes. Label predicates stay residual.
+pub(super) fn incident_source_scan(
+    operators: &[Operator<'_>],
+    expressions: &[super::super::plan::Expression<'_>],
+    expand: PlanNodeId,
+) -> Option<PlanNodeId> {
     #[cfg(any(test, feature = "test-seams"))]
     if super::test_support::original_node_sources() {
-        return false;
+        return None;
     }
     if operators.iter().any(|operator| {
         matches!(
@@ -265,45 +269,63 @@ pub(super) fn incident_source_scan(operators: &[Operator<'_>], expand: PlanNodeI
                 | OperatorKind::With(_)
         )
     }) {
+        return None;
+    }
+    let expand = operators.get(expand.0 as usize)?;
+    let OperatorKind::Expand { source, .. } = expand.kind else {
+        return None;
+    };
+    let &[mut scan_id] = expand.inputs else {
+        return None;
+    };
+    // Only infallible label predicates may be crossed: arbitrary expressions
+    // could raise errors on isolated nodes and must retain full enumeration.
+    for _ in 0..MAX_PLAN_DEPTH {
+        let scan = operators.get(scan_id.0 as usize)?;
+        match scan.kind {
+            OperatorKind::Filter(predicate) if anchor_labels(expressions, predicate, source, 0) => {
+                let [child] = scan.inputs else {
+                    return None;
+                };
+                scan_id = *child;
+            }
+            OperatorKind::ScanNodes { output, .. } if output == source => {
+                let [unit_id] = scan.inputs else {
+                    return None;
+                };
+                let unit = operators.get(unit_id.0 as usize)?;
+                return (matches!(unit.kind, OperatorKind::Unit) && unit.inputs.is_empty())
+                    .then_some(scan_id);
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn anchor_labels(
+    expressions: &[super::super::plan::Expression<'_>],
+    predicate: super::super::plan::ExprId,
+    anchor: super::super::plan::SlotId,
+    depth: usize,
+) -> bool {
+    use super::super::plan::{BinaryExpression, Expression};
+    if depth >= MAX_PLAN_DEPTH {
         return false;
     }
-    let Some(expand) = operators.get(expand.0 as usize) else {
-        return false;
-    };
-    let OperatorKind::Expand {
-        source,
-        direction: super::super::plan::Direction::Outgoing,
-        ..
-    } = expand.kind
-    else {
-        return false;
-    };
-    let Some(scan) = expand
-        .inputs
-        .first()
-        .and_then(|id| operators.get(id.0 as usize))
-    else {
-        return false;
-    };
-    let OperatorKind::ScanNodes {
-        output,
-        label: None,
-    } = scan.kind
-    else {
-        return false;
-    };
-    let Some(unit) = scan
-        .inputs
-        .first()
-        .and_then(|id| operators.get(id.0 as usize))
-    else {
-        return false;
-    };
-    source == output
-        && expand.inputs.len() == 1
-        && scan.inputs.len() == 1
-        && matches!(unit.kind, OperatorKind::Unit)
-        && unit.inputs.is_empty()
+    match expressions.get(predicate.0 as usize) {
+        Some(Expression::HasLabel { entity, .. }) => matches!(
+            expressions.get(entity.0 as usize), Some(Expression::Slot(slot)) if *slot == anchor),
+        Some(Expression::Binary {
+            operation: BinaryExpression::And,
+            left,
+            right,
+        }) => {
+            anchor_labels(expressions, *left, anchor, depth + 1)
+                && anchor_labels(expressions, *right, anchor, depth + 1)
+        }
+        _ => false,
+    }
 }
 
 /// Only an exact global node count can bypass the row aggregate.
@@ -387,7 +409,7 @@ mod incident_source_tests {
     use super::*;
 
     #[test]
-    fn incident_source_requires_fresh_outgoing_read_region() {
+    fn incident_source_requires_fresh_read_region() {
         let unit_input = [PlanNodeId(0)];
         let scan_input = [PlanNodeId(1)];
         let expand_input = [PlanNodeId(2)];
@@ -419,7 +441,7 @@ mod incident_source_tests {
                 kind: OperatorKind::Collect,
             },
         ];
-        assert!(incident_source_scan(&operators, PlanNodeId(2)));
+        assert!(incident_source_scan(&operators, &[], PlanNodeId(2)).is_some());
         for excluded in [
             OperatorKind::OptionalApply { predicate: None },
             OperatorKind::Mutate(&[]),
@@ -427,7 +449,7 @@ mod incident_source_tests {
             OperatorKind::With(&[]),
         ] {
             operators[3].kind = excluded;
-            assert!(!incident_source_scan(&operators, PlanNodeId(2)));
+            assert!(incident_source_scan(&operators, &[], PlanNodeId(2)).is_none());
         }
         operators[3].kind = OperatorKind::Collect;
         for direction in [Direction::Incoming, Direction::Either] {
@@ -437,12 +459,12 @@ mod incident_source_tests {
             {
                 *current = direction;
             }
-            assert!(!incident_source_scan(&operators, PlanNodeId(2)));
+            assert!(incident_source_scan(&operators, &[], PlanNodeId(2)).is_some());
         }
         if let OperatorKind::Expand { direction, .. } = &mut operators[2].kind {
             *direction = Direction::Outgoing;
         }
         operators[1].inputs = &scan_input; // A scan chain/correlated anchor is not Unit.
-        assert!(!incident_source_scan(&operators, PlanNodeId(2)));
+        assert!(incident_source_scan(&operators, &[], PlanNodeId(2)).is_none());
     }
 }

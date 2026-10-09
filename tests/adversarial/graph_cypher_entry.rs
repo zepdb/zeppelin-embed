@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 25] = [
+pub const REQUIRED_COVERAGE: [&str; 28] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -43,6 +43,9 @@ pub const REQUIRED_COVERAGE: [&str; 25] = [
     "property-graph.cypher-entry.document-scan.full-drain",
     "property-graph.cypher-entry.document-scan.lazy-limit",
     "property-graph.cypher-entry.document-scan.work-limit.fire",
+    "property-graph.cypher-entry.incident-source.incoming",
+    "property-graph.cypher-entry.incident-source.labelled",
+    "property-graph.cypher-entry.incident-source.undirected",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -539,6 +542,43 @@ fn incident_source_controls(store: &Store) -> Result<(), String> {
         run(store, "MATCH ()-[r]->() RETURN r LIMIT 0", &[]).map_err(|error| error.to_string())?;
     if zero.metadata().rows != 0 || zero.metadata().counters.get(WorkKind::Scans) != 0 {
         return Err(String::from("incident source LIMIT 0 scanned"));
+    }
+    // S5 uses the same sparse-source work refusal, with paired clean controls.
+    use zeppelin_embed::property_graph::query::pattern_test_support::observe_document_visits;
+    for (pattern, expected) in [
+        ("(a)<-[r]-(b)", 1),
+        ("(a)-[r]-(b)", 2),
+        ("(a:P)-[r]->(b)", 1),
+    ] {
+        let query = format!("MATCH {pattern} RETURN count(r)");
+        let (result, visits) = observe_document_visits(|| run(store, &query, &[]));
+        let result = result.map_err(|error| error.to_string())?;
+        if values(&result)? != [expected] || visits != 0 {
+            return Err(format!(
+                "S5 sparse source mismatch: {query}, visits={visits}"
+            ));
+        }
+        match execute(
+            store,
+            &QueryControl::Cancel(CancelToken::new()),
+            &options,
+            &query,
+            &[],
+            CompileLimits::default(),
+        ) {
+            Err(StatementError::Query(error))
+                if error.kind() == GraphQueryErrorKind::Limit && error.nothing_committed() => {}
+            Err(error) => return Err(format!("S5 wrong refusal: {query}: {error}")),
+            Ok(_) => return Err(format!("S5 work limit did not fire: {query}")),
+        }
+        let zero = run(store, &format!("MATCH {pattern} RETURN r LIMIT 0"), &[])
+            .map_err(|error| error.to_string())?;
+        if zero.metadata().rows != 0 || zero.metadata().counters.get(WorkKind::Scans) != 0 {
+            return Err(format!("S5 LIMIT 0 scanned: {pattern}"));
+        }
+        if values(&run(store, &query, &[]).map_err(|error| error.to_string())?)? != [expected] {
+            return Err(format!("S5 clean control changed: {query}"));
+        }
     }
     // Paired clean execution after refusal uses the same retained storage path.
     if values(&run(store, outgoing, &[]).map_err(|error| error.to_string())?)? != [1] {
