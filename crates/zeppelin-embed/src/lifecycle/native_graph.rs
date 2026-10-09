@@ -2361,6 +2361,8 @@ pub(crate) mod tests {
     pub(crate) fn observe_mixed_node(store: &Store, node: crate::property_graph::NodeId) -> bool {
         recovery::observe_node(store, node).is_some()
     }
+    #[cfg(all(test, feature = "graph-cypher"))]
+    mod relationship_speed;
     mod retrieval;
     pub(crate) mod seal;
     pub(crate) mod storage_faults;
@@ -5408,6 +5410,31 @@ pub(crate) mod tests {
         ));
         assert_eq!(runtime_a.counters(), before);
 
+        let mut expansion = view
+            .expansion_cursor(
+                NodeId::new(1).unwrap(),
+                crate::property_graph::storage::DirectionSelection::Out,
+                RelationshipTypeSelection::Any(&[]),
+                &mut runtime_a,
+            )
+            .unwrap();
+        assert!(matches!(
+            view.rebind_expansion(&mut expansion, NodeId::new(2).unwrap(), &mut runtime_b),
+            Err(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "expansion cursor rebind owner mismatch"
+                )
+            )
+        ));
+        view.rebind_expansion(&mut expansion, NodeId::new(2).unwrap(), &mut runtime_a)
+            .unwrap();
+        assert_eq!(
+            view.expand(&mut expansion, &mut output, &mut runtime_a)
+                .unwrap(),
+            (0, CursorState::Done)
+        );
+        drop(expansion);
+
         let mut fresh = view
             .relationship_cursor(RelationshipTypeSelection::Any(&[]), &mut runtime_a)
             .unwrap();
@@ -5523,6 +5550,33 @@ pub(crate) mod tests {
             )
         ));
         assert_eq!(runtime_a.counters(), before);
+
+        let mut expansion = view_a
+            .expansion_cursor(
+                NodeId::new(1).unwrap(),
+                crate::property_graph::storage::DirectionSelection::Out,
+                RelationshipTypeSelection::Any(&[]),
+                &mut runtime_a,
+            )
+            .unwrap();
+        assert!(matches!(
+            view_b.rebind_expansion(&mut expansion, NodeId::new(2).unwrap(), &mut runtime_a),
+            Err(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "expansion cursor rebind owner mismatch"
+                )
+            )
+        ));
+        view_a
+            .rebind_expansion(&mut expansion, NodeId::new(2).unwrap(), &mut runtime_a)
+            .unwrap();
+        assert_eq!(
+            view_a
+                .expand(&mut expansion, &mut output, &mut runtime_a)
+                .unwrap(),
+            (0, CursorState::Done)
+        );
+        drop(expansion);
         drop(cursor);
         drop(view_b);
         drop(catalog_b);

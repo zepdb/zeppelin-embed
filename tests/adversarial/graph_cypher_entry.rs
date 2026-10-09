@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 29] = [
+pub const REQUIRED_COVERAGE: [&str; 30] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -47,6 +47,7 @@ pub const REQUIRED_COVERAGE: [&str; 29] = [
     "property-graph.cypher-entry.incident-source.labelled",
     "property-graph.cypher-entry.incident-source.undirected",
     "property-graph.cypher-entry.page-validation.statement-scope",
+    "property-graph.cypher-entry.expand-rebind.clean",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -318,6 +319,8 @@ fn probe_page_validation(store: &Store) -> Result<(), String> {
     use zeppelin_embed::property_graph::query::runtime::WorkKind;
     let mut page_counts = Vec::new();
     let once = "MATCH (a:P)-[r:R]->(b) RETURN count(r)";
+    // Multiple P anchors include empty expansions; the second MATCH also
+    // resets its Expand between outer rows. Both retain the one visible edge.
     let twice = "MATCH (a:P)-[r:R]->(b) MATCH (c:P)-[s:R]->(d) RETURN count(r)";
     for text in [once, twice, once] {
         let result = run(store, text, &[]).map_err(|error| error.to_string())?;

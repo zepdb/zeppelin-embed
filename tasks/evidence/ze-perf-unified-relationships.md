@@ -308,3 +308,61 @@ The existing fault sites still reject corrupted checksums and injected
 I/O failures. All lines of S1-final-{scope,corruption,entry,smoke}.log read.
 No persisted bytes, C ABI, golden, dependency or write-side proof changed.
 Query timings are deliberately measured after S4 and S5 as prescribed.
+
+## S2 one scratch reservation per Expand (ZE-413)
+
+The required BEFORE gate is the immediately preceding S1 final smoke:
+92.86 s, 14 operations, 14/14 feature faults, zero violations. No product
+change occurred between that smoke and the S2 regression. Hardware is the
+S0 host; HEAD 90be79bd plus S2 working changes.
+
+The structured-query regression builds 32 source/target pairs in one
+batch, labels every source Anchor, limits the source scan to 0/16/32,
+expands one relationship per anchor, and counts at the real admitted
+executor seam. Existing test-only preparation_work_capture records each
+query scratch's actual work delta and owned bytes. No public work counter
+or ABI changes. RED: at 16 anchors, 32 scratch reservations, each
+196,608 work units and 197,992 owned bytes. LIMIT 0 already allocates none.
+
+GREEN expand_scratch_is_reserved_once_per_operator: 1 test, 0.28 s.
+16/32 anchors each reserve one buffer and charge exactly 196,608 units;
+peak_query_bytes is 3,660,001 for both. LIMIT 0 reserves no scratch, peak
+3,395,503. Raw logs S2-scratch-red-final.log and
+S2-scratch-green-final.log fully read.
+
+ExpandCursor now retains a lazily charged boxed scratch descriptor; the
+operator retains its cursor across anchors and occurrence resets. Rebind
+checks exact lease/runtime/query-memory ownership and failed state, then
+resets resume, type index and direction phase. RangeScratch keeps its
+existing require_owner check. Query initialization charges one complete
+196,608-unit step before initializing 6,144 slots, with a final checkpoint.
+Its guard retains the query memory rather than a temporary mutable runtime
+borrow. No prefetch or row batching was added.
+
+The existing foreign-runtime/admission owner tests also drive rebind
+rejection followed by clean original-owner reuse: 2 passed (0.02 s).
+These same helpers run in the adversarial read-view probe. The directed
+Cypher-entry probe passes (1.81 s) across P anchors including empty
+expansions and nested MATCH resets. New required coverage:
+property-graph.cypher-entry.expand-rebind.clean. Existing budget and
+page-scope guards remain strict; no new durable or concurrency fault site
+was introduced. Required AFTER smoke and full per-step gates are pending.
+
+```sh
+cargo test -p zeppelin-embed --features graph-cypher --lib lifecycle::native_graph::tests::relationship_speed::expand_scratch_is_reserved_once_per_operator -- --exact --nocapture
+cargo test -p zeppelin-embed --features graph-cypher --lib lifecycle::native_graph::tests::native_read_cursor_rejects_ -- --nocapture
+cargo test -p zeppelin-embed-workspace-tests --features graph-result-test-support --test adversarial_tests cypher_entry_probe_fires_refusals_and_clean_control -- --exact --nocapture
+```
+
+S2 AFTER property-graph smoke passes: 88.36 s, 14 operations, 14/14
+feature faults, zero violations. Complete S2-adversarial-after.log read.
+No unexpected warning/error/FAILED diagnostic. Full S2 per-step gates
+are now running serially; no S2 completion/commit is claimed yet.
+
+All S2 per-step gates pass; every completed output line read. Static
+gates clean; Cypher 22 graph-search (615.86 s), 14 lowering, 12 execution
+tests; format_compat 3 pass/4 default historical ignores; ffi_contract
+21 pass; unified 19 pass (51.53 s); both required registry pins 1 each.
+Logs S2-*.log, prescribed commands .ctx/run-gates.py S2. The scratch and
+owner regressions and Cypher directed probe are also green as recorded
+above. No query timings claimed before the prescribed S4/S5 measurements.

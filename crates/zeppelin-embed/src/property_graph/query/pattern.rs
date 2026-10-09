@@ -18,7 +18,7 @@ use crate::property_graph::catalog::{LabelId, RelTypeId, Symbol, SymbolKind};
 use crate::property_graph::staging::{
     GraphBatchReadView, StageError, StatementImages, WriteControl, WritePhase,
 };
-use crate::property_graph::storage::adjacency::{RangeScratch, RelationshipRow};
+use crate::property_graph::storage::adjacency::RelationshipRow;
 use crate::property_graph::storage::tree::directory::TreeResources;
 use crate::property_graph::storage::{
     CursorState, DirectionSelection, ExpandCursor, GraphReadView, LabelSelection, NodeCursor,
@@ -161,7 +161,7 @@ enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
         child: usize,
         output: SlotId,
         label: ResolvedLabel,
-        incident_sources: Option<Direction>,
+        incident_sources: bool,
         cursor: Option<NodeCursor<'s, 'm, 'g>>,
     },
     LookupNode {
@@ -189,11 +189,9 @@ enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
         relationship: SlotId,
         pattern: PatternId,
         direction: Direction,
-        incident_source: bool,
         all_types: bool,
         types: QueryArena<'m, 'g, RelTypeId>,
         cursor: Option<ExpandCursor<'s, 'm, 'g>>,
-        scratch: Option<RangeScratch<'m>>,
         bound: Option<NodeId>,
     },
     BoundedExpand {
@@ -707,11 +705,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 relationship,
                 pattern,
                 direction,
-                incident_source,
                 all_types,
                 types,
                 cursor,
-                scratch,
                 bound,
             } => self.next_expand(
                 index,
@@ -721,11 +717,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 *relationship,
                 *pattern,
                 *direction,
-                *incident_source,
                 *all_types,
                 types,
                 cursor,
-                scratch,
                 bound,
                 context,
             ),
@@ -964,13 +958,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                     value.clear();
                     self.reset_occurrence(*child, context)?;
                 }
-                PhysicalState::Expand {
-                    child,
-                    cursor,
-                    bound,
-                    ..
-                } => {
-                    *cursor = None;
+                PhysicalState::Expand { child, bound, .. } => {
                     *bound = None;
                     self.reset_occurrence(*child, context)?;
                 }
@@ -1113,7 +1101,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         child: usize,
         output: SlotId,
         label: &ResolvedLabel,
-        incident_sources: Option<Direction>,
+        incident_sources: bool,
         cursor: &mut Option<NodeCursor<'s, 'm, 'g>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<bool, NativeExecutionError> {
@@ -1137,16 +1125,15 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             if !self.next_occurrence(child, context)? {
                 return Ok(false);
             }
-            let labels = match label {
-                ResolvedLabel::All => LabelSelection::All,
-                ResolvedLabel::Known(label) => LabelSelection::AllOf(std::slice::from_ref(label)),
-                ResolvedLabel::Missing => continue,
-            };
-            let mut selected = match incident_sources {
-                Some(direction) => self
+            let mut selected = match label {
+                ResolvedLabel::All if incident_sources => {
+                    self.view.incident_source_cursor(context)?
+                }
+                ResolvedLabel::All => self.view.node_cursor(LabelSelection::All, context)?,
+                ResolvedLabel::Known(label) => self
                     .view
-                    .incident_source_cursor(labels, direction, context)?,
-                None => self.view.node_cursor(labels, context)?,
+                    .node_cursor(LabelSelection::AllOf(&[*label]), context)?,
+                ResolvedLabel::Missing => continue,
             };
             let node = self
                 .occurrences
@@ -1260,26 +1247,22 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         relationship_slot: SlotId,
         pattern: PatternId,
         direction: Direction,
-        incident_source: bool,
         all_types: bool,
         types: &QueryArena<'m, 'g, RelTypeId>,
         cursor: &mut Option<ExpandCursor<'s, 'm, 'g>>,
-        scratch: &mut Option<RangeScratch<'m>>,
         bound: &mut Option<NodeId>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<bool, NativeExecutionError> {
         loop {
-            if let Some(active) = cursor.as_mut() {
+            if let Some(source) = *bound {
+                let active = cursor.as_mut().ok_or(RuntimeError::Batch)?;
                 let mut relationships = [empty_relationship()?];
-                let (count, state) =
-                    self.view
-                        .expand_with_scratch(active, &mut relationships, scratch, context)?;
+                let (count, state) = self.view.expand(active, &mut relationships, context)?;
                 if state == CursorState::Done {
-                    *cursor = None;
+                    *bound = None;
                 }
                 if count == 1 {
                     let relationship = *relationships.first().ok_or(RuntimeError::Batch)?;
-                    let source = bound.ok_or(RuntimeError::Batch)?;
                     let neighbor = neighbor(source, relationship, direction)?;
                     if self.relationship_used(child, pattern, relationship.rel, index)? {
                         continue;
@@ -1321,21 +1304,16 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             } else {
                 RelationshipTypeSelection::Any(types.as_slice())
             };
-            *cursor = Some(if incident_source {
-                self.view.expansion_cursor_from_incident_source(
-                    source,
-                    direction_selection(direction),
-                    selection,
-                    context,
-                )?
+            if let Some(active) = cursor.as_mut() {
+                self.view.rebind_expansion(active, source, context)?;
             } else {
-                self.view.expansion_cursor(
+                *cursor = Some(self.view.expansion_cursor(
                     source,
                     direction_selection(direction),
                     selection,
                     context,
-                )?
-            });
+                )?);
+            }
         }
     }
 
@@ -2650,16 +2628,9 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
         .operators
         .get(node.0 as usize)
         .ok_or(PlanError::Reference)?;
-    let incident_scan = bindings
-        .is_none()
-        .then(|| {
-            planner::incident_source_scan(
-                plan.plan().description().operators,
-                plan.plan().description().expressions,
-                node,
-            )
-        })
-        .flatten();
+    let incident_sources = bindings.is_none()
+        && matches!(operator.kind, OperatorKind::Expand { .. })
+        && planner::incident_source_scan(plan.plan().description().operators, node);
     let state = match operator.kind {
         OperatorKind::Unit => PhysicalState::Unit { emitted: false },
         OperatorKind::ScanNodes { output, label } => {
@@ -2687,7 +2658,7 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 child,
                 output,
                 label,
-                incident_sources: None,
+                incident_sources: false,
                 cursor: None,
             }
         }
@@ -2761,24 +2732,18 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 context,
                 bindings,
             )?;
-            if let Some(scan) = incident_scan {
-                let mut anchor = child;
-                loop {
-                    let occurrence = occurrences
-                        .as_mut_slice()
-                        .get_mut(anchor)
-                        .ok_or(RuntimeError::Batch)?;
-                    match &mut occurrence.state {
-                        PhysicalState::Filter { child, .. } => anchor = *child,
-                        PhysicalState::ScanNodes {
-                            incident_sources, ..
-                        } if occurrence.node == scan => {
-                            *incident_sources = Some(direction);
-                            break;
-                        }
-                        _ => return Err(RuntimeError::Batch.into()),
-                    }
-                }
+            if incident_sources {
+                let occurrence = occurrences
+                    .as_mut_slice()
+                    .get_mut(child)
+                    .ok_or(RuntimeError::Batch)?;
+                let PhysicalState::ScanNodes {
+                    incident_sources, ..
+                } = &mut occurrence.state
+                else {
+                    return Err(RuntimeError::Batch.into());
+                };
+                *incident_sources = true;
             }
             let mut types = QueryArena::new(context.memory(), relationship_types.len())
                 .map_err(RuntimeError::Memory)?;
@@ -2800,11 +2765,9 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 relationship,
                 pattern,
                 direction,
-                incident_source: incident_scan.is_some(),
                 all_types: relationship_types.is_empty(),
                 types,
                 cursor: None,
-                scratch: None,
                 bound: None,
             }
         }

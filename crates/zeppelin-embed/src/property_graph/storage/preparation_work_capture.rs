@@ -13,6 +13,7 @@ pub(crate) struct Report {
     pub buffer_refusals: Vec<(&'static str, usize)>,
     pub protected_mark: Vec<(u64, u64, u16, u64)>,
     pub rejected: Option<(u64, u64)>,
+    pub query_scratch: Vec<(u64, usize)>,
 }
 thread_local! {
     static REPORT: RefCell<Option<Report>> = const { RefCell::new(None) };
@@ -53,6 +54,10 @@ pub(crate) fn child() {
 }
 pub(crate) fn rejected(work: u64, units: u64) {
     update(|r| r.rejected = Some((work, units)));
+}
+
+pub(crate) fn query_scratch(work: u64, bytes: usize) {
+    update(|r| r.query_scratch.push((work, bytes)));
 }
 
 pub(crate) fn protected_mark(mark_count: u64, protected_count: u64, height: u16, reads: u64) {

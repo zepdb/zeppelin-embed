@@ -122,6 +122,8 @@ impl<'a> RangeScratch<'a> {
     where
         'g: 'a,
     {
+        #[cfg(all(test, feature = "graph-cypher"))]
+        let start_work = r.work();
         r.step(0)?;
         let memory: &'a QueryMemory<'a> = memory;
         let owner = r.query_owner(memory)?;
@@ -156,11 +158,17 @@ impl<'a> RangeScratch<'a> {
                 .map_err(TreeError::Runtime)?;
         }
         r.step(0)?;
-        Ok(Self {
+        let scratch = Self {
             edges: RangeEdges::Query(edges),
             owner: RangeOwner::Query(owner),
             charge,
-        })
+        };
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::query_scratch(
+            r.work() - start_work,
+            scratch.owned_bytes(),
+        );
+        Ok(scratch)
     }
     /// Complete actual backing, descriptor and kernel-state reservation.
     pub fn owned_bytes(&self) -> usize {

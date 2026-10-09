@@ -508,6 +508,11 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         cursor::RelCursor::new(self.lease, selection, runtime)
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
+    pub(crate) fn retained_validation_bytes(&self) -> usize {
+        self.source.retained_validation_bytes()
+    }
+
     pub(crate) fn node_cursor(
         &'s self,
         selection: LabelSelection<'_>,
@@ -527,11 +532,9 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
 
     pub(crate) fn incident_source_cursor(
         &'s self,
-        labels: LabelSelection<'_>,
-        direction: crate::property_graph::query::plan::Direction,
         runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<NodeCursor<'s, 'm, 'g>, TreeError> {
-        cursor::NodeCursor::incident_sources(self.lease, labels, direction, runtime)
+        cursor::NodeCursor::incident_sources(self.lease, runtime)
     }
 
     pub(crate) fn scan_relationships(
@@ -541,11 +544,6 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<(usize, CursorState), TreeError> {
         cursor.scan(self.lease, self.source, self.catalog, output, runtime)
-    }
-
-    #[cfg(any(test, feature = "test-seams"))]
-    pub(crate) fn retained_validation_bytes(&self) -> usize {
-        self.source.retained_validation_bytes()
     }
 
     pub(crate) fn expansion_cursor(
@@ -558,20 +556,6 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         cursor::ExpandCursor::new(self.lease, node, direction, selection, runtime)
     }
 
-    /// The incident source cursor already checked this node's authoritative
-    /// Live state in this same immutable statement view.
-    pub(crate) fn expansion_cursor_from_incident_source(
-        &'s self,
-        node: NodeId,
-        direction: DirectionSelection,
-        selection: RelationshipTypeSelection<'_>,
-        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
-    ) -> Result<ExpandCursor<'s, 'm, 'g>, TreeError> {
-        let mut cursor = self.expansion_cursor(node, direction, selection, runtime)?;
-        cursor.source_was_checked();
-        Ok(cursor)
-    }
-
     pub(crate) fn expand(
         &self,
         cursor: &mut ExpandCursor<'s, 'm, 'g>,
@@ -580,21 +564,14 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
     ) -> Result<(usize, CursorState), TreeError> {
         cursor.scan(self.lease, self.source, self.catalog, output, runtime)
     }
-    pub(crate) fn expand_with_scratch(
+
+    pub(crate) fn rebind_expansion(
         &self,
         cursor: &mut ExpandCursor<'s, 'm, 'g>,
-        output: &mut [super::adjacency::RelationshipRow],
-        scratch: &mut Option<super::adjacency::RangeScratch<'m>>,
+        node: NodeId,
         runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
-    ) -> Result<(usize, CursorState), TreeError> {
-        cursor.scan_with_scratch(
-            self.lease,
-            self.source,
-            self.catalog,
-            output,
-            scratch,
-            runtime,
-        )
+    ) -> Result<(), TreeError> {
+        cursor.rebind(self.lease, node, runtime)
     }
 }
 
@@ -666,7 +643,36 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
         else {
             continue;
         };
-        let matched = node_matches_labels(source, node, &record, labels, catalog, r)?;
+        let super::records::RecordShape::Node { labels: count, .. } = record.shape() else {
+            return Err(TreeError::Invalid("node directory role"));
+        };
+        let mut matched = true;
+        for wanted in labels {
+            let mut found = wanted.get() == u64::MAX
+                && source
+                    .lease()
+                    .document_version(node)
+                    .map_err(|error| {
+                        TreeError::Control(crate::lifecycle::QueryError::Store(error))
+                    })?
+                    .is_some();
+            for index in 0..count {
+                let label = record.label(index, r)?;
+                if label == *wanted
+                    || (wanted.get() == u64::MAX
+                        && catalog
+                            .name(crate::property_graph::catalog::Symbol::Label(label), r)?
+                            .is_some_and(|name| name.as_str() == "Document"))
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                matched = false;
+                break;
+            }
+        }
         if matched {
             output.push(node).map_err(|_| TreeError::Memory)?;
             if output.len() == output.capacity() {
@@ -701,46 +707,6 @@ pub(super) fn lookup_node_state<'a, S: BlockSource>(
         r,
     )
     .map(Some)
-}
-
-#[cfg(feature = "graph-cypher")]
-fn node_matches_labels<'a, 'lease, 'm, 'g>(
-    source: &'a NativeQuerySource<'lease, 'm, 'g>,
-    node: NodeId,
-    record: &RecordView<'a, NativeQuerySource<'lease, 'm, 'g>>,
-    labels: &[crate::property_graph::catalog::LabelId],
-    catalog: &NativeCatalog<'a, 'm, 'g>,
-    r: &mut TreeResources<'_>,
-) -> Result<bool, TreeError> {
-    let super::records::RecordShape::Node { labels: count, .. } = record.shape() else {
-        return Err(TreeError::Invalid("node directory role"));
-    };
-    let mut matched = true;
-    for wanted in labels {
-        let mut found = wanted.get() == u64::MAX
-            && source
-                .lease()
-                .document_version(node)
-                .map_err(|error| TreeError::Control(crate::lifecycle::QueryError::Store(error)))?
-                .is_some();
-        for index in 0..count {
-            let label = record.label(index, r)?;
-            if label == *wanted
-                || (wanted.get() == u64::MAX
-                    && catalog
-                        .name(crate::property_graph::catalog::Symbol::Label(label), r)?
-                        .is_some_and(|name| name.as_str() == "Document"))
-            {
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            matched = false;
-            break;
-        }
-    }
-    Ok(matched)
 }
 
 #[cfg(test)]
