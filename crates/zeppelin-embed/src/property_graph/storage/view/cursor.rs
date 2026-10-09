@@ -767,15 +767,18 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
                     break;
                 };
                 let mut key = [0_u8; 40];
-                key.get_mut(..16)
-                    .ok_or(TreeError::Memory)?
-                    .copy_from_slice(&next.to_le_bytes());
-                key.get_mut(16..24)
-                    .ok_or(TreeError::Memory)?
-                    .copy_from_slice(&1_u64.to_le_bytes());
-                key.get_mut(24..)
-                    .ok_or(TreeError::Memory)?
-                    .copy_from_slice(&1_u128.to_le_bytes());
+                let Some(node_bytes) = key.get_mut(..16) else {
+                    return Err(TreeError::Memory);
+                };
+                node_bytes.copy_from_slice(&next.to_le_bytes());
+                let Some(type_bytes) = key.get_mut(16..24) else {
+                    return Err(TreeError::Memory);
+                };
+                type_bytes.copy_from_slice(&1_u64.to_le_bytes());
+                let Some(relationship_bytes) = key.get_mut(24..) else {
+                    return Err(TreeError::Memory);
+                };
+                relationship_bytes.copy_from_slice(&1_u128.to_le_bytes());
                 Some(key)
             }
             None => None,
@@ -798,7 +801,7 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
             .key()
             .node;
         after = Some(node);
-        let state = lookup_node_state(
+        let Some(state) = lookup_node_state(
             source,
             roots,
             node,
@@ -806,7 +809,9 @@ fn scan_incident_sources_after<'lease, 'm, 'g>(
             lease.bundle().document(),
             resources,
         )?
-        .ok_or(TreeError::Missing)?;
+        else {
+            return Err(TreeError::Missing);
+        };
         if matches!(state, NodeRecordState::Live(_)) {
             output.push(node).map_err(|_| TreeError::Memory)?;
         }

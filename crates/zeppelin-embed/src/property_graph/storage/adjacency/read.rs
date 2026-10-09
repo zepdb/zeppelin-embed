@@ -308,9 +308,9 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
                 if beyond(edge.rel, query.relationships.upper) {
                     break;
                 }
-                let authoritative = self
-                    .raw_relationship(edge.rel, r)?
-                    .ok_or(TreeError::Missing)?;
+                let Some(authoritative) = self.raw_relationship(edge.rel, r)? else {
+                    return Err(TreeError::Missing);
+                };
                 let (bound, neighbor) = match query.direction {
                     Direction::Out => (authoritative.source, authoritative.target),
                     Direction::In => (authoritative.target, authoritative.source),

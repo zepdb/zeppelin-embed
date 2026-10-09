@@ -180,7 +180,7 @@ pub(super) fn compare(
     }
 }
 
-fn validate_numeric_key(kind: TreeKind, key: Key<'_>) -> Result<(), TreeError> {
+pub(super) fn validate_numeric_key(kind: TreeKind, key: Key<'_>) -> Result<(), TreeError> {
     let Key::Inline(bytes) = key else {
         return Err(TreeError::Invalid("overflow numeric key"));
     };

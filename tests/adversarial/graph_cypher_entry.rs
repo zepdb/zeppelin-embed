@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 31] = [
+pub const REQUIRED_COVERAGE: [&str; 32] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -49,6 +49,7 @@ pub const REQUIRED_COVERAGE: [&str; 31] = [
     "property-graph.cypher-entry.page-validation.statement-scope",
     "property-graph.cypher-entry.expand-rebind.clean",
     "property-graph.cypher-entry.expand.authoritative-row",
+    "property-graph.cypher-entry.relationship-cancel.fire",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -194,6 +195,7 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         probe_document_scan(&store)?;
         probe_page_validation(&store)?;
         probe_expansion_rebind(&store, base)?;
+        probe_relationship_control(&store)?;
         generations.push(read(&store)?.1);
         probe_id_lookup(&store)?;
 
@@ -342,6 +344,26 @@ fn probe_page_validation(store: &Store) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn probe_relationship_control(store: &Store) -> Result<(), String> {
+    let cancelled = CancelToken::new();
+    cancelled.cancel();
+    match execute(
+        store,
+        &QueryControl::Cancel(cancelled),
+        &GraphQueryOptions::default(),
+        "MATCH (a)-[r:R]->(b) RETURN count(r)",
+        &[],
+        CompileLimits::default(),
+    ) {
+        Err(StatementError::Query(error))
+            if error.kind() == GraphQueryErrorKind::Cancelled && error.nothing_committed() =>
+        {
+            Ok(())
+        }
+        _ => Err(String::from("relationship cancellation did not fire")),
+    }
 }
 
 fn probe_expansion_rebind(store: &Store, base: i64) -> Result<(), String> {

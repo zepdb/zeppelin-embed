@@ -374,6 +374,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.cypher-entry.page-validation.statement-scope",
     "property-graph.cypher-entry.expand-rebind.clean",
     "property-graph.cypher-entry.expand.authoritative-row",
+    "property-graph.cypher-entry.relationship-cancel.fire",
     "property-graph.relational.order-bags",
     "property-graph.relational.collect",
     "property-graph.relational.eligible",

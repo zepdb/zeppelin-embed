@@ -426,3 +426,35 @@ historical ignores; ffi_contract: 21 pass; unified: 19 pass (49.55 s);
 both required registry pins: 1 pass each. Static gates clean. Complete
 logs S3-*.log; exact gate commands in .ctx/run-gates.py S3. No format, ABI,
 golden or dependency change. No S4/S5 timing target claimed yet.
+
+## S4 bounded page checkpoints and lazy errors (ZE-415; in progress)
+
+BEFORE: S3 AFTER smoke, 88.69 s, 14/14 feature faults, zero violations.
+Named RED page_cell_work_is_charged_once: 256 numeric leaf cells made
+768 checkpoints for 768 work units. GREEN: at most 3 polls and the same
+768 units. Companion cancellation_is_observed_within_one_page checks
+typed non-partial cancellation at polls 1, 2, and 3. Initial fixture
+configuration was corrected to the existing 256 MiB resident fixture
+before the intended RED. Full logs S4-page-red-final.log and focused logs.
+
+Numeric validation and sortedness are unchanged; work is charged at the
+bounded 16 KiB page boundary with a final poll before memo publication.
+Overflow fence payloads retain their chunk checks. Lookup/routing cell
+work is batched; hot-path errors are constructed only on failure.
+Focused directory suite: 35 pass (14.15 s); directed probe: 1 pass
+(2.42 s), including required relationship-cancel.fire coverage. A final
+fence-cell bookkeeping adjustment and all full gates/timings are pending.
+
+Final S4 product checks pass; every completed log line read. Exact page
+and cancellation tests: 1 each; directory suite: 35 pass (13.96 s);
+directed entry: 1 pass (2.32 s). Clippy rejected the initial lazy closures
+as unnecessary_lazy_evaluations; explicit let-Some/else failure branches
+passed without lint exceptions. Static gates all clean. AFTER smoke:
+88.30 s, 14/14 feature faults, zero violations; complete output read.
+Full Cypher: 23 graph-search (622.76 s), 14 lowering, 12 execution;
+format_compat: 3 pass/4 historical default ignores; FFI: 21 pass; unified:
+19 pass (50.48 s); both required registry pins: 1 each. Logs S4-*.log;
+commands .ctx/run-S4-focused.py, .ctx/run-gates.py S4 fmt clang-format,
+.ctx/run-gates.py S4 cypher-tests, and scripts/adversarial.sh smoke
+--campaign property-graph --profile none. Fresh-addon timings follow
+the S4 engine commit. No format, ABI, golden or dependency change.

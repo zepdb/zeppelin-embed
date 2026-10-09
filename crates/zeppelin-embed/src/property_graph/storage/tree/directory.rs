@@ -503,7 +503,9 @@ impl<'a> TreeResources<'a> {
                 context.checkpoint().map_err(TreeError::Runtime)?;
             }
         }
-        let next = self.work.checked_add(units).ok_or(TreeError::Work)?;
+        let Some(next) = self.work.checked_add(units) else {
+            return Err(TreeError::Work);
+        };
         if matches!(
             self.control,
             TreeControl::Direct { limit, .. } if next > limit
@@ -808,10 +810,39 @@ fn checked_page<'a>(
     };
     let mut previous = None;
     if !cached {
+        // Numeric keys live entirely within this bounded 16 KiB page. Charge
+        // the same cell/validation/comparison work once, then poll again before
+        // publishing its proof. Overflow fence keys retain chunk checkpoints.
+        let numeric = root.kind != TreeKind::KeyFences;
+        let units = if numeric {
+            let keys = cells.saturating_sub(usize::from(page.header().level > 0));
+            let Some(units) = cells
+                .checked_add(keys)
+                .and_then(|units| units.checked_add(keys.saturating_sub(1)))
+            else {
+                return Err(TreeError::Work);
+            };
+            units
+        } else {
+            cells
+        };
+        resources.step(units as u64)?;
         for index in 0..cells {
-            resources.step(1)?;
             let key = key_at(index)?;
             if let Some(key) = key {
+                if numeric {
+                    keys::validate_numeric_key(root.kind, key)?;
+                    if let Some(old) = previous {
+                        let (Key::Inline(old), Key::Inline(current)) = (old, key) else {
+                            return Err(TreeError::Invalid("overflow numeric comparator"));
+                        };
+                        if !super::compare_inline_keys(root.kind, old, current)?.is_lt() {
+                            return Err(TreeError::Invalid("duplicate or unordered directory key"));
+                        }
+                    }
+                    previous = Some(key);
+                    continue;
+                }
                 validate_key(
                     source,
                     DirectoryRoot {
@@ -850,8 +881,11 @@ fn checked_page<'a>(
             return Err(TreeError::Invalid("key exceeds ancestor upper bound"));
         }
     }
-    if !cached && let Some(reference) = reference {
-        source.mark_page_validated(reference)?;
+    if !cached {
+        resources.step(0)?;
+        if let Some(reference) = reference {
+            source.mark_page_validated(reference)?;
+        }
     }
     Ok(page)
 }
@@ -1416,8 +1450,8 @@ fn find_path_inner<S: BlockSource>(
                     );
                 #[cfg(all(test, feature = "graph-cypher"))]
                 let mut verify_calls = 0;
+                resources.step(count(bytes)? as u64)?;
                 for index in 0..count(bytes)? {
-                    resources.step(1)?;
                     let Cell::Leaf { key, value } = owned_page_cell(bytes, page.header(), index)?
                     else {
                         return Err(TreeError::Invalid("leaf required"));
@@ -1457,8 +1491,9 @@ fn find_path_inner<S: BlockSource>(
         }
         let mut selected = None;
         let mut prior = lower;
+        let mut inspected = 0_u64;
         for index in 0..count(bytes)? {
-            resources.step(1)?;
+            inspected += 1;
             let Cell::Branch {
                 upper: bound,
                 child,
@@ -1497,15 +1532,10 @@ fn find_path_inner<S: BlockSource>(
                 })?;
             }
             if selected.is_none()
-                && (bound.is_none()
-                    || key
-                        .compare_stored(
-                            source,
-                            root,
-                            bound.ok_or(TreeError::Invalid("bound"))?,
-                            resources,
-                        )?
-                        .is_lt())
+                && match bound {
+                    None => true,
+                    Some(bound) => key.compare_stored(source, root, bound, resources)?.is_lt(),
+                }
             {
                 selected = Some((index, child, prior, bound.or(upper)));
                 if validator.is_none() {
@@ -1514,8 +1544,10 @@ fn find_path_inner<S: BlockSource>(
             }
             prior = bound;
         }
-        let (child_index, child, child_lower, child_upper) =
-            selected.ok_or(TreeError::Invalid("missing branch route"))?;
+        resources.step(inspected)?;
+        let Some((child_index, child, child_lower, child_upper)) = selected else {
+            return Err(TreeError::Invalid("missing branch route"));
+        };
         path.push(PathEntry {
             reference,
             child: child_index,
@@ -1602,9 +1634,10 @@ fn lookup_probe_entry<'a>(
     )?;
     let mut low = 0;
     let mut high = count(block.payload())?;
+    let mut inspected = 0_u64;
     while low < high {
         let index = low + (high - low) / 2;
-        resources.step(1)?;
+        inspected += 1;
         let Cell::Leaf { key: stored, value } =
             owned_page_cell(block.payload(), page.header(), index)?
         else {
@@ -1612,7 +1645,7 @@ fn lookup_probe_entry<'a>(
         };
         match key.compare_stored(source, root, stored, resources)? {
             std::cmp::Ordering::Equal => {
-                resources.step(0)?;
+                resources.step(inspected)?;
                 return Ok(Some(DirectoryEntry {
                     root,
                     key: stored,
@@ -1624,6 +1657,7 @@ fn lookup_probe_entry<'a>(
             std::cmp::Ordering::Less => high = index,
         }
     }
+    resources.step(inspected)?;
     Ok(None)
 }
 
@@ -4631,6 +4665,113 @@ pub(crate) mod tests {
                 "numeric leaf probes must checkpoint by page"
             );
             assert_eq!(resources.work(), 788);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "graph-cypher"))]
+mod relationship_speed_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+    use crate::lifecycle::{CancelToken, OpenOptions, Store};
+    use crate::property_graph::storage::artifact::ArtifactId;
+    use std::cell::Cell as Counter;
+
+    struct NoSource;
+    impl BlockSource for NoSource {
+        fn resolve<'a>(
+            &'a self,
+            _: PhysicalRef,
+            _: &mut TreeResources<'_>,
+        ) -> Result<FramedBlock<'a>, TreeError> {
+            Err(TreeError::Missing)
+        }
+    }
+
+    fn page_check(cancel_at: Option<u64>) -> (Result<(), TreeError>, u64, u64) {
+        let parent = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            parent.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let cancel = CancelToken::new();
+        let control = QueryControl::Cancel(cancel.clone());
+        let mut resources = TreeResources::new(&control, &shared, 100_000).unwrap();
+        let polls = Counter::new(0_u64);
+        let checkpoint = || {
+            polls.set(polls.get() + 1);
+            if cancel_at == Some(polls.get()) {
+                cancel.cancel();
+            }
+            Ok(())
+        };
+        resources.preparation_checkpoint = Some(&checkpoint);
+        let keys: Vec<_> = (0_u128..256).map(u128::to_le_bytes).collect();
+        let cells: Vec<_> = keys
+            .iter()
+            .map(|key| Cell::Leaf {
+                key: Key::Inline(key),
+                value: b"x",
+            })
+            .collect();
+        let generation = GraphGeneration::new(1);
+        let identity = ArtifactIdentity {
+            store: StoreInstanceId::new(1).unwrap(),
+            artifact: ArtifactId::new(1).unwrap(),
+            generation,
+            creation_serial: 1,
+        };
+        let root = DirectoryRoot::empty(identity.store, TreeKind::Nodes, generation);
+        let mut bytes = [0_u8; PAGE_BYTES];
+        encode_page(
+            PageHeader {
+                kind: TreeKind::Nodes,
+                level: 0,
+                generation,
+            },
+            &cells,
+            &mut bytes,
+        )
+        .unwrap();
+        let result = checked_page(
+            &NoSource,
+            root,
+            identity,
+            None,
+            &bytes,
+            None,
+            None,
+            &mut resources,
+        )
+        .map(|_| ());
+        let work = resources.work();
+        drop(resources);
+        store.close().unwrap();
+        (result, polls.get(), work)
+    }
+
+    #[test]
+    fn page_cell_work_is_charged_once() {
+        let (result, polls, work) = page_check(None);
+        result.unwrap();
+        assert_eq!(work, 768, "retain all cell, validation and comparison work");
+        assert!(polls <= 3, "one bounded page used {polls} checkpoints");
+    }
+
+    #[test]
+    fn cancellation_is_observed_within_one_page() {
+        for cancel_at in [1, 2, 3] {
+            let (result, polls, _) = page_check(Some(cancel_at));
+            assert!(
+                matches!(
+                    result,
+                    Err(TreeError::Control(QueryError::Cancelled { partial: false }))
+                ),
+                "page escaped cancellation: {result:?}"
+            );
+            assert_eq!(polls, cancel_at);
         }
     }
 }
