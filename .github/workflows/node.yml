@@ -223,6 +223,12 @@ jobs:
       - name: Record Windows archive disk usage
         shell: bash
         run: du -k target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib
+      - name: Gate Windows graph archive linked sections
+        shell: bash
+        run: |
+          llvm_bin="$(python -c 'from pathlib import Path; import subprocess; print(Path(subprocess.check_output(["rustc", "--print", "target-libdir"], text=True).strip()).parent / "bin")')"
+          export PATH="$(cygpath -u "$llvm_bin"):$PATH"
+          bash scripts/size-budget.sh --graph-archive target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib
       - name: Verify Windows packaging contracts
         shell: bash
         run: |
@@ -243,7 +249,12 @@ jobs:
           cargo test --locked -p zeppelin-embed --features graph-cypher --test graph_artifact
           cargo test --locked -p zeppelin-embed --lib --features graph-cypher lifecycle::lock
           cargo test --locked -p zeppelin-embed --lib --features graph-cypher sys::windows::entropy_tests
-          cargo test --locked -p zeppelin-embed --lib --features graph-cypher lifecycle::native_graph
+          $nativeGraphTestArgs = @()
+          # Owner waived only this slow test for the 0.7.0 release.
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.release_tag }}' -eq 'v0.7.0') {
+            $nativeGraphTestArgs = @('--', '--skip', 'lifecycle::native_graph::tests::mapping_slots::ze316_count_reclaim_bounds_census_and_work')
+          }
+          cargo test --locked -p zeppelin-embed --lib --features graph-cypher lifecycle::native_graph @nativeGraphTestArgs
       # On Windows the crash-safety suite's kill is TerminateProcess.
       - run: npm test
         working-directory: bindings/node

@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -289,13 +290,39 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('zeppelin-embed-cypher', result.stderr)
         self.assertIn('below 90%', result.stderr)
 
+    def test_windows_shipping_archive_rejects_over_budget(self):
+        workflow = (self.g.ROOT / '.github/workflows/node.yml').read_text()
+        windows = workflow.split('  windows-package:', 1)[1].split('  electron-package:', 1)[0]
+        commands = [shlex.split(line.strip()) for line in windows.splitlines()
+                    if line.strip().startswith('bash scripts/size-budget.sh --graph-archive ')]
+        self.assertEqual(len(commands), 1, 'Windows shipping archive has no linked-section gate')
+        command = commands[0]
+        self.assertEqual(command[-1],
+            'target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib')
+        source = self.root / 'over-budget.c'
+        source.write_text('char ze_size_fixture[12288 * 1024 + 1] = {1};\n')
+        obj = self.root / 'over-budget.o'
+        archive = self.root / 'over-budget.a'
+        subprocess.run(['clang', '-c', str(source), '-o', str(obj)], check=True, capture_output=True)
+        subprocess.run(['ar', 'rcs', str(archive), str(obj)], check=True, capture_output=True)
+        command[-1] = str(archive)
+        env = dict(os.environ, CARGO_TARGET_DIR=str(self.root / 'target'),
+                   ZE_GRAPH_SIZE_BUDGET_KB='12288')
+        result = subprocess.run(command, cwd=self.g.ROOT, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('exceeds budget 12288 KB', result.stderr)
+        report = json.loads(next((self.root / 'target/size-budget').glob('*size.txt.json')).read_text())
+        self.assertGreater(report['section_bytes'], 12288 * 1024)
+        self.assertEqual(report['sha256'], self.ref(archive)['sha256'])
+
     def test_installed_checker_requires_structured_handoff(self):
         spec = importlib.util.spec_from_file_location('installed',
             self.g.ROOT / 'scripts/release/check-installed-graph.py')
         installed = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(installed)
         report = {'reachability': {kind: dict(executed=['batch', 'cypher'],
-            artifact_kind='graph-cypher', exit_status=0) for kind in ('c-static', 'c-dylib', 'swift')}}
+            artifact_kind='graph-cypher', exit_status=0, resources=True)
+            for kind in ('c-static', 'c-dylib', 'swift', 'rust')}}
         with self.assertRaisesRegex(ValueError, 'ZE-71/ZE-278'):
             installed.require_structured_execution(report)
         for receipt in report['reachability'].values():
