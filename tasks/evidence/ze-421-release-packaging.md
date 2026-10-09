@@ -163,3 +163,35 @@ truncation: .ctx/swift-packaging-graph-GREEN.log (202 lines) and
 .ctx/swift-packaging-legacy.log. Named RED/GREEN logs and intermediate failed
 attempts are retained in .ctx/swift-query-options-* and
 .ctx/swift-search-reports-*. Original full failures are not gate credit.
+
+## First exact CI pins and downloaded-consumer verification
+
+Rehearsal 37929723958, source 0ec28f50b42bf8ac16f5335d48d6d666189f4ecf,
+macos-14-arm64 image 20260831.0302.1, macOS 14.8.9/23J631, stable Rust
+1.93.0, nightly-2026-07-01 1.98.0-nightly/f46ec5218, Xcode 15.4.
+Both artifact builds passed their architecture/export/size checks and uploaded
+archives before intentionally failing verification against zero placeholders.
+Qualify/attach were skipped; nothing was publicly released. Complete Actions
+log (1424 lines) was read through its metadata-normalized form (1451 lines),
+including existing strip and Actions Node deprecation diagnostics. The run is
+not claimed green. Downloaded file SHA-256 values exactly match producers:
+
+- legacy XCFramework: 4016bfdeaecae0617ef3f3e879b80451601b53902194fc384ec6eb67a58705b9
+- graph XCFramework: 18fe397689d18f6f0225b8faf6d0456ee0c47f211a95c101096b0a4934dbda15
+- legacy C SDK: bb31e0aabbe9e8bd9c1c02ea06e4899ba0aef508b558576ef70c92e868626053
+- graph C SDK: 278e46f755d8f5d47a159fa6b173bfd8cee46280d5255e24830ae381d477c8a7
+
+Root manifest now pins the two XCFramework hashes. Checksum-enforced command:
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk python3.13 scripts/release/check-installed-graph.py --artifact-root .ctx/ci-rehearsal-37929723958 --enforce-checksum --output .ctx/installed-ci-pins
+Exit 0. Actual/pinned graph hash matches. C static, C dylib, Rust and Swift
+receipts all pass; 21 profile cases for each C flavor pass. The legacy
+substitution returns the required typed unsupported-build refusal. Complete
+primary log read: .ctx/installed-ci-pins.log. Existing strip diagnostics remain
+recorded, not claimed warning-free. Consumer Swift build: 5.57s.
+Exact CI archive sections: legacy ARM 4732 KiB, Intel 5478 KiB <=5632;
+graph ARM 8786 KiB <=12288. Graph core 7911 KiB reported separately with no
+second gate. Latest 11 checker self-tests pass in 0.886s, full log read.
+
+These pins cover production da2df110. ZE-420 is still separately owned and
+active; any later production change requires fresh final-source archive proof
+and matching pins before ZE-369 publishes. No ABI/format/golden changes.
