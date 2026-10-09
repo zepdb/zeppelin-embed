@@ -899,3 +899,54 @@ All exact RED/GREEN logs were read completely:
 `.ctx/Full-failure-{RED,GREEN}-{1..7}.log`. The interrupted full-suite attempt
 will be repeated on final main with the higher descriptor limit. These focused
 passes alone do not constitute a full-workspace pass.
+
+### Final remaining workspace targets and top-k accounting fixture
+
+The final-main full command at `4e6b00d3` ran for 2985.62 seconds:
+`cargo test --workspace --exclude zeppelin-embed-workspace-tests --features
+zeppelin-embed-ffi/graph-cypher --no-fail-fast`, with an inherited descriptor
+limit of 65536. Every one of its 4997 output lines was read; no warnings.
+The owner explicitly waived only
+`lifecycle::native_graph::tests::mapping_slots::ze316_count_reclaim_bounds_census_and_work`
+and requested proceeding to the 0.7.0 release. Only the owned core test binary
+was stopped with SIGTERM; Cargo continued the remaining targets. Its inventory
+contained 1238 tests: 1227 passed, 9 existing ignores, and exactly two unfinished
+tests. The other unfinished test,
+`lifecycle::native_graph::tests::publication::ze76_commit_io_matches_independent_vfs_witness`,
+passed separately on main (1 pass, 0.13s). No complete core or whole-workspace
+pass is claimed from this run. The waiver is also recorded in ZE-416 and E15.
+
+The remaining targets found one actual failure: `ze255_top_k_memory_bound`.
+Its exact RED probe reproduced the full-run result on unchanged main:
+128 rows peak 2658157 bytes, 5000 rows peak 2658187 bytes; 1 failure, 12.14s.
+A diagnostic streaming sum over the same properties also grew by exactly
+30 bytes: 3651417 to 3651447, with exact sums 8128 and 12497500. This shared
+growth is consistent with the statement-lived page-validation memo, rather
+than input-sized top-k row storage.
+
+The test-only correction retains the full reported query peaks and compares
+top-k growth against the streaming sum's growth. It verifies both exact sums
+and the original ordered top-k rows, and still rejects top-k row storage that
+grows beyond shared scan bookkeeping. No estimated memo capacity is subtracted,
+no budget is relaxed, and no production code changes. Named GREEN: 1 pass,
+12.22s. Temporary diagnostic logging was removed.
+
+All other remaining workspace targets passed, including Cypher graph-search
+39/39 in 688.58s, the format compatibility fixtures, FFI layouts/headers, FFI
+ownership, text pipeline and doctests. The overall Cargo exit was 101 for
+the deliberately stopped core binary and the top-k failure corrected above;
+it is not presented as a successful whole-workspace run.
+
+Raw receipts: `.ctx/Final-main-full-suite-fd65536.{json,log}`;
+`.ctx/Full-suite-history-owner-waiver.json`;
+`.ctx/Final-main-core-test-inventory-waiver.json`;
+`.ctx/Top-k-memory-{RED,diagnostic,GREEN}.log`;
+`.ctx/Final-main-ze76-witness.log`. All diagnostic and GREEN lines were read.
+
+The relationship branch was fast-forwarded to main and pushed to origin/main
+at `4e6b00d3`, after both ancestry checks; the remote SHA was verified. All
+15 commit messages met the 70-column/no-trailer requirement. User dirty files
+`.gitignore`, `AGENTS.md` and `README.md` retain their exact protected hashes.
+The additional test-only correction's final-main gates and push follow this
+record; ZE-416 remains open until those complete. Release publication is a
+separate owner-authorized task under ZE-369, with packaging repair ZE-421.

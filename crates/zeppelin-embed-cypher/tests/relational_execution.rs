@@ -443,11 +443,25 @@ fn ze255_top_k_memory_bound() {
                 .map(|i| vec![V::Int(i)])
                 .collect::<Vec<_>>()
         );
-        peaks.push(result.metadata().peak_query_bytes);
+        let peak = result.metadata().peak_query_bytes;
+        drop(result);
+        // Both queries scan the same properties and retain the statement's
+        // page-validation memo. Compare growth against a streaming aggregate
+        // so the fixed-k operator cannot hide input-sized row storage behind
+        // that shared bookkeeping.
+        let baseline = graph
+            .run("MATCH (n:Segment) RETURN sum(n.i) AS sum", &[])
+            .unwrap();
+        assert_eq!(
+            tck::actual_table(&baseline).1,
+            vec![vec![V::Int(count * (count - 1) / 2)]]
+        );
+        peaks.push((peak, baseline.metadata().peak_query_bytes));
     }
     assert_eq!(
-        peaks[0], peaks[1],
-        "fixed k must retain the same charged capacity across input sizes"
+        peaks[1].0.checked_sub(peaks[0].0).unwrap(),
+        peaks[1].1.checked_sub(peaks[0].1).unwrap(),
+        "fixed k must add no input-sized capacity beyond the streaming scan"
     );
 }
 
