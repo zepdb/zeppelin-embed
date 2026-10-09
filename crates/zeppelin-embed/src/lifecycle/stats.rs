@@ -15,6 +15,7 @@ pub use allocation_interval::{
 
 /// Store-cumulative native write work, including work before rejected writes.
 /// Byte metrics are logical formats, not allocation capacities or DRAM traffic.
+#[cfg(feature = "graph-cypher")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GraphWorkLedger {
     /// Non-query storage work, including preparation and maintenance.
@@ -65,6 +66,7 @@ pub struct GraphWorkLedger {
     /// Successful commit directory syncs.
     pub directory_sync_successes: u64,
 }
+#[cfg(feature = "graph-cypher")]
 #[derive(Clone, Copy)]
 pub(crate) enum GraphWorkKind {
     StorageLookups,
@@ -92,6 +94,7 @@ pub(crate) enum GraphWorkKind {
     DirectorySyncAttempts,
     DirectorySyncSuccesses,
 }
+#[cfg(feature = "graph-cypher")]
 impl GraphWorkLedger {
     pub(crate) fn add(&mut self, kind: GraphWorkKind, units: u64) {
         let slot = match kind {
@@ -128,6 +131,7 @@ impl GraphWorkLedger {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
 impl GraphWorkLedger {
     pub(crate) fn merge(&mut self, other: Self) {
         self.storage_lookups = self.storage_lookups.saturating_add(other.storage_lookups);
@@ -246,8 +250,9 @@ pub(crate) struct Accounting {
     #[cfg(feature = "graph-cypher")]
     resident_ceiling: std::sync::atomic::AtomicU64,
     state: Mutex<AccountingState>,
+    #[cfg(feature = "graph-cypher")]
     graph_work: Mutex<GraphWorkLedger>,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "graph-cypher"))]
     graph_work_merges: std::sync::atomic::AtomicU64,
 }
 
@@ -257,8 +262,9 @@ impl Accounting {
             budgets: Budgets::new(max_resident_bytes, max_temp_bytes),
             #[cfg(feature = "graph-cypher")]
             resident_ceiling: std::sync::atomic::AtomicU64::new(max_resident_bytes),
-            #[cfg(test)]
+            #[cfg(all(test, feature = "graph-cypher"))]
             graph_work_merges: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(feature = "graph-cypher")]
             graph_work: Mutex::new(GraphWorkLedger {
                 storage_lookups: 0,
                 storage_scans: 0,
@@ -430,13 +436,14 @@ impl Accounting {
         })?;
         Ok((state.resident_owned_bytes, state.resident_peak_bytes))
     }
-    #[cfg(any(test, feature = "test-seams"))]
+    #[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
     pub(crate) fn graph_work(&self) -> GraphWorkLedger {
         *self
             .graph_work
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+    #[cfg(feature = "graph-cypher")]
     pub(crate) fn merge_graph_work(&self, delta: GraphWorkLedger) {
         #[cfg(test)]
         self.graph_work_merges
@@ -446,17 +453,17 @@ impl Accounting {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .merge(delta);
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "graph-cypher"))]
     pub(crate) fn ze76_work_merges(&self) -> u64 {
         self.graph_work_merges
             .load(std::sync::atomic::Ordering::Relaxed)
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "graph-cypher"))]
     #[allow(clippy::unwrap_used)]
     pub(crate) fn ze76_overflow_work(&self) {
         self.graph_work.lock().unwrap().wal_appends = u64::MAX;
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "graph-cypher"))]
     #[allow(clippy::unwrap_used, clippy::panic)]
     pub(crate) fn ze76_poison_work(&self) {
         let _ = std::panic::catch_unwind(|| {

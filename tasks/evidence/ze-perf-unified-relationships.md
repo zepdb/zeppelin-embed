@@ -778,3 +778,31 @@ ID expansion0.5065ms <=1ms and relationship LIMIT10 1.203667ms
 <=2ms pass. These replace the preceding historical S5 measurements
 for final acceptance; no optional S6 work was added. Final main gates,
 size qualification, the once final full suite and push remain pending.
+
+### Graph-free size prerequisite: compile graph accounting only with graph
+
+Final-main focused checks passed: Node harness4; fresh memo, corruption,
+scratch, page charge, both cancellation tests and planner1each;
+public directories35 (13.99s); directed entry1 (2.59s). Full logs read.
+The graph-free size build emitted five dead-code warnings for the graph
+ledger enum/methods, accounting field and merge method. Under the goal's
+no-warning rule this attempt failed and only its owned process tree was
+terminated (exit143). Complete114-line output read and preserved in
+`.ctx/Final-main-size-before-feature-gating.log`; no size pass claimed.
+
+Compile regression RED:
+`RUSTFLAGS='-D warnings' cargo check -p zeppelin-embed --lib`
+reported the five unused graph accounting items. Feature-gated the graph
+ledger and private accounting machinery with `graph-cypher`, as their
+callers already are. Graph-enabled code remains unchanged. Graph-free
+builds no longer carry an unused graph-work mutex. One intermediate
+check identified the ledger type also needed the same feature guard;
+that failure is preserved. Final compile GREEN: exit0,3.36s, no warnings.
+Existing `property_graph::resources::work_batch::tests::ze76_request_work_flushes_once_including_failure_prefix`
+passes1/1; graph diagnostic saturation/poison coverage remains in its
+existing tests. No persisted format, C ABI, golden or dependency change.
+No new fault site/mode or operation ordering change is introduced.
+
+Logs `.ctx/S5-graphfree-warnings-{red,intermediate,green}.log` and
+`S5-graph-accounting-green.log`, all read in full. Final source changes
+require a fresh addon and final-main gate rerun before the once full suite.
