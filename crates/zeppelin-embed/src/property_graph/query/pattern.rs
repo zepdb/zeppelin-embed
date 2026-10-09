@@ -3145,16 +3145,22 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 context,
                 bindings,
             )?;
-            PhysicalState::Aggregate {
-                child,
-                state: relational::AggregateState::new(
-                    keys,
-                    aggregates,
-                    plan.plan().description().expressions,
-                    capacity,
-                    context,
-                )?,
+            let mut state = relational::AggregateState::new(
+                keys,
+                aggregates,
+                plan.plan().description().expressions,
+                capacity,
+                context,
+            )?;
+            if bindings.is_none() && !plan.plan().classification().writes() {
+                state
+                    .as_mut_slice()
+                    .first_mut()
+                    .ok_or(RuntimeError::Batch)?
+                    .global_node_count =
+                    planner::global_node_count(plan.plan().description(), operator);
             }
+            PhysicalState::Aggregate { child, state }
         }
         OperatorKind::Search { call, .. } => PhysicalState::Search {
             call: call.0 as usize,

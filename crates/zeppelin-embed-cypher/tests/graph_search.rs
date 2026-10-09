@@ -1256,3 +1256,183 @@ mod incident_sources {
         assert!(original_visits > 0);
     }
 }
+
+mod ze404_counts {
+    use super::*;
+    use zeppelin_embed::property_graph::query::runtime::{WorkCounters, WorkKind};
+    use zeppelin_embed::property_graph::staging::{
+        StructuredOperation, StructuredWrite, WriteImage,
+    };
+    use zeppelin_embed::property_graph::{
+        ApplicationKey, EntityKind, GraphName, GraphRevision, NodeId, NodeRef,
+    };
+
+    fn fixture() -> (Directory, Store) {
+        let directory = Directory::new();
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(128 * 1024 * 1024),
+        )
+        .unwrap();
+        (directory, store)
+    }
+
+    fn assert_count(store: &Store, query: &str, expected: i64) -> WorkCounters {
+        let result = run(store, query);
+        assert_eq!(result.metadata().rows, 1, "{query}");
+        assert_eq!(result.cell(0, 0), Some(&Value::I64(expected)), "{query}");
+        result.metadata().counters
+    }
+
+    fn documents(store: &Store, start: u128, end: u128, revision: u64) {
+        store
+            .ingest(IngestBatch::new(
+                (start..end)
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(revision)),
+                            vec![1.0, 0.0],
+                        )
+                        .with_timestamp(-(id as i64))
+                    })
+                    .collect(),
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn ze404_global_counts_use_document_cardinality() {
+        let mut previous = None;
+        for n in [64, 128] {
+            let (directory, store) = fixture();
+            store.enable_graph().unwrap();
+            assert_count(&store, "MATCH (n) RETURN count(n)", 0);
+            assert_count(&store, "MATCH (n:Document) RETURN count(*)", 0);
+            documents(&store, 0, n, 1);
+            assert_count(&store, "MATCH (n) RETURN count(n)", n as i64);
+            store.seal().unwrap();
+            // Adoption, graph-only nodes (one explicitly Document), one edge,
+            // and a graph tombstone shadowing a still-live document.
+            store
+                .graph_apply(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Relationship, "ze407", "adopt")
+                            .unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Relationship {
+                            relationship_type: GraphName::new("ADOPT").unwrap(),
+                            properties: &[],
+                            source: NodeRef::Existing(NodeId::new(1).unwrap()),
+                            target: NodeRef::Existing(NodeId::new(3).unwrap()),
+                        }),
+                    }],
+                    &control(),
+                )
+                .unwrap();
+            run(
+                &store,
+                "CREATE (a:Other {p: 1}), (b:Document), (a)-[:LINK]->(b)",
+            );
+            run(
+                &store,
+                "MATCH (n) WHERE ze.node_id(n) = '00000000000000000000000000000001' DETACH DELETE n",
+            );
+            let expected = n as i64 + 1;
+            let mut all = ids(&run(&store, "MATCH (n) RETURN n"));
+            all.sort_unstable();
+            assert_eq!(
+                all,
+                (0..n)
+                    .filter(|id| *id != 1)
+                    .chain([n, n + 1])
+                    .collect::<Vec<_>>()
+            );
+            let mut labelled = ids(&run(&store, "MATCH (n:Document) RETURN n"));
+            labelled.sort_unstable();
+            assert_eq!(
+                labelled,
+                (0..n)
+                    .filter(|id| *id != 1)
+                    .chain([n + 1])
+                    .collect::<Vec<_>>()
+            );
+            for query in [
+                "MATCH (n) RETURN count(n)",
+                "MATCH (n) RETURN count(*)",
+                "MATCH (n:Document) RETURN count(n)",
+                "MATCH (n:Document) RETURN count(*)",
+            ] {
+                let count = if query.contains(":Document") {
+                    n as i64
+                } else {
+                    expected
+                };
+                let work = assert_count(&store, query, count);
+                eprintln!("ZE407 n={n} {query}: {work:?}");
+                assert!(
+                    work.get(WorkKind::Scans) < 32,
+                    "implicit documents must not be visited: {work:?}"
+                );
+                assert!(
+                    work.get(WorkKind::RowsIn) < 8,
+                    "no per-document aggregate input: {work:?}"
+                );
+                if query == "MATCH (n) RETURN count(n)" {
+                    if let Some(old) = previous {
+                        assert_eq!(
+                            work, old,
+                            "fixed graph states and segments must have fixed work"
+                        );
+                    }
+                    previous = Some(work);
+                }
+            }
+            assert_count(&store, "MATCH ()-[r]->() RETURN count(r)", 1);
+            assert_count(&store, "MATCH ()-[r:LINK]->() RETURN count(*)", 1);
+            assert_count(&store, "MATCH (n) RETURN count(n.p)", 1);
+            assert_count(&store, "MATCH (n) RETURN count(DISTINCT n)", expected);
+            assert_count(&store, "MATCH (n) WHERE n.p = 1 RETURN count(n)", 1);
+            assert_count(&store, "OPTIONAL MATCH (n:Missing) RETURN count(n)", 0);
+            assert_count(&store, "OPTIONAL MATCH (n:Missing) RETURN count(*)", 1);
+            let grouped = run(&store, "MATCH (n) RETURN n.p, count(n) ORDER BY n.p");
+            assert_eq!(grouped.metadata().rows, 2);
+            assert_eq!(grouped.cell(0, 1), Some(&Value::I64(1)));
+            assert_eq!(grouped.cell(1, 1), Some(&Value::I64(expected - 1)));
+            assert_count(&store, "MATCH (n) RETURN count(n) LIMIT 1", expected);
+            assert_eq!(
+                run(&store, "MATCH (n) RETURN count(n) LIMIT 0")
+                    .metadata()
+                    .rows,
+                0
+            );
+            store
+                .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![DocId::new(
+                    2,
+                )]))
+                .unwrap();
+            assert_count(&store, "MATCH (n:Document) RETURN count(n)", n as i64 - 1);
+            documents(&store, 2, 3, 2);
+            assert_count(&store, "MATCH (n:Document) RETURN count(n)", n as i64);
+            drop(store);
+            let reopened = Store::open(
+                directory.path(),
+                OpenOptions::new().with_max_resident_bytes(128 * 1024 * 1024),
+            )
+            .unwrap();
+            assert_count(&reopened, "MATCH (n) RETURN count(n)", expected);
+            assert_count(&reopened, "MATCH (n:Document) RETURN count(n)", n as i64);
+            // Pin the existing staged-write visibility, independently checked
+            // with the baseline addon: this shape must not use the read count.
+            let work = assert_count(
+                &reopened,
+                "MATCH (n) WITH count(n) AS c CREATE (:After) RETURN c",
+                expected + 1,
+            );
+            assert!(
+                work.get(WorkKind::RowsIn) >= n as u64,
+                "writes must keep the ordinary aggregate: {work:?}"
+            );
+        }
+    }
+}

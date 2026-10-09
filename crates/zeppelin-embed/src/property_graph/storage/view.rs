@@ -155,6 +155,94 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
             .map_err(|error| TreeError::Control(crate::lifecycle::QueryError::Store(error)))
     }
 
+    pub(crate) fn global_node_count(
+        &self,
+        document_only: bool,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<i64, TreeError> {
+        use super::tree::{
+            Key,
+            directory::{DirectoryCursor, NativeReadEvent},
+        };
+        use crate::property_graph::query::runtime::{RetainedView, RuntimeError};
+        self.lease
+            .check_active()
+            .map_err(RuntimeError::Value)
+            .map_err(TreeError::Runtime)?;
+        if !std::ptr::eq(runtime.view(), self.lease.query_view())
+            || !std::ptr::eq(runtime.memory(), self.source.memory())
+            || runtime.identity() != self.source.runtime()
+        {
+            return Err(TreeError::Invalid("foreign native count view"));
+        }
+        let overflow = || {
+            TreeError::Runtime(RuntimeError::Value(
+                crate::property_graph::query::QueryError::ArithmeticOverflow,
+            ))
+        };
+        // Keep corrections wide until the final count: an intermediate D may
+        // exceed I64 while tombstones bring the visible count back into range.
+        let mut count = i128::from(self.lease.document_cardinality(runtime)?);
+        let mut resources = TreeResources::for_query(runtime)?;
+        let roots = self.lease.bundle().roots();
+        let mut cursor = DirectoryCursor::seek(
+            self.source,
+            roots.directory(TreeKind::Nodes)?,
+            None,
+            &mut resources,
+        )?;
+        while let Some(entry) = cursor.next_entry(&mut resources)? {
+            let Key::Inline(key) = entry.key() else {
+                return Err(TreeError::Invalid("overflow node identity"));
+            };
+            let node = NodeId::from(crate::ingest::DocId::new(u128::from_le_bytes(
+                key.try_into()
+                    .map_err(|_| TreeError::Invalid("node identity width"))?,
+            )));
+            let state = verify_node_state(
+                PayloadSlice::new(
+                    self.source,
+                    roots.store(),
+                    entry.creation_generation(),
+                    PayloadRef::decode(entry.value())?,
+                ),
+                node,
+                self.catalog,
+                self.lease.bundle().document(),
+                &mut resources,
+            )?;
+            resources.read_event(NativeReadEvent::Lookup)?;
+            let doc = self.document_version(node)?.is_some();
+            let mut live = false;
+            if let NodeRecordState::Live(record) = state {
+                live = !document_only || doc;
+                if !live {
+                    let RecordShape::Node { labels, .. } = record.shape() else {
+                        return Err(TreeError::Invalid("node directory role"));
+                    };
+                    for index in 0..labels {
+                        let label = record.label(index, &mut resources)?;
+                        if self
+                            .catalog
+                            .name(
+                                crate::property_graph::catalog::Symbol::Label(label),
+                                &mut resources,
+                            )?
+                            .is_some_and(|name| name.as_str() == "Document")
+                        {
+                            live = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            count = count
+                .checked_add(i128::from(live) - i128::from(doc))
+                .ok_or_else(overflow)?;
+        }
+        i64::try_from(count).map_err(|_| overflow())
+    }
+
     pub(crate) fn visit_document_properties(
         &self,
         node: NodeId,

@@ -13,6 +13,60 @@ pub(crate) struct NativeDocuments {
 }
 
 impl NativeReadLease {
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn document_cardinality(
+        &self,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'_, '_, '_>,
+    ) -> Result<u64, crate::property_graph::storage::tree::directory::TreeError> {
+        use crate::property_graph::query::runtime::{RuntimeError, WorkKind};
+        use crate::property_graph::storage::tree::directory::TreeError;
+        let Some(documents) = &self.documents else {
+            return Ok(0);
+        };
+        // Both temporary roaring sets fit in bitset containers, including
+        // container capacity and the temporary array-to-bitset transitions.
+        let bytes = documents
+            .active
+            .row_count()
+            .div_ceil(65_536)
+            .checked_mul(3 * (8_192 + 128))
+            .and_then(|bytes| bytes.checked_add(256))
+            .ok_or(TreeError::Memory)?;
+        let _charge = runtime
+            .memory()
+            .reserve(bytes)
+            .map_err(RuntimeError::Memory)
+            .map_err(TreeError::Runtime)?;
+        runtime
+            .charge(WorkKind::Scans, documents.active.row_count() as u64)
+            .map_err(TreeError::Runtime)?;
+        let alive = documents
+            .active
+            .alive_controlled(&mut crate::fts::control::WorkCheck::new(|| {
+                runtime
+                    .checkpoint()
+                    .map_err(|error| super::NativeGraphError::Read(TreeError::Runtime(error)))
+            }))
+            .map_err(|error| match error {
+                super::NativeGraphError::Store(error) => tree_error(error),
+                super::NativeGraphError::Read(error) => error,
+                _ => TreeError::Invalid("unexpected document cardinality error"),
+            })?;
+        runtime.checkpoint().map_err(TreeError::Runtime)?;
+        let mut count = alive.live_count();
+        for segment in documents.snapshot.segments() {
+            runtime
+                .charge(WorkKind::Scans, 1)
+                .map_err(TreeError::Runtime)?;
+            count = count
+                .checked_add(segment.query_alive().map_err(tree_error)?.live_count())
+                .ok_or(TreeError::Runtime(RuntimeError::Value(
+                    crate::property_graph::query::QueryError::ArithmeticOverflow,
+                )))?;
+        }
+        Ok(count)
+    }
+
     pub(crate) fn search_documents(&self) -> Result<&NativeDocuments, StoreError> {
         self.documents.as_ref().ok_or(StoreError::Closed)
     }

@@ -100,6 +100,7 @@ pub(super) struct DistinctState<'v, 'm, 'g> {
 }
 
 pub(super) struct AggregateState<'v, 'm, 'g> {
+    pub(super) global_node_count: Option<bool>,
     expressions: QueryArena<'m, 'g, ExprId>,
     input_slots: QueryArena<'m, 'g, SlotId>,
     key_columns: QueryArena<'m, 'g, SlotProjection>,
@@ -250,6 +251,7 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
         let rows = Rows::new(context, input_slots.as_slice(), capacity.rows)?;
         owner
             .push(Self {
+                global_node_count: None,
                 expressions,
                 input_slots,
                 key_columns,
@@ -758,6 +760,16 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             .as_mut_slice()
             .first_mut()
             .ok_or(RuntimeError::Batch)?;
+        if let Some(document) = state.global_node_count {
+            if state.started {
+                return Ok(false);
+            }
+            state.started = true;
+            let count = self.view.global_node_count(document, context)?;
+            self.output_mut(index)?
+                .push_row(&[QueryValue::I64(count)], context)?;
+            return Ok(true);
+        }
         if !state.started {
             state.started = true;
             let mut aggregate = StreamAggregate::new(

@@ -245,3 +245,73 @@ mod incident_source_tests {
         assert!(!incident_source_scan(&operators, PlanNodeId(2)));
     }
 }
+
+/// Only an exact global node count can bypass the row aggregate.
+pub(super) fn global_node_count(
+    description: super::super::plan::PlanDescription<'_>,
+    operator: &Operator<'_>,
+) -> Option<bool> {
+    use super::super::plan::{AggregateExpression, Expression};
+    let OperatorKind::Aggregate {
+        keys: [],
+        aggregates: [aggregate],
+    } = operator.kind
+    else {
+        return None;
+    };
+    let [input] = operator.inputs else {
+        return None;
+    };
+    let mut input = description.operators.get(input.0 as usize)?;
+    let mut document = false;
+    let mut labelled_slot = None;
+    if let OperatorKind::Filter(predicate) = input.kind {
+        let Expression::HasLabel { entity, label } =
+            description.expressions.get(predicate.0 as usize)?
+        else {
+            return None;
+        };
+        if label.as_str() != "Document" {
+            return None;
+        }
+        let Expression::Slot(slot) = description.expressions.get(entity.0 as usize)? else {
+            return None;
+        };
+        labelled_slot = Some(*slot);
+        document = true;
+        let [child] = input.inputs else { return None };
+        input = description.operators.get(child.0 as usize)?;
+    }
+    let OperatorKind::ScanNodes { output, label } = input.kind else {
+        return None;
+    };
+    if labelled_slot.is_some_and(|slot| slot != output) {
+        return None;
+    }
+    if let Some(label) = label {
+        if label.as_str() != "Document" {
+            return None;
+        }
+        document = true;
+    }
+    let [child] = input.inputs else { return None };
+    let unit = description.operators.get(child.0 as usize)?;
+    if !matches!(unit.kind, OperatorKind::Unit) || !unit.inputs.is_empty() {
+        return None;
+    }
+    let Expression::Aggregate {
+        operation: AggregateExpression::Count { distinct: false },
+        operand,
+    } = description
+        .expressions
+        .get(aggregate.expression.0 as usize)?
+    else {
+        return None;
+    };
+    if let Some(operand) = operand
+        && !matches!(description.expressions.get(operand.0 as usize), Some(Expression::Slot(slot)) if *slot == output)
+    {
+        return None;
+    }
+    Some(document)
+}

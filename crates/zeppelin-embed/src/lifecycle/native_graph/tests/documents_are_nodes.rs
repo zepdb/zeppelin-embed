@@ -813,3 +813,127 @@ pub(super) fn shared_document_delete_faults() {
             .unwrap();
     }
 }
+
+mod ze404_counts {
+    use super::*;
+    use crate::property_graph::query::resources::QueryMemory;
+    use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
+    use crate::property_graph::storage::tree::directory::TreeResources;
+    use crate::property_graph::storage::{
+        GraphReadView, LabelSelection, NativeCatalog, NativeQuerySource, NativeReadCapability,
+    };
+
+    fn counts(
+        store: &Store,
+        lease: &crate::lifecycle::native_graph::NativeReadLease,
+    ) -> (i64, i64) {
+        let shared = crate::property_graph::resources::GraphResources::from_store(store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(lease, &runtime).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(capability, &resources, 32).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut resources).unwrap();
+        drop(resources);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
+        let all = view.global_node_count(false, &mut runtime).unwrap();
+        let documents = view.global_node_count(true, &mut runtime).unwrap();
+        // The original node cursor is an independent visibility oracle.
+        for (selection, expected) in [
+            (LabelSelection::All, all),
+            (
+                LabelSelection::AllOf(&[
+                    crate::property_graph::catalog::LabelId::new(u64::MAX).unwrap()
+                ]),
+                documents,
+            ),
+        ] {
+            let mut cursor = view.node_cursor(selection, &mut runtime).unwrap();
+            let mut count = 0;
+            let mut row = [NodeId::new(1).unwrap()];
+            loop {
+                let (n, state) = view
+                    .scan_nodes(&mut cursor, &mut row, &mut runtime)
+                    .unwrap();
+                count += n as i64;
+                if state == crate::property_graph::storage::CursorState::Done {
+                    break;
+                }
+            }
+            assert_eq!(expected, count);
+        }
+        (all, documents)
+    }
+
+    #[test]
+    fn ze404_counts_follow_retained_generation() {
+        use super::super::publication::{FaultPoint, RecordingVfs};
+        use std::sync::Arc;
+        for point in [FaultPoint::PartialAppend, FaultPoint::PostManifestRename] {
+            let directory = tempfile::tempdir().unwrap();
+            let vfs = Arc::new(RecordingVfs::default());
+            let store = Store::open_with_test_dependencies(
+                directory.path(),
+                native_options(),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::SystemMonotonicClock),
+                ),
+            )
+            .unwrap();
+            store
+                .ingest(IngestBatch::new(vec![
+                    document(0),
+                    document(91),
+                    document(92),
+                ]))
+                .unwrap();
+            store.enable_graph().unwrap();
+            disable_generation_fixture_maintenance(&store);
+            let old = store.admit_native_read().unwrap();
+            assert_eq!(counts(&store, &old), (3, 3));
+            link_documents(&store);
+            store.seal().unwrap();
+            store.ingest(IngestBatch::new(vec![document(93)])).unwrap();
+            let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "ze407", "extra").unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&image)),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .unwrap();
+            let current = store.admit_native_read().unwrap();
+            assert_eq!(counts(&store, &old), (3, 3));
+            assert_eq!(counts(&store, &current), (5, 4));
+            vfs.arm_fault(point);
+            assert!(
+                store
+                    .delete(crate::ingest::DeleteBatch::new(vec![DocId::new(92)]))
+                    .is_err()
+            );
+            vfs.assert_fired_once();
+            assert_eq!(counts(&store, &old), (3, 3));
+            assert_eq!(counts(&store, &current), (5, 4));
+            drop(current);
+            drop(old);
+            drop(store);
+            let reopened = Store::open(directory.path(), native_options()).unwrap();
+            let expected = if matches!(point, FaultPoint::PostManifestRename) {
+                (4, 3)
+            } else {
+                (5, 4)
+            };
+            assert_eq!(
+                counts(&reopened, &reopened.admit_native_read().unwrap()),
+                expected
+            );
+        }
+    }
+}

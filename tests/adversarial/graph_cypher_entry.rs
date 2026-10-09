@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 18] = [
+pub const REQUIRED_COVERAGE: [&str; 21] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -36,6 +36,9 @@ pub const REQUIRED_COVERAGE: [&str; 18] = [
     "property-graph.cypher-entry.incident-source.read",
     "property-graph.cypher-entry.incident-source.limit.fire",
     "property-graph.cypher-entry.incident-source.exclusions",
+    "property-graph.cypher-entry.global-count",
+    "property-graph.cypher-entry.count-filter-excluded",
+    "property-graph.cypher-entry.count-limit.fire",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -81,7 +84,45 @@ fn read(store: &Store) -> Result<(Vec<i64>, u64), String> {
     if result.metadata().outcome != Outcome::Read {
         return Err(String::from("cypher entry read changed the store"));
     }
-    Ok((values(&result)?, result.metadata().generation.get()))
+    let rows = values(&result)?;
+    let expected = i64::try_from(rows.len()).map_err(|error| error.to_string())? + 2;
+    for (text, count) in [
+        ("MATCH (n) RETURN count(n)", expected),
+        ("MATCH (n:Document) RETURN count(*)", 0),
+        ("MATCH (n) WHERE true RETURN count(n)", expected),
+    ] {
+        let counted = run(store, text, &[]).map_err(|error| error.to_string())?;
+        if values(&counted)? != [count]
+            || counted.metadata().generation != result.metadata().generation
+        {
+            return Err(format!(
+                "cypher count disagrees at retained generation: {text}"
+            ));
+        }
+    }
+    let limits = zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default()
+        .with_limit(
+            zeppelin_embed::property_graph::query::runtime::WorkKind::Scans,
+            0,
+        )
+        .map_err(|error| error.to_string())?;
+    let options = GraphQueryOptions::default()
+        .with_limits(24 * 1024 * 1024, limits)
+        .map_err(|error| error.to_string())?;
+    match execute(
+        store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &options,
+        "MATCH (n) RETURN count(n)",
+        &[],
+        CompileLimits::default(),
+    ) {
+        Err(StatementError::Query(error))
+            if error.kind() == GraphQueryErrorKind::Limit && error.nothing_committed() => {}
+        Err(error) => return Err(format!("cypher count work refusal: {error}")),
+        Ok(_) => return Err(String::from("cypher count bypassed its work limit")),
+    }
+    Ok((rows, result.metadata().generation.get()))
 }
 
 fn committed_no_rows(result: &CompletedGraphResult) -> Result<(), String> {
