@@ -458,3 +458,60 @@ commands .ctx/run-S4-focused.py, .ctx/run-gates.py S4 fmt clang-format,
 .ctx/run-gates.py S4 cypher-tests, and scripts/adversarial.sh smoke
 --campaign property-graph --profile none. Fresh-addon timings follow
 the S4 engine commit. No format, ABI, golden or dependency change.
+
+### S4 rebased release verification and measurements
+
+The release-only rebase onto e2db37a6 preserves this independent engine
+implementation. S4 engine HEAD: 4445163fb3195b0449d7fdb0a84592614d36bf81
+(original code commit 0a6ebf9c). The later evidence receipt changes docs
+only. Main's overlapping ZE-417 commit c78f319d is not incorporated in
+this S4 measurement; final integration remains required after S5.
+
+All prescribed gates on the rebased 0.7 HEAD pass; every output line
+read. Static logs S4-release-*.log: fmt, both Clippy gates, rustdoc and
+clang-format clean. One Cypher attempt was terminated by SIGTERM without
+a test failure and is retained as interrupted, not passed. Complete
+S4-release-rerun logs: Cypher 23 graph-search (625.30 s), 14 lowering,
+12 execution; format_compat 3 pass/4 default historical ignores; FFI 21
+pass (7.06 s); unified 19 pass (51.23 s); both registry pins 1 each.
+Exact page/cancellation regressions pass again; 35 directory tests
+(16.01 s), directed probe 1 (2.49 s).
+
+Hardware verified: Apple M3 Max, Mac15,9, 128 GiB, macOS 27.0 build
+26A5388g, rustc 1.93.0, Node v24.21.0. Both addons rebuilt at 0.7.0;
+measured darwin-arm64 SHA-256:
+16c292cde5db8ee6b4fe92e0a77145a5330a4e623c15ff286b40a129d956c2a8.
+Uptime at timing: 19:11, load averages 3.26/5.70/6.41. Waited for the
+one-minute load to return to the plan's baseline range; another session
+still had background test threads. These wall-clock numbers are
+supporting measurements, not a deterministic qualification. Prepared
+store is read-only; complete filename/SHA-256 maps before and after
+match the original S0 map: 221 files, zero changed entries.
+
+```sh
+scripts/cy_time.sh /Users/aghatage/Documents/code/zeppelin-embed-worktrees/rel-speed /Users/aghatage/Documents/code/zeppelin-embed/tasks/evidence/ze-perf-unified/stores
+python3 .ctx/hash-store.py S4-before-timing
+python3 .ctx/hash-store.py S4-after-timing
+```
+
+| Query | Three raw samples (ms) | Median (ms) | S4 target/result |
+|---|---|---:|---|
+| count all nodes | 18.242, 9.620459, 9.577584 | 9.620459 | supporting |
+| count Document label | 9.707208, 9.563958, 9.585959 | 9.585959 | supporting |
+| point lookup by node_id | 0.331875, 0.249875, 0.249375 | 0.249875 | supporting |
+| 10 docs, LIMIT 10 | 0.622875, 0.587084, 0.587125 | 0.587125 | supporting |
+| count relationships | 67.855959, 67.502916, 67.767 | 67.767 | <= 20 / MISS |
+| count PERF_LINK | 81.582667, 81.502209, 81.409709 | 81.502209 | <= 20 / MISS |
+| all 500 rel pairs | 82.049416, 81.905042, 81.664 | 81.905042 | <= 25 / MISS |
+| 2-hop count | 107.081167, 107.521459, 107.434375 | 107.434375 | <= 30 / MISS |
+| incoming count | 9795.448541, 9797.388333, 9774.516958 | 9795.448541 | S5 pending |
+| undirected count | 17887.439958, 17808.544292, 17857.817167 | 17857.817167 | S5 pending |
+| labelled start count | 10496.587208, 10496.352958, 10492.208541 | 10496.352958 | S5 pending |
+| id-anchored expand | 68.077375, 67.607, 67.329083 | 67.607 | S5 pending |
+| rel pairs, LIMIT 10 | 1.646416, 1.503875, 1.502 | 1.503875 | <= 2 / PASS |
+
+S4 misses are explicit: untyped count 67.767 > 20 ms; typed count
+81.502209 > 20 ms; 500 pairs 81.905042 > 25 ms; two-hop 107.434375
+> 30 ms. Relationship LIMIT 10 meets 2 ms at 1.503875 ms. S5 still
+addresses the incoming, undirected, labelled and ID-anchored access
+paths. Complete raw log S4-timings.log read; no unexpected diagnostics.
