@@ -1974,8 +1974,9 @@ fn search_candidates(
     let mut result = Vec::new();
     let _result_bytes = reserve_vec(&mut result, width.saturating_add(1), "result", control)?;
     let frontier_capacity = vectors.node_count as usize;
-    let mut frontier = Vec::new();
-    let frontier_bytes = reserve_vec(&mut frontier, frontier_capacity, "frontier", control)?;
+    let mut frontier_slots = Vec::new();
+    let frontier_bytes = reserve_vec(&mut frontier_slots, frontier_capacity, "frontier", control)?;
+    let mut frontier = std::collections::BinaryHeap::from(frontier_slots);
     for &entry in entries {
         control.step(1)?;
         let entry_index = vectors.validate_node(entry)?;
@@ -1990,7 +1991,7 @@ fn search_candidates(
         }
         let scored = score_node(vectors, &prepared, query_norm_squared, entry, control)?;
         insert_result(&mut result, scored, width, control)?;
-        push_fixed(&mut frontier, scored, "frontier")?;
+        push_frontier(&mut frontier, scored, control)?;
     }
     if frontier.is_empty()
         && let Some(start) = inserted.iter().position(|present| *present == 1)
@@ -2002,12 +2003,11 @@ fn search_candidates(
             *marker = epoch;
         }
         insert_result(&mut result, scored, width, control)?;
-        push_fixed(&mut frontier, scored, "frontier")?;
+        push_frontier(&mut frontier, scored, control)?;
     }
     while !frontier.is_empty() {
         control.step(1)?;
-        sort_scored(&mut frontier, scored_worst_first, control)?;
-        let Some(candidate) = frontier.pop() else {
+        let Some(BestFirst(candidate)) = frontier.pop() else {
             break;
         };
         let worst = result.last().map(|node| node.distance);
@@ -2033,7 +2033,7 @@ fn search_candidates(
                     .is_some_and(|current_worst| scored.distance < current_worst.distance);
             if qualifies {
                 insert_result(&mut result, scored, width, control)?;
-                push_fixed(&mut frontier, scored, "frontier")?;
+                push_frontier(&mut frontier, scored, control)?;
             }
         }
     }
@@ -2072,24 +2072,66 @@ fn score_node(
     })
 }
 
-fn push_fixed<T>(values: &mut Vec<T>, value: T, label: &str) -> Result<(), GraphBuildError> {
-    if values.len() == values.capacity() {
-        return Err(GraphBuildError::Geometry(format!(
-            "{label} fixed capacity exhausted"
-        )));
+/// Frontier entry whose `Ord` makes the std max-heap pop the best (nearest,
+/// then lowest id) node first; `scored_best_first` is a strict total order,
+/// so the pop sequence equals the former sort-worst-first-then-pop sequence.
+#[derive(Clone, Copy)]
+struct BestFirst(ScoredNode);
+
+impl PartialEq for BestFirst {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
     }
-    values.push(value);
+}
+
+impl Eq for BestFirst {}
+
+impl PartialOrd for BestFirst {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BestFirst {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        scored_worst_first(&self.0, &other.0)
+    }
+}
+
+fn push_frontier(
+    frontier: &mut std::collections::BinaryHeap<BestFirst>,
+    node: ScoredNode,
+    control: &mut BuildControl<'_>,
+) -> Result<(), GraphBuildError> {
+    control.step(1)?;
+    if frontier.len() == frontier.capacity() {
+        return Err(GraphBuildError::Geometry(
+            "frontier fixed capacity exhausted".to_owned(),
+        ));
+    }
+    frontier.push(BestFirst(node));
     Ok(())
 }
 
+/// Inserts into the best-first sorted, width-bounded result list.
+///
+/// `scored_best_first` is a strict total order and a node is scored at most
+/// once per search, so the binary-search insertion yields exactly the list a
+/// full re-sort produced.
 fn insert_result(
     result: &mut Vec<ScoredNode>,
     node: ScoredNode,
     width: usize,
     control: &mut BuildControl<'_>,
 ) -> Result<(), GraphBuildError> {
-    push_fixed(result, node, "result")?;
-    sort_scored(result, scored_best_first, control)?;
+    control.step(1)?;
+    if result.len() == result.capacity() {
+        return Err(GraphBuildError::Geometry(
+            "result fixed capacity exhausted".to_owned(),
+        ));
+    }
+    let position = result.partition_point(|existing| scored_best_first(existing, &node).is_lt());
+    result.insert(position, node);
     if result.len() > width {
         let _ = result.pop();
     }
