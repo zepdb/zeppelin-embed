@@ -21,7 +21,7 @@ use std::{
 // Full directory pages cannot overlap, so offset / PAGE_BYTES identifies
 // distinct pages even when their framed offsets are unaligned. The fixed
 // bitmap is charged with every mapping slot at source admission.
-const PAGE_MEMO_BYTES: usize = MAX_ARTIFACT_BYTES
+pub(super) const PAGE_MEMO_BYTES: usize = MAX_ARTIFACT_BYTES
     .div_ceil(super::super::tree::PAGE_BYTES)
     .div_ceil(8);
 
@@ -305,7 +305,10 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
     }
 }
 
-fn memo_bit(pages: &[Cell<u8>], reference: PhysicalRef) -> Result<(&Cell<u8>, u8), TreeError> {
+pub(super) fn memo_bit(
+    pages: &[Cell<u8>],
+    reference: PhysicalRef,
+) -> Result<(&Cell<u8>, u8), TreeError> {
     // Short blocks can share a full page's bucket and must never borrow its proof.
     if reference.kind != artifact::BlockKind::TreePage
         || reference.length as usize != super::super::tree::PAGE_BYTES + 24

@@ -2,13 +2,15 @@
 use super::*;
 use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
 use crate::property_graph::storage::tree::directory::{TreeError, TreeResources};
+use std::cell::Cell;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 // Constructed only after complete frame/hash validation of this pack's immutable
 // prefix. The private owner never exposes mutable bytes or rewrites those blocks.
 struct VerifiedEntry {
     reference: PhysicalRef,
     checksum: u64,
+    page_validated: Cell<bool>,
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum State {
@@ -129,7 +131,7 @@ impl<'a> PrivateArtifact<'a> {
         if let Some(entries) = next_entries.as_mut() {
             for entry in self.entries.as_slice() {
                 r.step(std::mem::size_of::<VerifiedEntry>() as u64)?;
-                entries.push(*entry)?;
+                entries.push(entry.clone())?;
             }
         }
         if let Some(mut replacement) = next_bytes {
@@ -205,10 +207,45 @@ impl<'a> PrivateArtifact<'a> {
         self.entries.push(VerifiedEntry {
             reference,
             checksum,
+            page_validated: Cell::new(false),
         })?;
         r.step(0)?;
         self.state = State::Open;
         Ok(reference)
+    }
+
+    // The owning attempt fixes the full artifact identity. Each admitted entry
+    // fixes the offset and exact extent; append/growth/seal never rewrite its
+    // payload. The proof is charged with the descriptor and dies with the pack.
+    fn page_proof(&self, reference: PhysicalRef) -> Option<&Cell<bool>> {
+        if self.state == State::Failed
+            || reference.artifact != self.identity.artifact
+            || reference.kind != BlockKind::TreePage
+        {
+            return None;
+        }
+        let index = self
+            .entries
+            .as_slice()
+            .binary_search_by_key(&reference.offset, |entry| entry.reference.offset)
+            .ok()?;
+        self.entries
+            .as_slice()
+            .get(index)
+            .filter(|entry| entry.reference == reference)
+            .map(|entry| &entry.page_validated)
+    }
+
+    pub(crate) fn page_validated(&self, reference: PhysicalRef) -> bool {
+        self.page_proof(reference).is_some_and(Cell::get)
+    }
+
+    pub(crate) fn mark_page_validated(&self, reference: PhysicalRef) -> Result<(), TreeError> {
+        let proof = self
+            .page_proof(reference)
+            .ok_or(TreeError::Invalid("private page proof reference"))?;
+        proof.set(true);
+        Ok(())
     }
     /// Resolve an exact reference admitted by complete append-time frame/hash
     /// validation. Later appends and sealing preserve its immutable payload bytes.

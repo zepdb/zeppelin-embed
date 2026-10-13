@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
-use zeppelin_embed::property_graph::resources::MAX_GRAPH_RESIDENT_BYTES;
+use zeppelin_embed::property_graph::resources::{GraphResources, MAX_GRAPH_RESIDENT_BYTES};
 use zeppelin_embed::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
 use zeppelin_embed::property_graph::{
     ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphName, GraphProperty,
@@ -40,6 +40,7 @@ struct BatchMeasurement {
     batch_index: usize,
     items: usize,
     wall_ms: f64,
+    storage_pages_decoded: u64,
     store_nodes_before: usize,
 }
 
@@ -258,9 +259,12 @@ fn apply_node_batch(
         });
     }
 
+    let resources = GraphResources::from_store(store)?;
+    let pages_before = resources.work_ledger()?.storage_pages_decoded;
     let started = Instant::now();
     let result = store.graph_apply(&writes, &control())?;
     let wall_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let storage_pages_decoded = resources.work_ledger()?.storage_pages_decoded - pages_before;
     let mut ids = Vec::with_capacity(items);
     for receipt in result.receipts() {
         match receipt.entity {
@@ -278,6 +282,7 @@ fn apply_node_batch(
             batch_index,
             items,
             wall_ms,
+            storage_pages_decoded,
             store_nodes_before: start,
         },
     ))
@@ -341,9 +346,12 @@ fn apply_relationship_batch(
         });
     }
 
+    let resources = GraphResources::from_store(store)?;
+    let pages_before = resources.work_ledger()?.storage_pages_decoded;
     let started = Instant::now();
     let result = store.graph_apply(&writes, &control())?;
     let wall_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let storage_pages_decoded = resources.work_ledger()?.storage_pages_decoded - pages_before;
     if result.receipts().len() != items
         || result
             .receipts()
@@ -357,6 +365,7 @@ fn apply_relationship_batch(
         batch_index,
         items,
         wall_ms,
+        storage_pages_decoded,
         store_nodes_before: nodes.len(),
     })
 }
@@ -433,6 +442,7 @@ fn batch_json(batch: &BatchMeasurement) -> Value {
         "batch_index": batch.batch_index,
         "items": batch.items,
         "wall_ms": batch.wall_ms,
+        "storage_pages_decoded": batch.storage_pages_decoded,
         "store_nodes_before": batch.store_nodes_before,
     })
 }

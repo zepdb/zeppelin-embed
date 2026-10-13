@@ -407,6 +407,8 @@ pub mod graph_storage_fault_test_support {
         pub cells: Vec<QualificationCell>,
         pub selection: Option<QualificationSelection>,
         pub commits: Vec<QualificationCommit>,
+        /// Mapped/private page decode deltas: two reads in one attempt, then a fresh one.
+        pub preparation_page_decodes: Option<[[u64; 3]; 2]>,
     }
 
     /// Execute real class-5 reclamation or class-6 scoped mapping cells.

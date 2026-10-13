@@ -46,8 +46,8 @@ impl GraphResources {
             application_peak_bytes: 0,
         })
     }
-    /// Nonshipping snapshot of internal store-cumulative work for exact tests.
-    #[cfg(any(test, feature = "test-seams"))]
+    /// Nonshipping snapshot of internal store-cumulative work for tests and benchmarks.
+    #[cfg(any(test, feature = "test-seams", feature = "benchmark-kernels"))]
     pub fn work_ledger(&self) -> Result<crate::lifecycle::stats::GraphWorkLedger, StoreError> {
         Ok(self.accounting.graph_work())
     }

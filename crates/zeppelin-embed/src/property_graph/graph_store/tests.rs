@@ -76,6 +76,62 @@ fn node_id(result: &GraphWriteResult, index: usize) -> NodeId {
 }
 
 #[test]
+fn range_edits_validate_each_page_once_per_preparation() {
+    use crate::property_graph::resources::GraphResources;
+    use rand::Rng;
+
+    let parent = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(parent.path().join("graph"), options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let keys: Vec<_> = (0..64).map(|index| format!("node-{index}")).collect();
+    let writes: Vec<_> = keys
+        .iter()
+        .map(|key| StructuredWrite {
+            key: node_key(key),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        })
+        .collect();
+    let result = store.graph_apply(&writes, &control()).unwrap();
+    let nodes: Vec<_> = (0..64).map(|index| node_id(&result, index)).collect();
+    let mut rng =
+        crate::test_support::seeded_rng("range_edits_validate_each_page_once_per_preparation");
+    let endpoints: Vec<_> = (0..32)
+        .map(|_| {
+            (
+                nodes[rng.random_range(0..64)],
+                nodes[rng.random_range(0..64)],
+            )
+        })
+        .collect();
+    let keys: Vec<_> = (0..32).map(|index| format!("edge-{index}")).collect();
+    let writes: Vec<_> = keys
+        .iter()
+        .zip(&endpoints)
+        .map(|(key, (source, target))| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Relationship, "app", key).unwrap(),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Relationship {
+                source: NodeRef::Existing(*source),
+                target: NodeRef::Existing(*target),
+                relationship_type: GraphName::new("LINKS").unwrap(),
+                properties: &[],
+            }),
+        })
+        .collect();
+    let resources = GraphResources::from_store(&store).unwrap();
+    let before = resources.work_ledger().unwrap().storage_pages_decoded;
+    let result = store.graph_apply(&writes, &control()).unwrap();
+    assert_eq!(result.receipts().len(), 32);
+    let decoded = resources.work_ledger().unwrap().storage_pages_decoded - before;
+    eprintln!("range edit preparation decoded {decoded} pages");
+    assert!(decoded > 0 && decoded < 32, "decoded {decoded} pages");
+    store.close().unwrap();
+}
+
+#[test]
 fn a_node_batch_of_four_thousand_items_commits_on_an_empty_store() {
     let parent = tempfile::tempdir().unwrap();
     let store = Store::create_graph(parent.path().join("graph"), options(), None).unwrap();

@@ -278,6 +278,36 @@ impl<'a, 'b, S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>>
     }
 }
 impl<S: BlockSource, F> BlockSource for PreparedObjects<'_, '_, S, F> {
+    fn page_validated(&self, reference: PhysicalRef) -> Result<bool, TreeError> {
+        if self.base.scoped_blocks() {
+            return Ok(false);
+        }
+        if let Some(pack) = self
+            .packs
+            .as_slice()
+            .iter()
+            .find(|pack| pack.identity().artifact == reference.artifact)
+        {
+            return Ok(pack.page_validated(reference));
+        }
+        self.base.page_validated(reference)
+    }
+
+    fn mark_page_validated(&self, reference: PhysicalRef) -> Result<(), TreeError> {
+        if self.base.scoped_blocks() {
+            return Ok(());
+        }
+        if let Some(pack) = self
+            .packs
+            .as_slice()
+            .iter()
+            .find(|pack| pack.identity().artifact == reference.artifact)
+        {
+            return pack.mark_page_validated(reference);
+        }
+        self.base.mark_page_validated(reference)
+    }
+
     fn resolve<'a>(
         &'a self,
         reference: PhysicalRef,
@@ -363,6 +393,101 @@ mod tests {
             _: &mut TreeResources<'_>,
         ) -> Result<FramedBlock<'a>, TreeError> {
             Err(TreeError::Invalid("empty source"))
+        }
+    }
+
+    #[test]
+    fn private_page_memo_survives_append_and_dies_with_attempt() {
+        use super::super::tree::directory::{DirectoryRoot, lookup_entry};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            dir.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let mut r = TreeResources::for_prepare(&memory, u64::MAX).unwrap();
+        let id = StoreInstanceId::new(1).unwrap();
+        let generation = GraphGeneration::new(1);
+        let mut page = [0; PAGE_BYTES];
+        tree::encode_page(
+            PageHeader {
+                kind: TreeKind::Nodes,
+                level: 0,
+                generation,
+            },
+            &[],
+            &mut page,
+        )
+        .unwrap();
+        for serial in 1..=2 {
+            let mut objects = PreparedObjects::new(
+                &Empty,
+                || {
+                    Ok(ArtifactIdentity {
+                        store: id,
+                        artifact: ArtifactId::new(serial as u128).unwrap(),
+                        generation,
+                        creation_serial: serial,
+                    })
+                },
+                id,
+                generation,
+                PackLimits::default(),
+                &memory,
+                &mut r,
+            )
+            .unwrap();
+            let reference = objects
+                .append(BlockKind::TreePage, generation, &page, &mut r)
+                .unwrap();
+            let root =
+                DirectoryRoot::from_reference(id, TreeKind::Nodes, generation, Some(reference))
+                    .unwrap();
+            let before = shared.work_ledger().unwrap().storage_pages_decoded;
+            assert!(
+                lookup_entry(&objects, root, &1u128.to_le_bytes(), &mut r)
+                    .unwrap()
+                    .is_none()
+            );
+            drop(r);
+            assert_eq!(
+                shared.work_ledger().unwrap().storage_pages_decoded - before,
+                1
+            );
+            r = TreeResources::for_prepare(&memory, u64::MAX).unwrap();
+            // Force descriptor growth; append and sealing must preserve the proof
+            // and the exact bytes of the previously admitted private page.
+            for _ in 0..512 {
+                objects
+                    .append(BlockKind::NodeRecord, generation, b"record", &mut r)
+                    .unwrap();
+            }
+            objects.finish(&mut r).unwrap();
+            assert_eq!(objects.resolve(reference, &mut r).unwrap().payload(), page);
+            let before = shared.work_ledger().unwrap().storage_pages_decoded;
+            assert!(
+                lookup_entry(&objects, root, &1u128.to_le_bytes(), &mut r)
+                    .unwrap()
+                    .is_none()
+            );
+            drop(r);
+            assert_eq!(
+                shared.work_ledger().unwrap().storage_pages_decoded - before,
+                0
+            );
+            r = TreeResources::for_prepare(&memory, u64::MAX).unwrap();
+            assert!(
+                !objects
+                    .page_validated(PhysicalRef {
+                        length: reference.length - 1,
+                        ..reference
+                    })
+                    .unwrap()
+            );
         }
     }
 

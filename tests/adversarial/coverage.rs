@@ -173,6 +173,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.storage-faults.ze172.can-fire",
     "property-graph.storage-faults.count-delete.fire",
     "property-graph.storage-faults.count-delete.clean",
+    "property-graph.storage-faults.page-proof.preparation-scope",
     "property-graph.publication.coherent",
     "property-graph.publication.retained",
     "property-graph.publication.noop",

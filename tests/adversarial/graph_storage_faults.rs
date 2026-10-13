@@ -43,6 +43,7 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.storage-faults.ze172.can-fire",
     "property-graph.storage-faults.count-delete.fire",
     "property-graph.storage-faults.count-delete.clean",
+    "property-graph.storage-faults.page-proof.preparation-scope",
 ];
 
 /// Keys whose body must have fired at least one scheduled fault or refusal.
@@ -657,7 +658,7 @@ fn qualification_keys(mapping: bool) -> Vec<&'static str> {
         keys.push(REQUIRED_COVERAGE[25]);
     } else {
         keys.extend_from_slice(&REQUIRED_COVERAGE[23..25]);
-        keys.extend_from_slice(&REQUIRED_COVERAGE[27..29]);
+        keys.extend_from_slice(&REQUIRED_COVERAGE[27..30]);
     }
     keys.push(REQUIRED_COVERAGE[26]);
     keys
@@ -753,6 +754,14 @@ fn check_commits(
     Ok(())
 }
 
+fn check_preparation_page_decodes(deltas: [u64; 3]) -> Result<(), String> {
+    let [first, repeated, fresh] = deltas;
+    if first == 0 || repeated != 0 || fresh != first {
+        return Err(format!("preparation page proof scope differs: {deltas:?}"));
+    }
+    Ok(())
+}
+
 fn check_qualification_report(
     report: &zeppelin_embed::graph_storage_fault_test_support::QualificationReport,
     only: Option<bool>,
@@ -830,6 +839,18 @@ fn check_qualification_report(
         }
     }
     if only != Some(true) {
+        let deltas = report
+            .preparation_page_decodes
+            .ok_or("missing preparation page proof observations")?;
+        for deltas in deltas {
+            check_preparation_page_decodes(deltas)?;
+            for wrong in [[0, 0, 0], [deltas[0], 1, deltas[2]], [deltas[0], 0, 0]] {
+                if check_preparation_page_decodes(wrong).is_ok() {
+                    return Err("preparation page proof comparator cannot fire".into());
+                }
+            }
+        }
+        coverage.hit(REQUIRED_COVERAGE[29]);
         let selection = report
             .selection
             .as_ref()

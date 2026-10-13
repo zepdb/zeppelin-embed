@@ -436,7 +436,10 @@ impl Accounting {
         })?;
         Ok((state.resident_owned_bytes, state.resident_peak_bytes))
     }
-    #[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
+    #[cfg(all(
+        feature = "graph-cypher",
+        any(test, feature = "test-seams", feature = "benchmark-kernels")
+    ))]
     pub(crate) fn graph_work(&self) -> GraphWorkLedger {
         *self
             .graph_work

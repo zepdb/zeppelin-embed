@@ -1,6 +1,7 @@
 //! Storage-backed source and catalog for one admitted native preparation.
 
 use super::mapping::NativeReadonlyMapping;
+use super::source::{PAGE_MEMO_BYTES, memo_bit};
 use crate::lifecycle::native_graph::NativeReadLease;
 use crate::property_graph::catalog::{
     CatalogError, CatalogImage, GraphInterpretation, Symbol, SymbolEntry, SymbolHighWaters,
@@ -30,6 +31,7 @@ struct PreparationMappedArtifact {
     artifact: ArtifactId,
     mapping: NativeReadonlyMapping,
     validation: ValidatedArtifact,
+    validated_pages: [Cell<u8>; PAGE_MEMO_BYTES],
 }
 
 /// One authenticated artifact mapping retained only for a caller-owned bounded
@@ -219,6 +221,22 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             .map_err(TreeError::Runtime)?;
         resources.require_preparation(self.memory)?;
         resources.step(0)
+    }
+
+    fn page_bit(&self, reference: PhysicalRef) -> Result<Option<(&Cell<u8>, u8)>, TreeError> {
+        if self.scoped.get() {
+            return Ok(None);
+        }
+        let mapped = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.artifact,
+            || Ok(()),
+        )?
+        .and_then(OnceCell::get);
+        mapped
+            .map(|mapped| memo_bit(&mapped.validated_pages, reference))
+            .transpose()
     }
 
     fn decode<'b>(
@@ -427,6 +445,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         let mapped = PreparationMappedArtifact {
             artifact: required.object.artifact,
             validation: frame.validation(),
+            validated_pages: [const { Cell::new(0) }; PAGE_MEMO_BYTES],
             mapping,
         };
         let length = self.copy_validated_spill(&mapped, required, output, resources)?;
@@ -659,6 +678,7 @@ impl NativePreparationSource<'_, '_> {
             artifact: reference.artifact,
             mapping,
             validation,
+            validated_pages: [const { Cell::new(0) }; PAGE_MEMO_BYTES],
         })
     }
 
@@ -728,6 +748,19 @@ impl NativePreparationSource<'_, '_> {
 }
 
 impl BlockSource for NativePreparationSource<'_, '_> {
+    fn page_validated(&self, reference: PhysicalRef) -> Result<bool, TreeError> {
+        Ok(self
+            .page_bit(reference)?
+            .is_some_and(|(byte, mask)| byte.get() & mask != 0))
+    }
+
+    fn mark_page_validated(&self, reference: PhysicalRef) -> Result<(), TreeError> {
+        if let Some((byte, mask)) = self.page_bit(reference)? {
+            byte.set(byte.get() | mask);
+        }
+        Ok(())
+    }
+
     fn resolve<'a>(
         &'a self,
         reference: PhysicalRef,

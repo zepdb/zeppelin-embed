@@ -263,6 +263,140 @@ fn page_probe(store: &Store, node: NodeId) -> Result<(u64, u64), TreeError> {
     Ok((first, repeated))
 }
 
+fn preparation_page_probe(store: &Store, node: NodeId) -> Result<[u64; 3], TreeError> {
+    preparation_page_probe_kind(store, node, false)
+}
+
+fn preparation_page_probe_kind(
+    store: &Store,
+    node: NodeId,
+    private: bool,
+) -> Result<[u64; 3], TreeError> {
+    use crate::property_graph::staging::{WriteLimits, WriteMemory};
+    use crate::property_graph::storage::NativePreparationSource;
+    use crate::property_graph::storage::artifact::{ArtifactId, ArtifactIdentity, BlockKind};
+    use crate::property_graph::storage::memory::StorageMemory;
+    use crate::property_graph::storage::prepared::{PackLimits, PreparedObjects};
+    use crate::property_graph::storage::tree::directory::{
+        BlockSink, BlockSource, DirectoryRoot, lookup_entry,
+    };
+
+    let lease = store.admit_native_read().unwrap();
+    let shared = GraphResources::from_store(store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let guard = control();
+    let memory = StorageMemory::new(&writer, &guard, 8 * 1024 * 1024).unwrap();
+    let root = lease.bundle().roots().directory(TreeKind::Nodes)?;
+    let key = node.get().to_le_bytes();
+    let mut deltas = [0; 3];
+    for attempt in 0..2 {
+        let source = NativePreparationSource::new(&lease, &memory, 32)?;
+        fn measure(
+            source: &impl BlockSource,
+            root: DirectoryRoot,
+            key: &[u8],
+            memory: &StorageMemory<'_>,
+            shared: &GraphResources,
+        ) -> Result<u64, TreeError> {
+            let before = shared.work_ledger().unwrap().storage_pages_decoded;
+            let mut resources = TreeResources::for_prepare(memory, u64::MAX)?;
+            assert!(lookup_entry(source, root, key, &mut resources)?.is_some());
+            drop(resources);
+            Ok(shared.work_ledger().unwrap().storage_pages_decoded - before)
+        }
+        let slots = if attempt == 0 { 0..2 } else { 2..3 };
+        if private {
+            let mut resources = source.resources(u64::MAX)?;
+            let block = source.resolve(root.reference().unwrap(), &mut resources)?;
+            let identity = ArtifactIdentity {
+                artifact: ArtifactId::new(u128::MAX - attempt as u128).unwrap(),
+                ..block.identity()
+            };
+            let mut objects = PreparedObjects::new(
+                &source,
+                || Ok(identity),
+                identity.store,
+                identity.generation,
+                PackLimits::default(),
+                &memory,
+                &mut resources,
+            )?;
+            let reference = objects.append(
+                BlockKind::TreePage,
+                identity.generation,
+                block.payload(),
+                &mut resources,
+            )?;
+            let root = DirectoryRoot::from_reference(
+                root.store(),
+                root.kind(),
+                root.generation(),
+                Some(reference),
+            )?;
+            drop(resources);
+            for slot in slots {
+                deltas[slot] = measure(&objects, root, &key, &memory, &shared)?;
+            }
+        } else {
+            for slot in slots {
+                deltas[slot] = measure(&source, root, &key, &memory, &shared)?;
+            }
+        }
+    }
+    Ok(deltas)
+}
+
+#[test]
+fn page_memo_does_not_cross_preparations() {
+    let parent = tempfile::tempdir().unwrap();
+    let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+    let store = create_store(&parent.path().join("native"), &vfs);
+    let node = commit_node(&store, "preparation-memo", "memo scope");
+    let [first, repeated, fresh] = preparation_page_probe(&store, node).unwrap();
+    eprintln!("preparation page decode deltas: [{first}, {repeated}, {fresh}]");
+    assert!(first > 0, "each preparation validates its first page");
+    assert_eq!(repeated, 0, "the same preparation reuses its proof");
+    assert_eq!(fresh, first, "a fresh preparation starts without proofs");
+    store.close().unwrap();
+}
+
+#[test]
+fn corrupt_page_fails_on_first_use_after_preparation_memo() {
+    use crate::format::frame::FormatCheck;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+    let store = create_store(&path, &vfs);
+    let node = commit_node(&store, "memo-corruption", "first-use checksum");
+    let [first, repeated, fresh] = preparation_page_probe(&store, node).unwrap();
+    eprintln!("preparation page decode deltas: [{first}, {repeated}, {fresh}]");
+    assert!(first > 0);
+    assert_eq!(repeated, 0, "warm the preparation-scoped page memo");
+    assert_eq!(fresh, first);
+    let lease = store.admit_native_read().unwrap();
+    let reference = lease
+        .bundle()
+        .roots()
+        .directory(TreeKind::Nodes)
+        .unwrap()
+        .reference()
+        .unwrap();
+    drop(lease);
+    let victim = path.join(format!("graph-{:032x}.zgraph", reference.artifact.get()));
+    let original = std::fs::read(&victim).unwrap();
+    let mut damaged = original.clone();
+    damaged[reference.offset as usize + 24 + 56] ^= 1;
+    std::fs::write(&victim, &damaged).unwrap();
+    let error = preparation_page_probe(&store, node).unwrap_err();
+    std::fs::write(&victim, &original).unwrap();
+    let TreeError::Format(error) = error else {
+        panic!("typed checksum error expected: {error:?}");
+    };
+    // Part 2b retains full artifact validation on each fresh preparation.
+    assert_eq!(error.check(), FormatCheck::FileChecksum);
+    store.close().unwrap();
+}
+
 #[test]
 fn page_memo_does_not_cross_statements() {
     let parent = tempfile::tempdir().unwrap();
@@ -2048,7 +2182,22 @@ pub(crate) fn run_qualification_probe(
     if mapping {
         return run_scoped_mapping_fault_class(seed);
     }
-    let mut report = crate::graph_storage_fault_test_support::QualificationReport::default();
+    let parent = tempfile::tempdir().expect("preparation page proof fixture");
+    let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+    let store = create_store(&parent.path().join("native"), &vfs);
+    let node = commit_node(&store, &format!("page-proof-{seed}"), "preparation scope");
+    let preparation_page_decodes =
+        preparation_page_probe(&store, node).expect("preparation page proof observations");
+    let private_preparation_page_decodes = preparation_page_probe_kind(&store, node, true)
+        .expect("private preparation page proof observations");
+    store.close().expect("close preparation page proof fixture");
+    let mut report = crate::graph_storage_fault_test_support::QualificationReport {
+        preparation_page_decodes: Some([
+            preparation_page_decodes,
+            private_preparation_page_decodes,
+        ]),
+        ..Default::default()
+    };
     let clean_selection = run_selection_probe(seed);
     let mut selection = run_selection_probe(seed);
     selection.clean_serials = clean_selection.selected_serials;
