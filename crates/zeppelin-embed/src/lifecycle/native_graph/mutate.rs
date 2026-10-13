@@ -214,11 +214,11 @@ impl crate::lifecycle::Store {
         clippy::result_large_err,
         reason = "keep the existing typed mutation failure at the shared tail"
     )]
-    pub(super) fn with_native_document_mutation<C: NativeMutationConsumer<()>>(
-        &self,
+    pub(super) fn with_native_document_mutation<'store, C: NativeMutationConsumer<()>>(
+        &'store self,
         capacity: usize,
         consumer: C,
-        writer: &mut super::write::NativeWriter,
+        writer: &mut Option<std::sync::MutexGuard<'store, Option<super::write::NativeWriter>>>,
     ) -> Result<((), NativeMutationReport), NativeMutationError> {
         self.native_mutation_attempts(
             &crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()),
@@ -295,8 +295,8 @@ impl crate::lifecycle::Store {
         clippy::result_large_err,
         reason = "keep typed graph errors allocation-free on failure paths"
     )]
-    fn native_mutation_attempts<S, T, E, C, F>(
-        &self,
+    fn native_mutation_attempts<'store, S, T, E, C, F>(
+        &'store self,
         control: &crate::lifecycle::QueryControl,
         limits: RuntimeLimits,
         memory_limit: usize,
@@ -306,7 +306,9 @@ impl crate::lifecycle::Store {
         image_capacity: usize,
         mut consumer: C,
         settle: F,
-        mut held_writer: Option<&mut super::write::NativeWriter>,
+        mut held_writer: Option<
+            &mut Option<std::sync::MutexGuard<'store, Option<super::write::NativeWriter>>>,
+        >,
     ) -> Result<Result<(T, NativeMutationReport), E>, NativeMutationError>
     where
         C: NativeMutationConsumer<S, E>,
@@ -314,28 +316,24 @@ impl crate::lifecycle::Store {
     {
         self.native_graph.require_writable()?;
         let mut maintenance_checked = held_writer.is_some();
+        let mut recovered = false;
         let mut run_maintenance = None;
         let mut allow_pending_checkpoint = true;
         loop {
-            if let Some(work) = run_maintenance.take() {
-                self.auto_maintain_native_graph(control, work)?;
+            if let Some(action) = run_maintenance.take() {
+                self.maintain_native_graph_for_write(control, action, &mut recovered)?;
             }
-            let mut writer_slot = if held_writer.is_none() {
-                Some(self.native_graph.writer.lock().map_err(|_| {
+            let mut writer_slot = match held_writer.as_deref_mut().and_then(Option::take) {
+                Some(writer) => writer,
+                None => self.native_graph.writer.lock().map_err(|_| {
                     NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                         component: "native graph writer",
                     })
-                })?)
-            } else {
-                None
+                })?,
             };
-            let writer = match held_writer.as_deref_mut() {
-                Some(writer) => writer,
-                None => writer_slot
-                    .as_mut()
-                    .and_then(|slot| slot.as_mut())
-                    .ok_or_else(|| self.absent_native_graph_writer())?,
-            };
+            let writer = writer_slot
+                .as_mut()
+                .ok_or_else(|| self.absent_native_graph_writer())?;
             if writer.stopped {
                 return Err(NativeGraphError::WritesStopped.into());
             }
@@ -487,7 +485,8 @@ impl crate::lifecycle::Store {
             if !maintenance_checked && disposition == BatchDisposition::Changed {
                 maintenance_checked = true;
                 if self.native_graph_maintenance_due()? {
-                    run_maintenance = Some(preparation_work);
+                    run_maintenance =
+                        Some(super::automatic::WriteMaintenance::Fold(preparation_work));
                     continue;
                 }
             }
@@ -512,8 +511,12 @@ impl crate::lifecycle::Store {
                 // every capacity it charged, is dropped and rebuilt against
                 // the generation the checkpoint published.
                 CommitStep::Checkpointed => continue,
+                CommitStep::ReclaimDebt => {
+                    run_maintenance = Some(super::automatic::WriteMaintenance::Reclaim);
+                    continue;
+                }
             };
-            return Ok(Ok((
+            let result = (
                 settle(value, staged.receipts(), changed),
                 NativeMutationReport {
                     disposition,
@@ -522,7 +525,11 @@ impl crate::lifecycle::Store {
                     changed,
                     counters,
                 },
-            )));
+            );
+            if let Some(slot) = held_writer.as_deref_mut() {
+                *slot = Some(writer_slot);
+            }
+            return Ok(Ok(result));
         }
     }
 }

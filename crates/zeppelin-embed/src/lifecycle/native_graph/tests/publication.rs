@@ -2951,6 +2951,13 @@ pub(crate) fn run_actual_probe(
         fires: 1,
         clean_controls: 1,
     });
+    reset_verified_faults();
+    super::mapping_slots::run_ze446_auto_maintenance_failure_commits_no_write();
+    receipts.push(PathReceipt {
+        key: "property-graph.publication.auto-recovery",
+        fires: take_verified_faults(),
+        clean_controls: 1,
+    });
     ActualProbeReport {
         receipts,
         relationships: rows

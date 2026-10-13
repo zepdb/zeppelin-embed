@@ -50,6 +50,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             "property-graph.publication.creation",
             "property-graph.publication.automatic-fold",
             "property-graph.publication.maintenance-headroom",
+            "property-graph.publication.auto-recovery",
         ]
         .contains(&receipt.key)
             && receipt.fires == 0
@@ -58,7 +59,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         }
         coverage.hit(receipt.key);
     }
-    if seen.len() != 11 {
+    if seen.len() != 12 {
         return Err("missing publication boundary receipts".into());
     }
     coverage.hit("property-graph.publication.oracle.can-fire");

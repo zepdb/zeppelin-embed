@@ -671,14 +671,17 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
+        if native_writer.is_some()
             && self
                 .documents_have_native_nodes(ids)
                 .map_err(PurgeError::Delete)?
         {
             self.prepare_purge_intent(ids, available_bytes, vfs)?;
-            self.delete_native_documents_locked(&super::DeleteBatch::new(ids.to_vec()), writer)
-                .map_err(PurgeError::Delete)?;
+            self.delete_native_documents_locked(
+                &super::DeleteBatch::new(ids.to_vec()),
+                &mut native_writer,
+            )
+            .map_err(PurgeError::Delete)?;
         }
         let state = self
             .state

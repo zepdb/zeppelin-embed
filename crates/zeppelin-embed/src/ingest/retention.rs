@@ -171,7 +171,7 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut()) {
+        if native_writer.is_some() {
             let ids = {
                 let snapshot = self
                     .snapshot
@@ -205,8 +205,11 @@ impl Store {
                     .documents_have_native_nodes(&ids)
                     .map_err(|error| StoreError::DocumentMutation(Box::new(error)))?
             {
-                self.delete_native_documents_locked(&super::DeleteBatch::new(ids), writer)
-                    .map_err(|error| StoreError::DocumentMutation(Box::new(error)))?;
+                self.delete_native_documents_locked(
+                    &super::DeleteBatch::new(ids),
+                    &mut native_writer,
+                )
+                .map_err(|error| StoreError::DocumentMutation(Box::new(error)))?;
             }
         }
         let state = self

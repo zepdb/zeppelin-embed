@@ -491,7 +491,7 @@ fn load_pending_reclaim<'m>(
     for _ in 0..capacity {
         bytes.push(0)?;
     }
-    let source = NativePreparationSource::new(&admission.lease, storage, 1)?;
+    let source = NativePreparationSource::new_windowed(&admission.lease, storage, 64)?;
     // Foreground writes and checkpoints may land after the intent. They
     // cannot reach a candidate: a commit names only what its base reaches or
     // what it creates, and the candidates were unreachable from every
@@ -616,7 +616,7 @@ fn load_completed_reclaim<'m>(
     for _ in 0..capacity {
         bytes.push(0)?;
     }
-    let source = NativePreparationSource::new(&admission.lease, storage, 1)?;
+    let source = NativePreparationSource::new_windowed(&admission.lease, storage, 64)?;
     let length = source.copy_spill_page(
         reference,
         reference.object.generation,

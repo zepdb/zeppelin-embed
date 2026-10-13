@@ -2415,6 +2415,8 @@ pub(super) enum CommitStep {
     },
     /// A checkpoint ran instead of a commit; the caller re-loops.
     Checkpointed,
+    /// No write I/O: reserved descriptor headroom requires reclamation.
+    ReclaimDebt,
 }
 
 /// The shared commit tail: classify the staged batch, prepare its artifacts,
@@ -2748,7 +2750,7 @@ pub(super) fn commit_staged_batch_with_documents<'m>(
         .checked_add(transition.artifacts.len())
         .is_none_or(|count| count > crate::property_graph::storage::MAX_NATIVE_ARTIFACTS / 2)
     {
-        return Err(TreeError::Memory.into());
+        return Ok(CommitStep::ReclaimDebt);
     }
     let pending_tail_bytes = tail_bytes
         .checked_add(transition.wal_bytes().len())
@@ -2811,10 +2813,10 @@ impl crate::lifecycle::Store {
         )
     }
 
-    pub(crate) fn apply_native_mixed_locked(
-        &self,
+    pub(crate) fn apply_native_mixed_locked<'store>(
+        &'store self,
         documents: &crate::ingest::IngestBatch,
-        writer: &mut NativeWriter,
+        writer: &mut Option<std::sync::MutexGuard<'store, Option<NativeWriter>>>,
     ) -> Result<NativePreparedResult<ReceiptRegistration>, NativeGraphError> {
         self.apply_native_graph_with_materializer_inner(
             &[],
@@ -2948,6 +2950,7 @@ impl crate::lifecycle::Store {
                 &mut allow_pending_checkpoint,
             )? {
                 CommitStep::Checkpointed => continue,
+                CommitStep::ReclaimDebt => return Err(TreeError::Memory.into()),
                 CommitStep::Committed { generation, .. } => return Ok(generation),
                 CommitStep::NoOp => {
                     return Err(NativeGraphError::Invalid("allocator jump was not changed"));
@@ -2960,40 +2963,36 @@ impl crate::lifecycle::Store {
         clippy::too_many_arguments,
         reason = "one shared tail accepts an already held document writer"
     )]
-    fn apply_native_graph_with_materializer_inner<M: ResultMaterializer>(
-        &self,
+    fn apply_native_graph_with_materializer_inner<'store, M: ResultMaterializer>(
+        &'store self,
         requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
         control: &crate::lifecycle::QueryControl,
         materializer: &mut M,
         mut allow_pending_checkpoint: bool,
         documents: Option<&crate::ingest::IngestBatch>,
-        mut held_writer: Option<&mut NativeWriter>,
+        mut held_writer: Option<&mut Option<std::sync::MutexGuard<'store, Option<NativeWriter>>>>,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
         let request_resources = GraphResources::from_store(self)?;
         let _request_work = request_resources.begin_work();
         self.native_graph.require_writable()?;
         let mut maintenance_checked = held_writer.is_some();
+        let mut recovered = false;
         let mut run_maintenance = None;
         loop {
-            if let Some(work) = run_maintenance.take() {
-                self.auto_maintain_native_graph(control, work)?;
+            if let Some(action) = run_maintenance.take() {
+                self.maintain_native_graph_for_write(control, action, &mut recovered)?;
             }
-            let mut writer_slot = if held_writer.is_none() {
-                Some(self.native_graph.writer.lock().map_err(|_| {
+            let mut writer_slot = match held_writer.as_deref_mut().and_then(Option::take) {
+                Some(writer) => writer,
+                None => self.native_graph.writer.lock().map_err(|_| {
                     NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                         component: "native graph writer",
                     })
-                })?)
-            } else {
-                None
+                })?,
             };
-            let writer = match held_writer.as_deref_mut() {
-                Some(writer) => writer,
-                None => writer_slot
-                    .as_mut()
-                    .and_then(|slot| slot.as_mut())
-                    .ok_or_else(|| self.absent_native_graph_writer())?,
-            };
+            let writer = writer_slot
+                .as_mut()
+                .ok_or_else(|| self.absent_native_graph_writer())?;
             if writer.stopped {
                 return Err(NativeGraphError::WritesStopped);
             }
@@ -3132,7 +3131,8 @@ impl crate::lifecycle::Store {
             if !maintenance_checked && staged_batch.disposition() == BatchDisposition::Changed {
                 maintenance_checked = true;
                 if self.native_graph_maintenance_due()? {
-                    run_maintenance = Some(preparation_work);
+                    run_maintenance =
+                        Some(super::automatic::WriteMaintenance::Fold(preparation_work));
                     continue;
                 }
             }
@@ -3151,16 +3151,24 @@ impl crate::lifecycle::Store {
             )?;
             let (commit_audit, changed) = match step {
                 CommitStep::NoOp => {
-                    return Ok(NativePreparedResult::from_materialized(
+                    let result = NativePreparedResult::from_materialized(
                         materialized,
                         admitted_generation,
                         None,
                         replay_seq.map_or(crate::wal::LogSeq::new(writer.last_graph_seq), |seq| {
                             seq.max(crate::wal::LogSeq::new(writer.last_graph_seq))
                         }),
-                    ));
+                    );
+                    if let Some(slot) = held_writer.as_deref_mut() {
+                        *slot = Some(writer_slot);
+                    }
+                    return Ok(result);
                 }
                 CommitStep::Checkpointed => continue,
+                CommitStep::ReclaimDebt => {
+                    run_maintenance = Some(super::automatic::WriteMaintenance::Reclaim);
+                    continue;
+                }
                 CommitStep::Committed { audit, generation } => (audit, generation),
             };
             #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
@@ -3184,17 +3192,24 @@ impl crate::lifecycle::Store {
                     commit_audit.denials + handoff_denied,
                     std::sync::atomic::Ordering::Release,
                 );
+                if let Some(slot) = held_writer.as_deref_mut() {
+                    *slot = Some(writer_slot);
+                }
                 return Ok(result);
             }
             #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-seams"))))]
             {
                 let _ = commit_audit;
-                return Ok(NativePreparedResult::from_materialized(
+                let result = NativePreparedResult::from_materialized(
                     materialized,
                     admitted_generation,
                     Some(changed),
                     crate::wal::LogSeq::new(writer.last_graph_seq),
-                ));
+                );
+                if let Some(slot) = held_writer.as_deref_mut() {
+                    *slot = Some(writer_slot);
+                }
+                return Ok(result);
             }
         }
     }

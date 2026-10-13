@@ -8,7 +8,7 @@ use crate::property_graph::GraphGeneration;
 pub struct GraphMaintenancePolicy {
     /// Fold a bounded inventory prefix before a write once the byte threshold
     /// or internal 32-publication cadence is reached. Full reclamation runs
-    /// through `graph_maintain_step` or `graph_maintain_cycle`.
+    /// through explicit maintenance or once on a reclaim-debt refusal.
     pub automatic: bool,
     /// Committed artifact bytes between triggers; at least 1 MiB.
     pub reclaim_after_bytes: u64,

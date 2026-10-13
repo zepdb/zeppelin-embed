@@ -1298,7 +1298,7 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
+        if native_writer.is_some()
             && self.documents_have_native_nodes(
                 &batch
                     .documents
@@ -1307,14 +1307,14 @@ impl Store {
                     .collect::<Vec<_>>(),
             )?
         {
-            let result =
-                self.apply_native_mixed_locked(&batch, writer)
-                    .map_err(|error| match error {
-                        crate::lifecycle::native_graph::NativeGraphError::Ingest(error) => error,
-                        error => IngestError::Graph(Box::new(
-                            crate::property_graph::query::completed::GraphQueryError::from(error),
-                        )),
-                    })?;
+            let result = self
+                .apply_native_mixed_locked(&batch, &mut native_writer)
+                .map_err(|error| match error {
+                    crate::lifecycle::native_graph::NativeGraphError::Ingest(error) => error,
+                    error => IngestError::Graph(Box::new(
+                        crate::property_graph::query::completed::GraphQueryError::from(error),
+                    )),
+                })?;
             let generation = result
                 .changed_generation()
                 .unwrap_or(result.admitted_generation())
@@ -1537,10 +1537,8 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
-            && self.documents_have_native_nodes(batch.doc_ids())?
-        {
-            return self.delete_native_documents_locked(&batch, writer);
+        if native_writer.is_some() && self.documents_have_native_nodes(batch.doc_ids())? {
+            return self.delete_native_documents_locked(&batch, &mut native_writer);
         }
         let state = self
             .state

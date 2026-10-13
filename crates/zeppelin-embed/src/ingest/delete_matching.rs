@@ -101,9 +101,7 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        let native_deleted = if let Some(writer) =
-            native_writer.as_mut().and_then(|slot| slot.as_mut())
-        {
+        let native_deleted = if native_writer.is_some() {
             let ids = {
                 let active = self
                     .active
@@ -135,8 +133,11 @@ impl Store {
                     self.vfs.as_ref(),
                 )
                 .map_err(DeleteMatchingError::Purge)?;
-                self.delete_native_documents_locked(&super::DeleteBatch::new(ids.clone()), writer)
-                    .map_err(DeleteMatchingError::Delete)?;
+                self.delete_native_documents_locked(
+                    &super::DeleteBatch::new(ids.clone()),
+                    &mut native_writer,
+                )
+                .map_err(DeleteMatchingError::Delete)?;
                 Some(ids)
             } else {
                 None

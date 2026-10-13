@@ -329,10 +329,10 @@ impl crate::lifecycle::Store {
         Ok(Some(writer))
     }
 
-    pub(crate) fn delete_native_documents_locked(
-        &self,
+    pub(crate) fn delete_native_documents_locked<'store>(
+        &'store self,
         batch: &crate::ingest::DeleteBatch,
-        writer: &mut super::write::NativeWriter,
+        writer: &mut Option<std::sync::MutexGuard<'store, Option<super::write::NativeWriter>>>,
     ) -> Result<crate::ingest::IngestAck, crate::ingest::IngestError> {
         let (_, report) = self
             .with_native_document_mutation(batch.doc_ids().len(), DeleteDocuments(batch), writer)

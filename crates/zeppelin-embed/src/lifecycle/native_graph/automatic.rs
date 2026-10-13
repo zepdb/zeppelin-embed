@@ -8,8 +8,47 @@ use std::sync::atomic::Ordering;
 pub(super) const RECLAIM_AFTER_COMMITS: u64 = 32;
 
 const CYCLE_STEP_LIMIT: &str = "graph maintenance cycle exceeded four steps";
+// Intent, completion and retirement may each require a checkpoint admission
+// before publication. Stop at the first completed cycle, never start a second.
+const WRITE_RECOVERY_STEPS: usize = 6;
+
+pub(super) enum WriteMaintenance {
+    Fold(u64),
+    Reclaim,
+}
 
 impl Store {
+    pub(super) fn maintain_native_graph_for_write(
+        &self,
+        control: &QueryControl,
+        action: WriteMaintenance,
+        recovered: &mut bool,
+    ) -> Result<(), NativeGraphError> {
+        if let WriteMaintenance::Fold(work) = action {
+            match self.auto_maintain_native_graph(control, work) {
+                // Only the bounded inventory fold's work refusal is reclaim
+                // debt. An ordinary write's Work error never reaches here.
+                Err(NativeGraphError::Read(
+                    crate::property_graph::storage::tree::directory::TreeError::Work,
+                )) if !*recovered => {}
+                result => return result,
+            }
+        } else if *recovered {
+            return Err(crate::property_graph::storage::tree::directory::TreeError::Memory.into());
+        }
+        *recovered = true;
+        // The refused attempt and its writer guard have already been dropped.
+        // Explicit maintenance supplies each step's own limits and locking.
+        for _ in 0..WRITE_RECOVERY_STEPS {
+            if self.maintain_native_graph_step(control)?.cycle_complete {
+                return Ok(());
+            }
+        }
+        Err(NativeGraphError::Invalid(
+            "graph write recovery exceeded six steps",
+        ))
+    }
+
     // Caller holds the native writer lock after successful fold or retirement.
     pub(super) fn reset_native_graph_maintenance_due(&self) {
         self.native_graph

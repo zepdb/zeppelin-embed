@@ -1007,29 +1007,91 @@ pub(super) fn run_ze446_artifact_refusal_leaves_maintenance_headroom() {
         .as_mut()
         .unwrap()
         .retained_artifacts = crate::property_graph::storage::MAX_NATIVE_ARTIFACTS / 2;
-    let before = store.admit_native_read().unwrap().bundle().sequence();
+    // Admission debt is recovered by one reclaim cycle and one write retry.
+    try_commit_probe_node(&store, 1).unwrap();
+    assert_eq!(logical_state(&store, &[first]), logical_before);
+    store.close().unwrap();
+}
+
+#[test]
+fn ze446_non_debt_work_refusal_runs_no_maintenance() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("non-debt"), durable_options(), None)
+        .unwrap();
+    let first = commit_probe_node(&store, 0);
+    let before = logical_state(&store, &[first]);
+    let sequence = store.admit_native_read().unwrap().bundle().sequence();
+    let _limits = super::super::preparation_limits::install(None, Some(1));
+    capture::start();
+    let error = try_commit_probe_node(&store, 1).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            super::super::NativeGraphError::Read(
+                crate::property_graph::storage::tree::directory::TreeError::Work
+            )
+        ),
+        "{error:?}"
+    );
+    let report = capture::take();
+    assert_eq!(report.maintenance_work_limit, None);
+    assert_eq!(report.mark_entries, 0);
+    assert_eq!(
+        store.admit_native_read().unwrap().bundle().sequence(),
+        sequence
+    );
+    drop(_limits);
+    assert_eq!(logical_state(&store, &[first]), before);
+    store.close().unwrap();
+}
+
+#[test]
+fn ze446_auto_maintenance_failure_commits_no_write() {
+    run_ze446_auto_maintenance_failure_commits_no_write();
+}
+
+pub(super) fn run_ze446_auto_maintenance_failure_commits_no_write() {
+    use super::publication::{FaultPoint, RecordingVfs};
+    let parent = super::tempfile::tempdir().unwrap();
+    let vfs = std::sync::Arc::new(RecordingVfs::default());
+    let store = Store::create_native_graph_with_infrastructure(
+        parent.path().join("auto-failure"),
+        durable_options(),
+        None,
+        vfs.clone(),
+        std::sync::Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
+    let first = commit_probe_node(&store, 0);
+    let before = logical_state(&store, &[first]);
+    let lease = store.admit_native_read().unwrap();
+    let sequence = lease.bundle().sequence();
+    let generation = lease.bundle().base().generation;
+    drop(lease);
+    store
+        .native_graph
+        .writer
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .retained_artifacts = crate::property_graph::storage::MAX_NATIVE_ARTIFACTS / 2;
+    vfs.arm_fault(FaultPoint::Create);
     assert!(matches!(
         try_commit_probe_node(&store, 1),
         Err(super::super::NativeGraphError::Read(
-            crate::property_graph::storage::tree::directory::TreeError::Memory
-        ))
+            crate::property_graph::storage::tree::directory::TreeError::Io(_)
+        )) | Err(super::super::NativeGraphError::Io { .. })
     ));
-    assert_eq!(
-        store.admit_native_read().unwrap().bundle().sequence(),
-        before
-    );
-    let control = QueryControl::Cancel(CancelToken::new());
-    for _ in 0..16 {
-        if store
-            .maintain_native_graph_step(&control)
-            .unwrap()
-            .cycle_complete
-        {
-            break;
-        }
-    }
+    vfs.assert_fired_once();
+    let lease = store.admit_native_read().unwrap();
+    assert_eq!(lease.bundle().sequence(), sequence);
+    assert_eq!(lease.bundle().base().generation, generation);
+    drop(lease);
+    assert_eq!(logical_state(&store, &[first]), before);
     try_commit_probe_node(&store, 1).unwrap();
-    assert_eq!(logical_state(&store, &[first]), logical_before);
     store.close().unwrap();
 }
 
@@ -1039,48 +1101,27 @@ fn ze446_default_plain_writes_recover_after_refusal() {
     let parent = super::tempfile::tempdir().unwrap();
     let store =
         Store::create_native_graph(parent.path().join("default"), durable_options(), None).unwrap();
-    let mut written = 0;
+    let resources = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+    let before = resources.work_ledger().unwrap();
+    let started = std::time::Instant::now();
     for index in 0..2023 {
-        match try_commit_probe_node(&store, index) {
-            Ok(_) => written += 1,
-            Err(error) => {
-                println!("ZE446_DEFAULT_REFUSAL written={written} error={error:?}");
-                assert!(
-                    matches!(
-                        error,
-                        super::super::NativeGraphError::Read(
-                            crate::property_graph::storage::tree::directory::TreeError::Memory
-                                | crate::property_graph::storage::tree::directory::TreeError::Work
-                        )
-                    ),
-                    "unexpected refusal at write {written}: {error:?}"
-                );
-                break;
-            }
-        }
+        try_commit_probe_node(&store, index)
+            .unwrap_or_else(|error| panic!("write {index}: {error:?}"));
     }
+    let seconds = started.elapsed().as_secs_f64();
+    let artifact_writes = resources.work_ledger().unwrap().artifact_writes - before.artifact_writes;
+    let commits = store.admit_native_read().unwrap().bundle().sequence();
+    let artifacts = std::fs::read_dir(parent.path().join("default"))
+        .unwrap()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".zgraph"))
+        .count();
     println!(
-        "ZE446_DEFAULT written={written} commits={} artifacts={}",
-        store.admit_native_read().unwrap().bundle().sequence(),
-        std::fs::read_dir(parent.path().join("default"))
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".zgraph"))
-            .count()
+        "ZE446_DEFAULT writes=2023 commits={commits} artifacts={artifacts} commits_per_write={:.9} retained_artifacts_per_write={:.9} commit_artifact_writes={artifact_writes} commit_artifacts_per_write={:.9} seconds={seconds:.6}",
+        commits as f64 / 2023.0,
+        artifacts as f64 / 2023.0,
+        artifact_writes as f64 / 2023.0
     );
-    let control = QueryControl::Cancel(CancelToken::new());
-    let mut complete = false;
-    for _ in 0..16 {
-        complete = store
-            .maintain_native_graph_step(&control)
-            .expect("maintenance must recover")
-            .cycle_complete;
-        if complete {
-            break;
-        }
-    }
-    assert!(complete);
-    try_commit_probe_node(&store, written).expect("write after maintenance");
     store.close().unwrap();
 }
 

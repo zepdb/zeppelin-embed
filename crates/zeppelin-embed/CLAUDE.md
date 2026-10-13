@@ -1200,33 +1200,40 @@ reclamation files and failure contract.
 
 ## ZE-260 automatic reclamation
 
-Graph writers default to automatic reclamation after 64 MiB of committed
-artifact bytes or 32 successful publications, including maintenance commits.
-The byte policy is per open writer, with a minimum threshold of 1 MiB;
-read-only handles cannot change it. The count cadence is internal. Structured
-and query mutations stage first; refusals, replays and no-ops run no maintenance.
-A staged change runs due maintenance outside the writer lock, then rebuilds
-against the maintained view. A maintenance refusal commits none of the
-requested write. Each automatic trigger runs one cycle of at most four bounded
-steps. Stale or exhausted cycles
-retain debt for the next write. Only successful clear publication and its
-checkpoint reset both counters; ordinary checkpoints preserve debt. Nonempty
-writable reopen starts count-due. `GraphStore::maintain` exposes one step;
-`maintain_cycle` exposes one cycle.
+Graph writers default to bounded automatic inventory folding after 64 MiB
+of committed artifact bytes or 32 successful publications. The byte policy
+is per open writer, with a minimum threshold of 1 MiB; read-only handles
+cannot change it. Nonempty writable reopen starts count-due. Successfully
+staged changes run due folds outside the writer lock and rebuild their view.
+Successful folds reset due counters under the writer lock; empty folds publish
+nothing. Replays, no-ops and ordinary refusals do not authorize maintenance.
+`GraphStore::maintain` exposes one step; `maintain_cycle` exposes a cycle.
 
-Owner decision 2026-10-13 (ZE-446) narrows this: an automatic trigger on a
-write only folds bounded inventories under the batch-derived write
-allowance. Full-store marking and reclamation run only through explicit
-maintenance (`maintain`, `maintain_cycle`), because a full mark grows with the
-store (1.59 G work units at 176k nodes) and failed large LDBC writes. A store
-that only receives writes keeps its garbage until the application runs
-maintenance. Successful automatic folds advance their due counters; empty
-folds publish nothing. The writer counts retained artifacts without scanning
-the store and refuses new writes at half the descriptor ceiling, reserving
-the other half for explicit maintenance. Checkpoints and reopen restore this
-conservative count. Explicit reclaim uses scoped mapping windows so retained
-garbage cannot exhaust its preparation mapping table.
-Incremental marking may restore automatic full reclamation later.
+Owner decision 2026-10-13 (ZE-446): full-store reclamation stays off normal
+writes, including large LDBC batches. It runs automatically only when bounded
+inventory folding refuses with `Read(Work)`, or when a changed write exceeds
+the retained-artifact admission reserve. Other errors propagate unchanged.
+The refused attempt publishes none of the requested write. Its preparation,
+read lease and writer lock are dropped before running the same maintenance
+steps and locking protocol used by explicit maintenance. Recovery runs at
+most one reclaim cycle (six steps: intent, completion and retirement,
+each with a possible checkpoint admission), stopping on completion or the
+first error, then rebuilds and retries the write once. Maintenance and retry errors surface
+unchanged; a second refusal never starts another recovery cycle.
+
+Each recovery step has the explicit path's own preparation budget, outside
+the refused write's allowance: 32 MiB storage, work bounded by the greater of
+1 GiB and eight times census artifact bytes, 128 sweep entries, and the
+existing relocation cap. The six-step recovery limit bounds total extra work;
+an incomplete cycle returns a loud cycle-limit error. Full-store marks
+are allowed on these debt refusals only, never proactively per write.
+
+The writer counts retained artifacts without scanning the store and reserves
+half the descriptor ceiling for maintenance publications. Checkpoints and
+reopen restore this conservative count. Reclaim uses scoped mapping windows
+so retained garbage cannot exhaust its preparation mapping table. Pending
+and completed reclaim validation retain a 64-slot directory reserve for
+borrowed root/child blocks; spill and callback reads remain scoped.
 
 ## ZE-64 composed search statements
 
