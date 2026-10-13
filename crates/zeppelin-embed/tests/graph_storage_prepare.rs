@@ -1368,6 +1368,70 @@ fn pack_memory_grows_with_appended_bytes() {
     );
 }
 
+#[test]
+fn pack_growth_memory_refusal_leaves_pack_usable() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let shared = GraphResources::from_store(&store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let memory = StorageMemory::new(&writer, &control, 2 * 1024 * 1024).unwrap();
+    let mut resources = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
+    let identity = ArtifactIdentity {
+        store: Empty.identity().store,
+        artifact: ArtifactId::new(102).unwrap(),
+        generation: GraphGeneration::new(1),
+        creation_serial: 1,
+    };
+    let mut pack = PrivateArtifact::new(
+        identity,
+        MAX_ARTIFACT_BYTES,
+        PackLimits::default().blocks,
+        &memory,
+        &mut resources,
+    )
+    .unwrap();
+    let first = pack
+        .append(BlockKind::StoredText, &[9; 100], &mut resources)
+        .unwrap();
+    let before = memory.reserved_bytes();
+    let large = vec![7; 2 * 1024 * 1024];
+    assert!(
+        pack.can_append(large.len()),
+        "artifact hard cap admits input"
+    );
+    assert!(matches!(
+        pack.append(BlockKind::StoredText, &large, &mut resources),
+        Err(TreeError::Memory)
+    ));
+    assert_eq!(
+        memory.reserved_bytes(),
+        before,
+        "partial growth reserve released"
+    );
+    assert_eq!(
+        pack.framed_block(first, &mut resources).unwrap().payload(),
+        &[9; 100]
+    );
+    let second = pack
+        .append(BlockKind::StoredText, &[8; 100], &mut resources)
+        .expect("small append after growth refusal");
+    pack.seal(&mut resources)
+        .expect("seal after growth refusal");
+    let sealed = zeppelin_embed::property_graph::storage::artifact::decode(
+        ContainerKind::Object,
+        Some((identity.store, identity.artifact)),
+        pack.sealed_bytes().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sealed.resolve_framed_block(first).unwrap(), &[9; 100]);
+    assert_eq!(sealed.resolve_framed_block(second).unwrap(), &[8; 100]);
+}
+
 fn record_ref(
     source: &impl BlockSource,
     roots: GraphRoots,

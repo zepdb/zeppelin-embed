@@ -14,7 +14,7 @@ use crate::property_graph::resources::GraphResources;
 use crate::property_graph::staging::{StageError, WriteLimits, WriteMemory};
 use crate::property_graph::storage::adjacency::RangeScratch;
 use crate::property_graph::storage::artifact::{ArtifactIdentity, Block, BlockKind, ContainerKind};
-use crate::property_graph::storage::consolidation::prepare_one_replacement;
+use crate::property_graph::storage::consolidation::{PackCensus, prepare_one_replacement};
 use crate::property_graph::storage::inventory::{
     INVENTORY_FOLD_ADDITION_LIMIT, apply_inventory, inventory_resume_after, prepare_inventory_fold,
     retire_reclaimed_inventory, verify_inventory_entry,
@@ -28,7 +28,9 @@ use crate::property_graph::storage::reclaim::{
 };
 
 use crate::property_graph::storage::tree::TreeKind;
-use crate::property_graph::storage::tree::directory::{BlockSink, DirectoryCursor, TreeScratch};
+use crate::property_graph::storage::tree::directory::{
+    BlockSink, DirectoryCursor, TreeError, TreeResources, TreeScratch,
+};
 use crate::property_graph::storage::{NativePreparationCatalog, NativePreparationSource};
 use crate::property_graph::wal::{
     BatchId, InventoryChange, InventoryState, MAX_ENVELOPE_BYTES, STACK_RESERVATION_BYTES,
@@ -39,9 +41,7 @@ use std::sync::Arc;
 const DEFAULT_MAINTENANCE_WORK: u64 = 1024 * 1024 * 1024;
 
 pub(super) fn maintenance_work_limit(inventory_bytes: u64) -> Result<u64, NativeGraphError> {
-    let proportional = inventory_bytes
-        .checked_mul(8)
-        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let proportional = inventory_bytes.checked_mul(8).ok_or(TreeError::Work)?;
     Ok(DEFAULT_MAINTENANCE_WORK.max(proportional))
 }
 
@@ -329,9 +329,7 @@ fn validate_authentic_protected_capture(
                     ),
                 );
             }
-            visited = visited
-                .checked_add(1)
-                .ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?;
+            visited = visited.checked_add(1).ok_or(TreeError::Work)?;
             return Ok(());
         }
         let expected = capture_record_at(capture, admitted, base, original).ok_or(
@@ -346,9 +344,7 @@ fn validate_authentic_protected_capture(
                 ),
             );
         }
-        visited = visited
-            .checked_add(1)
-            .ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?;
+        visited = visited.checked_add(1).ok_or(TreeError::Work)?;
         Ok(())
     })?;
     if visited != count {
@@ -920,10 +916,8 @@ fn prepare_durable_proof<'m>(
                         resources,
                     )?;
                     mark.emit(reference.artifact, &mut writer, resources)?;
-                    base.closure_count = base
-                        .closure_count
-                        .checked_add(1)
-                        .ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?;
+                    base.closure_count =
+                        base.closure_count.checked_add(1).ok_or(TreeError::Work)?;
                     Ok(())
                 };
             if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_state(
@@ -985,9 +979,7 @@ fn prepare_durable_proof<'m>(
     };
     let mut protected_count = 0_u64;
     if let Err(error) = validate_protected_stream(protected, &writer, storage, resources, |_, _| {
-        protected_count = protected_count
-            .checked_add(1)
-            .ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?;
+        protected_count = protected_count.checked_add(1).ok_or(TreeError::Work)?;
         Ok(())
     }) {
         return Err(spill_error(&writer, error));
@@ -1255,11 +1247,18 @@ fn resume_pending_reclaim(
     }
     let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
     let storage = StorageMemory::new(&write_memory, control, limits.storage_bytes)?;
-    let mut resources =
-        crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
-            &storage,
-            limits.work.unwrap_or(DEFAULT_MAINTENANCE_WORK),
-        )?;
+    let source = NativePreparationSource::new(
+        &admission.lease,
+        &storage,
+        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+    )?;
+    let resources = crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
+        &storage,
+        limits.work.unwrap_or(DEFAULT_MAINTENANCE_WORK),
+    )?;
+    let (census, mut resources) =
+        maintenance_resources(&source, &admitted, &storage, limits, resources)?;
+    drop(census);
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
         "maintenance-resume-start",
@@ -1268,7 +1267,6 @@ fn resume_pending_reclaim(
     let pending = load_pending_reclaim(admission, &storage, &mut resources)?;
     let generation = super::write::assigned_generation(store, admitted.base().generation)?;
     let store_identity = admitted.base().store;
-    let source = NativePreparationSource::new(&admission.lease, &storage, 64)?;
     let identity_source = || {
         let creation_serial = store.native_graph.burn_creation_serial().map_err(|_| {
             crate::property_graph::storage::tree::directory::TreeError::Invalid(
@@ -1691,11 +1689,18 @@ fn retire_completed_reclaim(
 
     let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
     let storage = StorageMemory::new(&write_memory, control, limits.storage_bytes)?;
-    let mut resources =
-        crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
-            &storage,
-            limits.work.unwrap_or(DEFAULT_MAINTENANCE_WORK),
-        )?;
+    let source = NativePreparationSource::new(
+        &admission.lease,
+        &storage,
+        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+    )?;
+    let resources = crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
+        &storage,
+        limits.work.unwrap_or(DEFAULT_MAINTENANCE_WORK),
+    )?;
+    let (census, mut resources) =
+        maintenance_resources(&source, &admitted, &storage, limits, resources)?;
+    drop(census);
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
         "maintenance-retirement-start",
@@ -1708,7 +1713,6 @@ fn retire_completed_reclaim(
         .checked_add(1)
         .ok_or(NativeGraphError::IdentityExhausted)?;
     let store_identity = admitted.base().store;
-    let source = NativePreparationSource::new(&admission.lease, &storage, 64)?;
     let identity_source = || {
         let creation_serial = store.native_graph.burn_creation_serial().map_err(|_| {
             crate::property_graph::storage::tree::directory::TreeError::Invalid(
@@ -1949,6 +1953,49 @@ pub(super) fn commit(
     )
 }
 
+fn maintenance_resources<'m>(
+    source: &NativePreparationSource<'_, 'm>,
+    admitted: &super::NativeGraphBundle,
+    storage: &'m StorageMemory<'m>,
+    limits: MaintenanceLimits,
+    mut census_resources: TreeResources<'m>,
+) -> Result<(StorageBuffer<'m, PackCensus>, TreeResources<'m>), NativeGraphError> {
+    let census = crate::property_graph::storage::consolidation::pack_census(
+        source,
+        admitted.roots(),
+        admitted.prepared_inventories(),
+        &mut census_resources,
+    )?;
+    let census_work = census_resources.work();
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-census-end",
+        census_work,
+    );
+    drop(census_resources);
+    let inventory_bytes = census
+        .as_slice()
+        .iter()
+        .try_fold(0_u64, |total, row| total.checked_add(u64::from(row.bytes)))
+        .ok_or(TreeError::Work)?;
+    let work_limit = match limits.work {
+        Some(override_limit) => override_limit,
+        None => maintenance_work_limit(inventory_bytes)?,
+    };
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::maintenance_work(
+        inventory_bytes,
+        work_limit,
+    );
+    let mut resources =
+        crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
+            storage, work_limit,
+        )?;
+    // Census belongs to this preparation's total, not an extra 1 GiB ledger.
+    resources.step(census_work)?;
+    Ok((census, resources))
+}
+
 pub(super) fn commit_with_limits(
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
@@ -1993,44 +2040,13 @@ pub(super) fn commit_with_limits(
         &storage,
         crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
     )?;
-    let census = {
-        let mut census_resources =
-            crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
-                &storage,
-                DEFAULT_MAINTENANCE_WORK,
-            )?;
-        crate::property_graph::storage::consolidation::pack_census(
-            &source,
-            admitted.roots(),
-            admitted.prepared_inventories(),
-            &mut census_resources,
-        )?
-    };
-    let inventory_bytes = census
-        .as_slice()
-        .iter()
-        .try_fold(0_u64, |total, row| total.checked_add(u64::from(row.bytes)))
-        .ok_or(NativeGraphError::IdentityExhausted)?;
-    let work_limit = match limits.work {
-        Some(override_limit) => override_limit,
-        None => maintenance_work_limit(inventory_bytes)?,
-    };
-    #[cfg(all(test, feature = "graph-cypher"))]
-    crate::property_graph::storage::preparation_work_capture::maintenance_work(
-        inventory_bytes,
-        work_limit,
-    );
     let mut resources =
         crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
-            &storage, work_limit,
+            &storage,
+            limits.work.unwrap_or(DEFAULT_MAINTENANCE_WORK),
         )?;
-    #[cfg(all(test, feature = "graph-cypher"))]
-    crate::property_graph::storage::preparation_work_capture::phase(
-        "maintenance-start",
-        resources.work(),
-    );
-    let folded_inventory = {
-        prepare_inventory_fold(
+    if admitted.base().fold.envelope_sequence != admitted.sequence() {
+        let folded_inventory = prepare_inventory_fold(
             &source,
             admitted.prepared_inventories(),
             admitted.roots(),
@@ -2039,16 +2055,7 @@ pub(super) fn commit_with_limits(
             limits.inventory_additions,
             &storage,
             &mut resources,
-        )?
-    };
-    #[cfg(any(test, feature = "test-seams"))]
-    let work_before_proof = resources.work();
-    #[cfg(all(test, feature = "graph-cypher"))]
-    crate::property_graph::storage::preparation_work_capture::phase(
-        "maintenance-fold-end",
-        resources.work(),
-    );
-    if admitted.base().fold.envelope_sequence != admitted.sequence() {
+        )?;
         let mut slot = store
             .native_graph
             .writer
@@ -2063,13 +2070,36 @@ pub(super) fn commit_with_limits(
         super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
         drop(slot);
         drop(folded_inventory);
-        drop(census);
         drop(source);
         drop(resources);
         drop(storage);
         let folded = store.admit_native_graph_maintenance()?;
         return commit_with_limits(store, &folded, control, limits, budget);
     }
+    let (census, mut resources) =
+        maintenance_resources(&source, &admitted, &storage, limits, resources)?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-start",
+        resources.work(),
+    );
+    let folded_inventory = prepare_inventory_fold(
+        &source,
+        admitted.prepared_inventories(),
+        admitted.roots(),
+        admitted.sequence(),
+        admission.lease.token(),
+        limits.inventory_additions,
+        &storage,
+        &mut resources,
+    )?;
+    #[cfg(any(test, feature = "test-seams"))]
+    let work_before_proof = resources.work();
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-fold-end",
+        resources.work(),
+    );
     let generation = super::write::assigned_generation(store, admitted.base().generation)?;
     let proof = prepare_durable_proof(
         limits.relocation_bytes,

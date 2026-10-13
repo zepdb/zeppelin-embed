@@ -327,6 +327,84 @@ fn maintenance_work_budget_follows_inventory_bytes() {
     );
 }
 
+#[test]
+fn maintenance_work_budget_overflow_is_work() {
+    use crate::property_graph::storage::tree::directory::TreeError;
+    assert!(matches!(
+        super::super::maintenance::maintenance_work_limit(u64::MAX / 8 + 1),
+        Err(super::super::NativeGraphError::Read(TreeError::Work))
+    ));
+}
+
+#[test]
+fn maintenance_start_resume_retire_receive_inventory_budget() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let (_history, store) = seed_crash_history();
+    for phase in [
+        "maintenance-start",
+        "maintenance-resume-start",
+        "maintenance-retirement-start",
+    ] {
+        capture::start();
+        commit_maintenance(&store).expect("complete maintenance phase");
+        let report = capture::take();
+        assert!(report.phases.iter().any(|(name, _)| *name == phase));
+        assert!(report.maintenance_inventory_bytes > 0, "{phase}");
+        assert_eq!(
+            report.maintenance_work_limit,
+            Some(
+                super::super::maintenance::maintenance_work_limit(
+                    report.maintenance_inventory_bytes
+                )
+                .expect("inventory budget")
+            ),
+            "{phase}"
+        );
+    }
+}
+
+#[test]
+fn maintenance_census_shares_work_limit_and_skips_fold_retry() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = tempfile::tempdir().expect("census parent");
+    let store = Store::create_native_graph(parent.path().join("native"), options(), None)
+        .expect("census store");
+    seed_reclaimable_manifest(&store, "census");
+    // Make the base need a fold before the actual reclaim preparation.
+    let image = CanonicalContents::node(&mut [], &mut [], Some("next"), None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "census", "next").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    capture::start();
+    commit_maintenance(&store).expect("census maintenance");
+    let report = capture::take();
+    let census: Vec<_> = report
+        .phases
+        .iter()
+        .filter(|(name, _)| *name == "maintenance-census-end")
+        .collect();
+    assert_eq!(census.len(), 1, "fold retry must not run a census");
+    assert!(census[0].1 > 0);
+    assert_eq!(
+        report
+            .phases
+            .iter()
+            .find(|(name, _)| *name == "maintenance-start")
+            .unwrap()
+            .1,
+        census[0].1,
+        "census work must enter the preparation ledger"
+    );
+}
+
 fn assert_live_files_unchanged(path: &Path, before: &BTreeMap<std::ffi::OsString, Vec<u8>>) {
     let after = directory_image(path);
     for (name, bytes) in before {

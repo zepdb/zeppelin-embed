@@ -179,8 +179,15 @@ impl<'a> PrivateArtifact<'a> {
             .and_then(|n| body_end.checked_add(n))
             .and_then(|n| n.checked_add(8))
             .ok_or(TreeError::Memory)?;
+        if let Err(error) =
+            self.ensure_capacity(directory_and_trailer, self.entries.as_slice().len() + 1, r)
+        {
+            if !matches!(error, TreeError::Memory) {
+                self.state = State::Failed;
+            }
+            return Err(error);
+        }
         self.state = State::Failed;
-        self.ensure_capacity(directory_and_trailer, self.entries.as_slice().len() + 1, r)?;
         let reference = PhysicalRef {
             artifact: self.identity.artifact,
             offset: self.bytes.as_slice().len() as u64,
