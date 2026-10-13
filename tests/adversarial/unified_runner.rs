@@ -924,6 +924,64 @@ pub fn probe_unified_refusals() -> Result<(), String> {
     engine.execute_unified(&mut model, &Op::GraphApply { graph_key: 1 })?;
     // Duplicate keyed graph writes retain the independently expected generation.
     engine.execute_unified(&mut model, &Op::GraphApply { graph_key: 1 })?;
+    // A deterministic admission limit must preserve the same bytes/state and
+    // leave the writer usable by the paired small text-bearing commit.
+    let path = root.path().join("wal-limit");
+    let store = Store::open(&path, OpenOptions::new().with_max_resident_bytes(256 << 20))
+        .map_err(|e| e.to_string())?;
+    store.enable_graph().map_err(|e| e.to_string())?;
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let writes = [StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Node, "wal-limit", "comment").unwrap(),
+        revision: GraphRevision::new(1).unwrap(),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    }];
+    let document = IngestDocument::new(
+        DocumentVersion::new(DocId::new(91), Revision::new(1)),
+        vec![1.0],
+    );
+    let before = file_image(&path)?;
+    let documents = [zeppelin_embed::property_graph::GraphNodeDocument {
+        item_index: 0,
+        document: document.clone().with_text("x".repeat(1_048_576)),
+    }];
+    let error = store
+        .graph_apply(
+            zeppelin_embed::property_graph::GraphBatch::with_node_documents(&writes, &documents),
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .err()
+        .ok_or("oversized mixed WAL run committed")?;
+    if error.kind() != zeppelin_embed::property_graph::GraphStoreErrorKind::Limit
+        || !error.nothing_committed()
+        || file_image(&path)? != before
+        || store
+            .count_documents(None, None)
+            .map_err(|e| e.to_string())?
+            .count
+            != 0
+    {
+        return Err(format!("mixed WAL admission limit violated: {error}"));
+    }
+    let documents = [zeppelin_embed::property_graph::GraphNodeDocument {
+        item_index: 0,
+        document: document.with_text("small comment"),
+    }];
+    store
+        .graph_apply(
+            zeppelin_embed::property_graph::GraphBatch::with_node_documents(&writes, &documents),
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(|e| e.to_string())?;
+    if store
+        .count_documents(None, None)
+        .map_err(|e| e.to_string())?
+        .count
+        != 1
+    {
+        return Err("paired small comment did not commit".into());
+    }
     Ok(())
 }
 

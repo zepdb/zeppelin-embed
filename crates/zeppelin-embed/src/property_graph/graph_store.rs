@@ -547,6 +547,12 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
             documents.push(linked.document.clone());
         }
         let mut input_bytes = 0_u64;
+        // Minimum Begin/Commit envelope (512 bytes) and its mixed wrapper.
+        // Count submitted mutation/document bytes before staging. Inventory
+        // records and existing-store references add state-dependent bytes;
+        // admit_wal_run retains the exact check before protection/publication.
+        let mut wal_bytes = 512_usize
+            .saturating_add(crate::ingest::wal_payload::MIXED_BATCH_MEMBER_FRAMED_OVERHEAD);
         for document in &documents {
             let payload =
                 crate::ingest::wal_payload::encode_upsert_v2(document).map_err(|error| {
@@ -557,6 +563,9 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
             input_bytes = input_bytes
                 .checked_add(payload.len() as u64)
                 .ok_or_else(|| GraphStoreError::contract("mixed graph input length overflow"))?;
+            wal_bytes = wal_bytes
+                .saturating_add(payload.len())
+                .saturating_add(crate::ingest::wal_payload::MIXED_BATCH_MEMBER_FRAMED_OVERHEAD);
         }
         for write in writes.iter() {
             use crate::property_graph::staging::WriteImage;
@@ -601,12 +610,39 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
                 .checked_add(framing)
                 .and_then(|bytes| bytes.checked_add(image_bytes))
                 .ok_or_else(|| GraphStoreError::contract("mixed graph input length overflow"))?;
+            // Graph change frame 72, membership/length 16, optional ref 8
+            // (+96 for live canonical contents), then installing provenance.
+            wal_bytes = wal_bytes
+                .saturating_add(framing as usize)
+                .saturating_add(96)
+                .saturating_add(if write.image.is_some() { 96 } else { 0 });
         }
         if input_bytes > crate::property_graph::MAX_GRAPH_INPUT_BYTES as u64 {
             return Err(GraphStoreError::graph(NativeGraphError::Stage(
                 StageError::InvalidInput,
             )));
         }
+        let wal_slot = store.wal_writer.lock().map_err(|_| {
+            GraphStoreError::graph(NativeGraphError::Store(
+                crate::lifecycle::StoreError::Synchronization {
+                    component: "WAL writer",
+                },
+            ))
+        })?;
+        let wal = wal_slot.as_ref().ok_or_else(|| {
+            GraphStoreError::graph(NativeGraphError::Store(
+                crate::lifecycle::StoreError::ReadOnly,
+            ))
+        })?;
+        let (pending, cap) = wal
+            .mixed_run_bound()
+            .map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))?;
+        if pending.saturating_add(wal_bytes) > cap {
+            return Err(GraphStoreError::limit(
+                "estimated mixed WAL group exceeds its byte limit",
+            ));
+        }
+        drop(wal_slot);
         admit_preparation(&writes)?;
         let mut batch = crate::ingest::IngestBatch::new(documents);
         if let Some(epoch) = store.epoch_identity() {

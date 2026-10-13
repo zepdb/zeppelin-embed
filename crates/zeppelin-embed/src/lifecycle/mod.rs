@@ -2473,6 +2473,9 @@ impl StoreError {
     #[must_use]
     pub fn kind(&self) -> StoreErrorKind {
         match self {
+            Self::WalWrite(crate::wal::WalWriteError::GroupTooLarge { .. }) => {
+                StoreErrorKind::BudgetExceeded
+            }
             #[cfg(feature = "graph-cypher")]
             Self::DocumentMutation(error) => match error.as_ref() {
                 crate::ingest::IngestError::Store(error) => error.kind(),

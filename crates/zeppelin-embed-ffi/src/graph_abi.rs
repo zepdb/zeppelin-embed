@@ -900,6 +900,26 @@ pub(crate) fn resources(
 mod tests {
     use super::*;
     #[test]
+    fn ze444_wal_limit_code() {
+        let error = zeppelin_embed::lifecycle::StoreError::WalWrite(
+            zeppelin_embed::wal::WalWriteError::GroupTooLarge {
+                encoded_bytes: 1_490_877,
+                max_group_bytes: 1_048_576,
+            },
+        );
+        assert_eq!(
+            FfiError::store(error).code,
+            ZeErrorCode::ZeErrBudgetExceeded
+        );
+        for statement in [false, true] {
+            assert_eq!(
+                store_error_code(GraphStoreErrorKind::Limit, statement),
+                ZeErrorCode::ZeErrBudgetExceeded
+            );
+        }
+    }
+
+    #[test]
     fn ze200_internal_maps_to_existing_ffi_code() {
         for statement in [false, true] {
             assert_eq!(
