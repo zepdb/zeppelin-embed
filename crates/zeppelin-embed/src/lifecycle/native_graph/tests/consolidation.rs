@@ -3504,9 +3504,10 @@ fn run_ze46_spill_merge_and_incomplete_mark_never_delete_candidates() {
             text.offset + u64::from(text.length) / 2,
         )
     };
-    // Work budgets come from the measured stage boundaries of this fixture:
-    // the fold ends near 1.6M, the graph mark runs 1.8M..2.7M and the sparse
-    // trace 2.7M..3.3M. Each budget lands mid-stage with >0.2M on each side.
+    // Source and artifact-proof reuse reduced this fixture's charged work:
+    // census and fold end near 68K, and the graph mark runs 69K..317K.
+    // The explicit 150K limit still refuses inside the graph mark, while
+    // 4 KiB refuses before it. Both must override the inventory-sized default.
     for refusal in [
         "memory",
         "work before the mark",
@@ -3524,7 +3525,7 @@ fn run_ze46_spill_merge_and_incomplete_mark_never_delete_candidates() {
         match refusal {
             "memory" => limits.storage_bytes = 256 * 1024,
             "work before the mark" => limits.work = Some(4 * 1024),
-            "work during the graph mark" => limits.work = Some(2_000_000),
+            "work during the graph mark" => limits.work = Some(150_000),
             "cancel after the first spill create" => {
                 let token = token.clone();
                 vfs.after_next_create(move || token.cancel());
