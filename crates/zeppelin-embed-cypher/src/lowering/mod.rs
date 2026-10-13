@@ -279,6 +279,12 @@ enum DraftExpr {
     Slot(SlotId),
     Parameter(ParameterId),
     List(Range),
+    Coalesce(Range),
+    Case {
+        operand: Option<ExprId>,
+        alternatives: Range,
+        otherwise: ExprId,
+    },
     Property {
         entity: ExprId,
         name: Range,
@@ -586,6 +592,18 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     DraftExpr::Slot(slot) => Expression::Slot(*slot),
                     DraftExpr::Parameter(id) => Expression::Parameter(*id),
                     DraftExpr::List(range) => Expression::List(range.get(self.children.slice())?),
+                    DraftExpr::Coalesce(range) => {
+                        Expression::Coalesce(range.get(self.children.slice())?)
+                    }
+                    DraftExpr::Case {
+                        operand,
+                        alternatives,
+                        otherwise,
+                    } => Expression::Case {
+                        operand: *operand,
+                        alternatives: alternatives.get(self.children.slice())?,
+                        otherwise: *otherwise,
+                    },
                     DraftExpr::Property { entity, name } => Expression::Property {
                         entity: *entity,
                         name: GraphName::new(text(self.bytes.slice(), *name, self.control)?)

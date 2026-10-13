@@ -15,7 +15,9 @@ mod tck;
 use graph::Graph;
 use tck::V;
 use zeppelin_embed::property_graph::query::{
-    QueryValue, plan::ParameterBinding, runtime::WorkKind,
+    QueryValue,
+    plan::ParameterBinding,
+    runtime::{RuntimeLimits, WorkKind},
 };
 use zeppelin_embed_cypher::{ErrorKind, StatementError};
 
@@ -33,6 +35,266 @@ fn bag(mut rows: Vec<Vec<V>>) -> Vec<String> {
     let mut values: Vec<_> = rows.iter().map(|row| format!("{row:?}")).collect();
     values.sort();
     values
+}
+
+#[test]
+fn ze432_coalesce_returns_first_nonnull_and_skips_unused_arguments() {
+    let graph = Graph::new("ze432-coalesce");
+    assert_eq!(
+        rows(
+            &graph,
+            "RETURN coalesce(null, null, 3, 1 / 0), coalesce(null), coalesce(null, null), coalesce(false, true), coalesce([], [1])"
+        ),
+        vec![vec![
+            V::Int(3),
+            V::Null,
+            V::Null,
+            V::Bool(false),
+            V::List(vec![])
+        ]]
+    );
+    let result = graph.run("RETURN coalesce(null, 3, 1 / 0)", &[]).unwrap();
+    assert_eq!(result.metadata().counters.get(WorkKind::Expressions), 3);
+    expression_limit(&graph, "RETURN coalesce(null, 3, 1 / 0)", 2);
+    assert!(
+        matches!(graph.run("RETURN coalesce()", &[]), Err(StatementError::Compile(error)) if error.kind == ErrorKind::Syntax)
+    );
+}
+
+#[test]
+fn ze432_case_simple_uses_equality_and_never_matches_null() {
+    let graph = Graph::new("ze432-case-simple");
+    assert_eq!(
+        rows(
+            &graph,
+            "RETURN CASE 2 WHEN 1 THEN 1 / 0 WHEN 2.0 THEN 'yes' WHEN 2 THEN 'later' ELSE 1 / 0 END, CASE null WHEN null THEN 1 END, CASE 9 WHEN 1 THEN 1 ELSE 2 END"
+        ),
+        vec![vec![V::Str("yes".into()), V::Null, V::Int(2)]]
+    );
+    let result = graph
+        .run("RETURN CASE 2 WHEN 1 THEN 9 WHEN 2 THEN 8 ELSE 7 END", &[])
+        .unwrap();
+    assert_eq!(result.metadata().counters.get(WorkKind::Expressions), 5);
+    expression_limit(
+        &graph,
+        "RETURN CASE 2 WHEN 1 THEN 9 WHEN 2 THEN 8 ELSE 7 END",
+        4,
+    );
+    graph.setup("CREATE (:Case {id: 1, v: 2}), (:Case {id: 2, v: 1})");
+    assert_eq!(
+        rows(
+            &graph,
+            "MATCH (n:Case) RETURN n.id ORDER BY CASE n.v WHEN 1 THEN 0 ELSE 1 END"
+        ),
+        vec![vec![V::Int(2)], vec![V::Int(1)]]
+    );
+}
+
+#[test]
+fn ze432_case_searched_selects_first_true_and_defaults_to_null() {
+    let graph = Graph::new("ze432-case-searched");
+    assert_eq!(
+        rows(
+            &graph,
+            "RETURN CASE WHEN null THEN 1 / 0 WHEN false THEN 1 / 0 WHEN true THEN CASE WHEN true THEN 3 END ELSE 1 / 0 END + 2, CASE WHEN false THEN 1 END, CASE WHEN null THEN 1 ELSE 2 END"
+        ),
+        vec![vec![V::Int(5), V::Null, V::Int(2)]]
+    );
+    assert!(
+        matches!(graph.run("RETURN CASE WHEN 1 THEN 2 END", &[]), Err(StatementError::Compile(error)) if error.kind == ErrorKind::Type)
+    );
+    let result = graph
+        .run(
+            "RETURN CASE WHEN false THEN 9 WHEN true THEN 8 ELSE 7 END",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(result.metadata().counters.get(WorkKind::Expressions), 4);
+    expression_limit(
+        &graph,
+        "RETURN CASE WHEN false THEN 9 WHEN true THEN 8 ELSE 7 END",
+        3,
+    );
+    for malformed in [
+        "RETURN CASE END",
+        "RETURN CASE WHEN true 1 END",
+        "RETURN CASE WHEN true THEN 1",
+        "RETURN CASE 1 ELSE 2 END",
+    ] {
+        assert!(graph.run(malformed, &[]).is_err(), "{malformed}");
+    }
+}
+
+fn expression_limit(graph: &Graph, text: &str, limit: u64) {
+    let options = zeppelin_embed::property_graph::query::completed::GraphQueryOptions::default()
+        .with_limits(
+            24 * 1024 * 1024,
+            RuntimeLimits::default()
+                .with_limit(WorkKind::Expressions, limit)
+                .unwrap(),
+        )
+        .unwrap();
+    let error = zeppelin_embed_cypher::execute(
+        graph.store(),
+        &zeppelin_embed::lifecycle::QueryControl::Cancel(
+            zeppelin_embed::lifecycle::CancelToken::new(),
+        ),
+        &options,
+        text,
+        &[],
+        zeppelin_embed_cypher::CompileLimits::default(),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    assert!(
+        matches!(error, StatementError::Query(ref error) if error.kind() == zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind::Limit),
+        "{error}"
+    );
+}
+
+fn scalar_rows(text: &str, expected: Vec<V>, function: &str, invalid: &str) {
+    let graph = Graph::new("ze432-scalar");
+    assert_eq!(rows(&graph, text), vec![expected]);
+    expression_limit(&graph, &format!("RETURN {function}(null)"), 1);
+    for query in [
+        format!("RETURN {function}()"),
+        format!("RETURN {function}(null, null)"),
+        format!("RETURN {function}(DISTINCT null)"),
+    ] {
+        assert!(
+            matches!(graph.run(&query, &[]), Err(StatementError::Compile(_))),
+            "{query}"
+        );
+    }
+    graph.setup(&format!("CREATE (:Bad {{v: {invalid}}})"));
+    let error = graph
+        .run(&format!("MATCH (n:Bad) RETURN {function}(n.v)"), &[])
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        matches!(error, StatementError::Query(ref error) if error.kind() == zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind::Expression),
+        "{error}"
+    );
+    assert!(error.to_string().contains("wrong type"), "{error}");
+}
+
+#[test]
+fn ze432_to_integer_truncates_numbers_and_strings() {
+    // openCypher TCK TypeConversion2.feature, scenarios 1-5:
+    // https://github.com/opencypher/openCypher/blob/main/tck/features/expressions/typeConversion/TypeConversion2.feature
+    scalar_rows(
+        "RETURN toInteger(82.9), toInteger(-2.9), toInteger('1.7'), toInteger('-2.9'), toInteger('foo'), toInteger(''), toInteger(null), toInteger(9223372036854775807), toInteger('9223372036854775807')",
+        vec![
+            V::Int(82),
+            V::Int(-2),
+            V::Int(1),
+            V::Int(-2),
+            V::Null,
+            V::Null,
+            V::Null,
+            V::Int(i64::MAX),
+            V::Int(i64::MAX),
+        ],
+        "toInteger",
+        "[]",
+    );
+}
+
+#[test]
+fn ze432_to_integer_keeps_decimal_string_precision() {
+    let graph = Graph::new("ze432-integer-precision");
+    assert_eq!(
+        rows(
+            &graph,
+            "RETURN toInteger('9007199254740993.9'), toInteger('-9007199254740993.9'), toInteger('9223372036854775807.0'), toInteger('9.007199254740993e15'), toInteger('-.9')"
+        ),
+        vec![vec![
+            V::Int(9007199254740993),
+            V::Int(-9007199254740993),
+            V::Int(i64::MAX),
+            V::Int(9007199254740993),
+            V::Int(0)
+        ]]
+    );
+}
+
+#[test]
+fn ze432_to_float_converts_numbers_and_strings() {
+    // openCypher TCK expressions/typeConversion/TypeConversion3.feature.
+    scalar_rows(
+        "RETURN toFloat(3), toFloat(3.4), toFloat('5.2'), toFloat('foo'), toFloat(''), toFloat(null)",
+        vec![
+            V::Float(3.0),
+            V::Float(3.4),
+            V::Float(5.2),
+            V::Null,
+            V::Null,
+            V::Null,
+        ],
+        "toFloat",
+        "true",
+    );
+}
+
+#[test]
+fn ze432_floor_returns_float_and_propagates_null() {
+    scalar_rows(
+        "RETURN floor(2), floor(2.9), floor(-2.1), floor(null)",
+        vec![V::Float(2.0), V::Float(2.0), V::Float(-3.0), V::Null],
+        "floor",
+        "'2'",
+    );
+}
+
+#[test]
+fn ze432_round_ties_toward_positive_infinity() {
+    // TCK Mathematical12.feature (Rounding numbers) has no scenarios:
+    // https://github.com/opencypher/openCypher/blob/main/tck/features/expressions/mathematical/Mathematical12.feature
+    // The one-argument reference uses Math.round, ties toward +infinity:
+    // https://github.com/neo4j/neo4j/blob/3.5/community/cypher/runtime-util/src/main/java/org/neo4j/cypher/operations/CypherFunctions.java
+    scalar_rows(
+        "RETURN round(2.5), round(-2.5), round(-2.6), round(2), round(null), round(0.49999999999999994)",
+        vec![
+            V::Float(3.0),
+            V::Float(-2.0),
+            V::Float(-3.0),
+            V::Float(2.0),
+            V::Null,
+            V::Float(0.0),
+        ],
+        "round",
+        "'2'",
+    );
+}
+
+#[test]
+fn ze432_head_returns_first_element_or_null() {
+    scalar_rows(
+        "RETURN head([null, 2]), head([[1], 2]), head([]), head(null)",
+        vec![V::Null, V::List(vec![V::Int(1)]), V::Null, V::Null],
+        "head",
+        "'x'",
+    );
+}
+
+#[test]
+fn ze432_last_returns_last_element_or_null() {
+    scalar_rows(
+        "RETURN last([1, null]), last([1, [2]]), last([]), last(null)",
+        vec![V::Null, V::List(vec![V::Int(2)]), V::Null, V::Null],
+        "last",
+        "'x'",
+    );
+}
+
+#[test]
+fn ze432_abs_preserves_numeric_kind_and_propagates_null() {
+    scalar_rows(
+        "RETURN abs(-2), abs(-2.5), abs(null), abs(0)",
+        vec![V::Int(2), V::Float(2.5), V::Null, V::Int(0)],
+        "abs",
+        "'2'",
+    );
 }
 
 #[test]

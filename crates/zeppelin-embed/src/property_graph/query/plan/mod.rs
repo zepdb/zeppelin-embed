@@ -99,6 +99,17 @@ pub enum Expression<'a> {
     },
     /// Bounded list construction; value geometry is rechecked during execution.
     List(&'a [ExprId]),
+    /// First non-null operand, evaluated left to right until one is found.
+    Coalesce(&'a [ExprId]),
+    /// Lazy simple or searched CASE; only the chosen result is evaluated.
+    Case {
+        /// Simple CASE selector, evaluated once. None means searched CASE.
+        operand: Option<ExprId>,
+        /// Nonempty alternating WHEN and THEN expressions, in source order.
+        alternatives: &'a [ExprId],
+        /// ELSE expression, with a null literal for an omitted ELSE.
+        otherwise: ExprId,
+    },
     /// Static property access, yielding null for missing/null receivers.
     Property {
         /// Node or relationship expression.
@@ -151,6 +162,20 @@ pub enum UnaryExpression {
     IsNotNull,
     /// Unicode scalar/string or list element count.
     Size,
+    /// Truncate a number or numeric string to an integer; invalid strings yield null.
+    ToInteger,
+    /// Convert a number or numeric string to a float; invalid strings yield null.
+    ToFloat,
+    /// Largest integral float no greater than the input.
+    Floor,
+    /// Nearest integral float, with ties toward positive infinity.
+    Round,
+    /// First list element, or null for an empty list.
+    Head,
+    /// Last list element, or null for an empty list.
+    Last,
+    /// Checked absolute value, preserving the numeric kind.
+    Abs,
     /// Same-view label-name list.
     Labels,
     /// Same-view relationship type name.

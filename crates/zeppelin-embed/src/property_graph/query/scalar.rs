@@ -12,7 +12,156 @@ pub enum StringPredicate {
     /// Substring match under explicit work/deadline bounds.
     Contains,
 }
+// The float upper bound is exclusive: i64::MAX rounds up to 2^63 in f64.
+fn truncated_integer(value: f64) -> Option<i64> {
+    let value = value.trunc();
+    (value.is_finite()
+        && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&value))
+    .then_some(value as i64)
+}
+
+// Parse decimal strings without rounding their integer part through binary64.
+fn decimal_integer(text: &str) -> Result<Option<i64>, QueryError> {
+    let (negative, text) = if let Some(text) = text.strip_prefix('-') {
+        (true, text)
+    } else {
+        (false, text.strip_prefix('+').unwrap_or(text))
+    };
+    let (mantissa, exponent) = match text.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => {
+            let Ok(exponent) = exponent.parse::<i32>() else {
+                return Ok(None);
+            };
+            (mantissa, i64::from(exponent))
+        }
+        None => (text, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if (whole.is_empty() && fraction.is_empty())
+        || !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|byte| byte.is_ascii_digit())
+    {
+        return Ok(None);
+    }
+    let point = i64::try_from(whole.len()).map_err(|_| QueryError::ValueTooLarge)? + exponent;
+    if point <= 0 {
+        return Ok(Some(0));
+    }
+    // Accumulate negatively so i64::MIN is representable too.
+    let mut value = 0_i64;
+    let mut consumed = 0_i64;
+    for byte in whole
+        .bytes()
+        .chain(fraction.bytes())
+        .take(usize::try_from(point).map_err(|_| QueryError::ArithmeticOverflow)?)
+    {
+        value = value
+            .checked_mul(10)
+            .and_then(|value| value.checked_sub(i64::from(byte - b'0')))
+            .ok_or(QueryError::ArithmeticOverflow)?;
+        consumed += 1;
+    }
+    if value != 0 {
+        // At most 18 added zeroes can fit a nonzero signed 64-bit number.
+        if point - consumed > 18 {
+            return Err(QueryError::ArithmeticOverflow);
+        }
+        for _ in consumed..point {
+            value = value
+                .checked_mul(10)
+                .ok_or(QueryError::ArithmeticOverflow)?;
+        }
+    }
+    Ok(Some(if negative {
+        value
+    } else {
+        value.checked_neg().ok_or(QueryError::ArithmeticOverflow)?
+    }))
+}
+
+fn charge_numeric_text(text: &str, context: &mut ValueContext<'_>) -> Result<(), QueryError> {
+    for _ in text.bytes() {
+        context.step()?;
+    }
+    Ok(())
+}
+
 impl QueryValue<'_> {
+    /// Integer conversion truncates toward zero. Invalid numeric strings yield null.
+    pub fn to_integer(self, context: &mut ValueContext<'_>) -> Result<Self, QueryError> {
+        context.step()?;
+        self.validate(context)?;
+        Ok(match self {
+            Self::Null | Self::I64(_) => self,
+            Self::F64(value) => {
+                Self::I64(truncated_integer(value).ok_or(QueryError::ArithmeticOverflow)?)
+            }
+            Self::String(text) => {
+                charge_numeric_text(text, context)?;
+                decimal_integer(text)?.map_or(Self::Null, Self::I64)
+            }
+            _ => return Err(QueryError::Type),
+        })
+    }
+    /// Float conversion accepts numbers and numeric strings; unparseable text yields null.
+    pub fn to_float(self, context: &mut ValueContext<'_>) -> Result<Self, QueryError> {
+        context.step()?;
+        self.validate(context)?;
+        Ok(match self {
+            Self::Null | Self::F64(_) => self,
+            Self::I64(value) => Self::F64(value as f64),
+            Self::String(text) => {
+                charge_numeric_text(text, context)?;
+                text.trim().parse::<f64>().map_or(Self::Null, Self::F64)
+            }
+            _ => return Err(QueryError::Type),
+        })
+    }
+    /// Numeric floor returns a float and propagates null.
+    pub fn floor(self, context: &mut ValueContext<'_>) -> Result<Self, QueryError> {
+        context.step()?;
+        self.validate(context)?;
+        Ok(match self.positive()? {
+            Self::Null => Self::Null,
+            Self::I64(value) => Self::F64(value as f64),
+            Self::F64(value) => Self::F64(value.floor()),
+            _ => return Err(QueryError::Type),
+        })
+    }
+    /// Numeric round returns a float, with exact half ties toward positive infinity.
+    pub fn round(self, context: &mut ValueContext<'_>) -> Result<Self, QueryError> {
+        context.step()?;
+        self.validate(context)?;
+        Ok(match self.positive()? {
+            Self::Null => Self::Null,
+            Self::I64(value) => Self::F64(value as f64),
+            Self::F64(value) => {
+                let floor = value.floor();
+                Self::F64(if value - floor >= 0.5 {
+                    floor + 1.0
+                } else {
+                    floor
+                })
+            }
+            _ => return Err(QueryError::Type),
+        })
+    }
+    /// Checked absolute value preserves integer/float kind and propagates null.
+    pub fn abs(self, context: &mut ValueContext<'_>) -> Result<Self, QueryError> {
+        context.step()?;
+        self.validate(context)?;
+        Ok(match self.positive()? {
+            Self::Null => Self::Null,
+            Self::I64(value) => {
+                Self::I64(value.checked_abs().ok_or(QueryError::ArithmeticOverflow)?)
+            }
+            Self::F64(value) => Self::F64(value.abs()),
+            _ => return Err(QueryError::Type),
+        })
+    }
+
     /// Immediate list length or Unicode scalar count, with null propagation.
     pub fn size(self, context: &mut ValueContext<'_>) -> Result<Self, QueryError> {
         context.step()?;

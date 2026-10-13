@@ -44,6 +44,12 @@ enum ObservedExpression {
     Slot(u32),
     Parameter(u32),
     List(Vec<ObservedExpression>),
+    Coalesce(Vec<ObservedExpression>),
+    Case(
+        Option<Box<ObservedExpression>>,
+        Vec<ObservedExpression>,
+        Box<ObservedExpression>,
+    ),
     Property(Box<ObservedExpression>, String),
     HasLabel(Box<ObservedExpression>, String),
     Unary(String, Box<ObservedExpression>),
@@ -97,6 +103,24 @@ fn expression(description: PlanDescription<'_>, id: ExprId) -> ObservedExpressio
                 .iter()
                 .map(|id| expression(description, *id))
                 .collect(),
+        ),
+        Expression::Coalesce(values) => ObservedExpression::Coalesce(
+            values
+                .iter()
+                .map(|id| expression(description, *id))
+                .collect(),
+        ),
+        Expression::Case {
+            operand,
+            alternatives,
+            otherwise,
+        } => ObservedExpression::Case(
+            operand.map(|id| Box::new(expression(description, id))),
+            alternatives
+                .iter()
+                .map(|id| expression(description, *id))
+                .collect(),
+            Box::new(expression(description, otherwise)),
         ),
         Expression::Property { entity, name } => ObservedExpression::Property(
             Box::new(expression(description, entity)),

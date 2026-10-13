@@ -43,6 +43,69 @@ fn expression_inner(
                 expression_inner(description, right, scope, seen, context, active, depth + 1)?;
             binary(operation, left, right)?
         }
+        Expression::Case {
+            operand,
+            alternatives,
+            otherwise,
+        } => {
+            if alternatives.is_empty() || alternatives.len() % 2 != 0 {
+                return Err(PlanError::Arity);
+            }
+            if let Some(id) = operand {
+                expression_inner(description, id, scope, seen, context, active, depth + 1)?;
+            }
+            let mut kinds = expression_inner(
+                description,
+                otherwise,
+                scope,
+                seen,
+                context,
+                active,
+                depth + 1,
+            )?;
+            for pair in alternatives.chunks_exact(2) {
+                let condition = expression_inner(
+                    description,
+                    *pair.first().ok_or(PlanError::Arity)?,
+                    scope,
+                    seen,
+                    context,
+                    active,
+                    depth + 1,
+                )?;
+                if operand.is_none() {
+                    require(condition, ValueKinds::BOOL)?;
+                }
+                kinds = kinds.union(expression_inner(
+                    description,
+                    *pair.get(1).ok_or(PlanError::Arity)?,
+                    scope,
+                    seen,
+                    context,
+                    active,
+                    depth + 1,
+                )?);
+            }
+            kinds
+        }
+        Expression::Coalesce(items) => {
+            if items.is_empty() {
+                return Err(PlanError::Arity);
+            }
+            let mut kinds = ValueKinds::default();
+            for item in items {
+                kinds = kinds.union(expression_inner(
+                    description,
+                    *item,
+                    scope,
+                    seen,
+                    context,
+                    active,
+                    depth + 1,
+                )?);
+            }
+            kinds
+        }
         Expression::List(items) => {
             for item in items {
                 expression_inner(description, *item, scope, seen, context, active, depth + 1)?;
@@ -122,6 +185,25 @@ fn unary(operation: UnaryExpression, input: ValueKinds) -> Result<ValueKinds, Pl
             ValueKinds(input.0 & 12),
         ),
         UnaryExpression::IsNull | UnaryExpression::IsNotNull => return Ok(ValueKinds::BOOL),
+        UnaryExpression::ToInteger | UnaryExpression::ToFloat => (
+            ValueKinds::I64
+                .union(ValueKinds::F64)
+                .union(ValueKinds::STRING),
+            (if matches!(operation, UnaryExpression::ToInteger) {
+                ValueKinds::I64
+            } else {
+                ValueKinds::F64
+            })
+            .union(ValueKinds::NULL),
+        ),
+        UnaryExpression::Floor | UnaryExpression::Round => {
+            (ValueKinds::I64.union(ValueKinds::F64), ValueKinds::F64)
+        }
+        UnaryExpression::Abs => (
+            ValueKinds::I64.union(ValueKinds::F64),
+            ValueKinds::I64.union(ValueKinds::F64),
+        ),
+        UnaryExpression::Head | UnaryExpression::Last => (ValueKinds::LIST, ValueKinds::ANY),
         UnaryExpression::Size => (ValueKinds::LIST.union(ValueKinds::STRING), ValueKinds::I64),
         UnaryExpression::Labels => (ValueKinds::NODE, ValueKinds::LIST),
         UnaryExpression::RelType | UnaryExpression::RelIdText => {

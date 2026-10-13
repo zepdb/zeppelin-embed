@@ -29,7 +29,7 @@ const FIXTURE: &str = include_str!("fixtures/read-tck-execution.txt");
 
 fn scenarios() -> Vec<tck::Scenario> {
     let all = tck::scenarios(FIXTURE);
-    // 54 positive, 3 compile errors, 16 rejected scenarios and the 12
+    // 55 positive, 3 compile errors, 15 rejected scenarios and the 12
     // example rows of the rejected Null1 [5] outline.
     assert_eq!(all.len(), 85);
     all
@@ -57,8 +57,8 @@ fn ze56_original_read_tck_positive_scenarios_execute() {
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!(selected, 54);
-    assert_eq!(passed, 108);
+    assert_eq!(selected, 55);
+    assert_eq!(passed, 110);
 }
 
 /// The three original compile-time errors are refused by the compiler with
@@ -126,7 +126,7 @@ const MAP: (ErrorKind, &str) = (ErrorKind::Unsupported, "map expression outside 
 const UNWIND: (ErrorKind, &str) = (ErrorKind::Unsupported, "statement form outside profile");
 
 /// Each rejected coordinate's exact profile category.
-const PROFILE_REJECTIONS: [(&str, ErrorKind, &str); 17] = [
+const PROFILE_REJECTIONS: [(&str, ErrorKind, &str); 16] = [
     ("clauses/match/Match4.feature [2]", UNBOUNDED.0, UNBOUNDED.1),
     ("clauses/match/Match4.feature [5]", UNBOUNDED.0, UNBOUNDED.1),
     (
@@ -170,7 +170,6 @@ const PROFILE_REJECTIONS: [(&str, ErrorKind, &str); 17] = [
         UNWIND.0,
         UNWIND.1,
     ),
-    ("expressions/list/List1.feature [5]", FUNCTION.0, FUNCTION.1),
     // Every map-valued example row: a map literal is not a profile expression.
     ("expressions/null/Null1.feature [5] example", MAP.0, MAP.1),
 ];
@@ -213,8 +212,8 @@ fn ze56_profile_rejected_read_scenarios_stay_refused() {
     }
     assert_eq!(
         seen,
-        16 + 11,
-        "16 scenarios plus 11 map-valued outline rows"
+        15 + 11,
+        "15 scenarios plus 11 map-valued outline rows"
     );
 }
 

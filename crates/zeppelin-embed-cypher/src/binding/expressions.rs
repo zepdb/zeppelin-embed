@@ -354,6 +354,18 @@ impl<'a> Binder<'a, '_> {
                         .transpose()?
                         .unwrap_or_default();
                     match function {
+                        Function::Coalesce => {
+                            let mut kinds = ValueKinds::default();
+                            for child in node.children() {
+                                kinds = kinds.union(self.info(*child)?.kinds);
+                            }
+                            (
+                                Expression::Coalesce(self.links.get(id.0).ok_or_else(|| {
+                                    error(node.span, "missing coalesce operands")
+                                })?),
+                                kinds,
+                            )
+                        }
                         Function::Count
                         | Function::Collect
                         | Function::Sum
@@ -409,6 +421,45 @@ impl<'a> Binder<'a, '_> {
                                     ValueKinds::REL,
                                     ValueKinds::STRING,
                                 ),
+                                Function::ToInteger | Function::ToFloat => (
+                                    if function == Function::ToInteger {
+                                        UnaryExpression::ToInteger
+                                    } else {
+                                        UnaryExpression::ToFloat
+                                    },
+                                    ValueKinds::I64
+                                        .union(ValueKinds::F64)
+                                        .union(ValueKinds::STRING),
+                                    (if function == Function::ToInteger {
+                                        ValueKinds::I64
+                                    } else {
+                                        ValueKinds::F64
+                                    })
+                                    .union(ValueKinds::NULL),
+                                ),
+                                Function::Floor | Function::Round => (
+                                    if function == Function::Floor {
+                                        UnaryExpression::Floor
+                                    } else {
+                                        UnaryExpression::Round
+                                    },
+                                    ValueKinds::I64.union(ValueKinds::F64),
+                                    ValueKinds::F64,
+                                ),
+                                Function::Abs => (
+                                    UnaryExpression::Abs,
+                                    ValueKinds::I64.union(ValueKinds::F64),
+                                    ValueKinds::I64.union(ValueKinds::F64),
+                                ),
+                                Function::Head | Function::Last => (
+                                    if function == Function::Head {
+                                        UnaryExpression::Head
+                                    } else {
+                                        UnaryExpression::Last
+                                    },
+                                    ValueKinds::LIST,
+                                    ValueKinds::ANY,
+                                ),
                                 Function::Size => (
                                     UnaryExpression::Size,
                                     ValueKinds::LIST.union(ValueKinds::STRING),
@@ -446,6 +497,65 @@ impl<'a> Binder<'a, '_> {
                         }
                     }
                 }
+                NodeKind::Case { simple } => {
+                    let items = self
+                        .links
+                        .get(id.0)
+                        .ok_or_else(|| error(node.span, "missing CASE operands"))?;
+                    let offset = usize::from(simple);
+                    let end = items
+                        .len()
+                        .checked_sub(1)
+                        .ok_or_else(|| error(node.span, "missing ELSE"))?;
+                    let alternatives = items
+                        .get(offset..end)
+                        .ok_or_else(|| error(node.span, "missing CASE alternatives"))?;
+                    let mut kinds = self
+                        .info(
+                            *node
+                                .children()
+                                .last()
+                                .ok_or_else(|| error(node.span, "missing ELSE"))?,
+                        )?
+                        .kinds;
+                    for pair in node
+                        .children()
+                        .get(offset..end)
+                        .ok_or_else(|| error(node.span, "missing CASE alternatives"))?
+                        .chunks_exact(2)
+                    {
+                        if !simple {
+                            require(
+                                self.info(
+                                    *pair
+                                        .first()
+                                        .ok_or_else(|| error(node.span, "missing WHEN"))?,
+                                )?
+                                .kinds,
+                                ValueKinds::BOOL,
+                                node.span,
+                            )?;
+                        }
+                        kinds = kinds.union(
+                            self.info(
+                                *pair
+                                    .get(1)
+                                    .ok_or_else(|| error(node.span, "missing THEN"))?,
+                            )?
+                            .kinds,
+                        );
+                    }
+                    (
+                        Expression::Case {
+                            operand: if simple { items.first().copied() } else { None },
+                            alternatives,
+                            otherwise: *items
+                                .last()
+                                .ok_or_else(|| error(node.span, "missing ELSE"))?,
+                        },
+                        kinds,
+                    )
+                }
                 NodeKind::List => (
                     Expression::List(
                         self.links
@@ -475,13 +585,20 @@ impl<'a> Binder<'a, '_> {
                             })?))?;
                         (left.invariant.is_some() && right.invariant.is_some()).then_some(id)
                     }
-                    Expression::List(items) => items
+                    Expression::List(items) | Expression::Coalesce(items) => items
                         .iter()
                         .try_fold(true, |all, child| {
                             let child = AstId(usize::try_from(child.0).map_err(|_| {
                                 error(node.span, "invariant list identity overflow")
                             })?);
                             Ok::<_, ParseError>(all && self.info(child)?.invariant.is_some())
+                        })?
+                        .then_some(id),
+                    Expression::Case { .. } => node
+                        .children()
+                        .iter()
+                        .try_fold(true, |all, child| {
+                            Ok::<_, ParseError>(all && self.info(*child)?.invariant.is_some())
                         })?
                         .then_some(id),
                     Expression::Aggregate { .. }

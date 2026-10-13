@@ -128,7 +128,18 @@ fn request_slots(description: PlanDescription<'_>, roots: &[ExprId]) -> Result<u
             | Expression::HasLabel { .. } => {
                 return Err("PG20 independent request reached row/entity expression".into());
             }
-            Expression::List(children) => stack.extend_from_slice(children),
+            Expression::List(children) | Expression::Coalesce(children) => {
+                stack.extend_from_slice(children);
+            }
+            Expression::Case {
+                operand,
+                alternatives,
+                otherwise,
+            } => {
+                stack.extend(operand);
+                stack.extend_from_slice(alternatives);
+                stack.push(otherwise);
+            }
             Expression::Binary { left, right, .. } => {
                 stack.push(left);
                 stack.push(right);

@@ -786,6 +786,90 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
                 &mut self.test_poll,
                 0,
             )?,
+            Expression::Case {
+                operand,
+                alternatives,
+                otherwise,
+            } => {
+                if alternatives.is_empty() || alternatives.len() % 2 != 0 {
+                    return Err(PlanError::Arity.into());
+                }
+                let selector = operand
+                    .map(|id| {
+                        self.evaluate_inner(
+                            id,
+                            schema,
+                            input,
+                            row,
+                            view,
+                            overlay.as_deref_mut(),
+                            context,
+                            depth + 1,
+                        )
+                    })
+                    .transpose()?;
+                let mut chosen = otherwise;
+                for pair in alternatives.chunks_exact(2) {
+                    let condition = self.evaluate_inner(
+                        *pair.first().ok_or(PlanError::Arity)?,
+                        schema,
+                        input,
+                        row,
+                        view,
+                        overlay.as_deref_mut(),
+                        context,
+                        depth + 1,
+                    )?;
+                    let matches = if let Some(selector) = selector {
+                        let selector = self.scratch.value(selector).ok_or(RuntimeError::Batch)?;
+                        let condition = self.scratch.value(condition).ok_or(RuntimeError::Batch)?;
+                        selector.predicate(condition, super::Comparison::Equal, context.values())?
+                            == Truth::True
+                    } else {
+                        self.scratch
+                            .value(condition)
+                            .ok_or(RuntimeError::Batch)?
+                            .truth()?
+                            == Truth::True
+                    };
+                    if matches {
+                        chosen = *pair.get(1).ok_or(PlanError::Arity)?;
+                        break;
+                    }
+                }
+                self.evaluate_inner(
+                    chosen,
+                    schema,
+                    input,
+                    row,
+                    view,
+                    overlay,
+                    context,
+                    depth + 1,
+                )?
+            }
+            Expression::Coalesce(items) => {
+                if items.is_empty() {
+                    return Err(PlanError::Arity.into());
+                }
+                let mut result = ScratchCell::Null;
+                for item in items {
+                    result = self.evaluate_inner(
+                        *item,
+                        schema,
+                        input,
+                        row,
+                        view,
+                        overlay.as_deref_mut(),
+                        context,
+                        depth + 1,
+                    )?;
+                    if !matches!(result, ScratchCell::Null) {
+                        break;
+                    }
+                }
+                result
+            }
             Expression::List(items) => {
                 let start = self.scratch.reserve_list(items.len(), || {
                     self.test_poll.poll();
@@ -900,6 +984,19 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             UnaryExpression::Negate => scalar_cell(value.negate()?)?,
             UnaryExpression::IsNull => ScratchCell::Bool(matches!(value, QueryValue::Null)),
             UnaryExpression::IsNotNull => ScratchCell::Bool(!matches!(value, QueryValue::Null)),
+            UnaryExpression::ToInteger => scalar_cell(value.to_integer(context.values())?)?,
+            UnaryExpression::ToFloat => scalar_cell(value.to_float(context.values())?)?,
+            UnaryExpression::Floor => scalar_cell(value.floor(context.values())?)?,
+            UnaryExpression::Round => scalar_cell(value.round(context.values())?)?,
+            UnaryExpression::Abs => scalar_cell(value.abs(context.values())?)?,
+            UnaryExpression::Head | UnaryExpression::Last => self.scratch.adopt(value.index(
+                QueryValue::I64(if matches!(operation, UnaryExpression::Head) {
+                    0
+                } else {
+                    -1
+                }),
+                context.values(),
+            )?)?,
             UnaryExpression::Size => self.scratch.adopt(value.size(context.values())?)?,
             UnaryExpression::Labels => self.labels(operand, view, overlay, context)?,
             UnaryExpression::RelType => self.relationship_type(operand, view, overlay, context)?,

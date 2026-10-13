@@ -209,8 +209,6 @@ fn complete_input_rejects_unsupported_suffixes_and_profile_syntax() {
         "RETURN n { .x }",
         "RETURN [x IN xs | x]",
         "RETURN [1,2][1..2]",
-        "RETURN CASE WHEN true THEN 1 END",
-        "RETURN coalesce(null,1)",
         "RETURN id(n)",
         "RETURN avg(n.x)",
         "RETURN 1^2",

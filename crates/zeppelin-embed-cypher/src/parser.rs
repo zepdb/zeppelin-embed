@@ -922,6 +922,33 @@ impl Parser<'_> {
             self.list_depth -= 1;
             return self.add(NodeKind::List, start, items);
         }
+        if self.eat_word("CASE")? {
+            let simple = !self.word("WHEN");
+            let mut items = Vec::new();
+            if simple {
+                let operand = self.expression(0)?;
+                self.append(&mut items, operand)?;
+            }
+            self.expect_word("WHEN")?;
+            loop {
+                let condition = self.expression(0)?;
+                self.append(&mut items, condition)?;
+                self.expect_word("THEN")?;
+                let result = self.expression(0)?;
+                self.append(&mut items, result)?;
+                if !self.eat_word("WHEN")? {
+                    break;
+                }
+            }
+            let otherwise = if self.eat_word("ELSE")? {
+                self.expression(0)?
+            } else {
+                self.leaf(NodeKind::Null, self.span().start)?
+            };
+            self.append(&mut items, otherwise)?;
+            self.expect_word("END")?;
+            return self.add(NodeKind::Case { simple }, start, items);
+        }
         match self.kind() {
             Some(Kind::LBrace) => {
                 Err(self.error(ErrorKind::Unsupported, "map expression outside profile"))
@@ -1112,6 +1139,22 @@ impl Parser<'_> {
             Function::Labels
         } else if text.eq_ignore_ascii_case("type") {
             Function::Type
+        } else if text.eq_ignore_ascii_case("coalesce") {
+            Function::Coalesce
+        } else if text.eq_ignore_ascii_case("tointeger") {
+            Function::ToInteger
+        } else if text.eq_ignore_ascii_case("tofloat") {
+            Function::ToFloat
+        } else if text.eq_ignore_ascii_case("floor") {
+            Function::Floor
+        } else if text.eq_ignore_ascii_case("round") {
+            Function::Round
+        } else if text.eq_ignore_ascii_case("head") {
+            Function::Head
+        } else if text.eq_ignore_ascii_case("last") {
+            Function::Last
+        } else if text.eq_ignore_ascii_case("abs") {
+            Function::Abs
         } else if text.eq_ignore_ascii_case("size") {
             Function::Size
         } else {
@@ -1127,7 +1170,7 @@ impl Parser<'_> {
             Vec::new()
         } else {
             let args = self.arguments(Kind::RParen)?;
-            if args.len() != 1 {
+            if args.is_empty() || (function != Function::Coalesce && args.len() != 1) {
                 return Err(self.error(ErrorKind::Syntax, "function requires one argument"));
             }
             args

@@ -188,7 +188,18 @@ fn expression_contains_slot(description: PlanDescription<'_>, root: ExprId) -> b
             expression_contains_slot(description, *left)
                 || expression_contains_slot(description, *right)
         }
-        Expression::List(items) => items
+        Expression::Case {
+            operand,
+            alternatives,
+            otherwise,
+        } => {
+            operand.is_some_and(|id| expression_contains_slot(description, id))
+                || alternatives
+                    .iter()
+                    .any(|id| expression_contains_slot(description, *id))
+                || expression_contains_slot(description, *otherwise)
+        }
+        Expression::List(items) | Expression::Coalesce(items) => items
             .iter()
             .any(|item| expression_contains_slot(description, *item)),
         Expression::Aggregate { .. } => true,

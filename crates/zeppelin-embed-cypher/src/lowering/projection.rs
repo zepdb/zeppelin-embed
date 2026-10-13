@@ -306,7 +306,20 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     mark(left)?;
                     mark(right)?;
                 }
-                DraftExpr::List(range) => {
+                DraftExpr::Case {
+                    operand,
+                    alternatives,
+                    otherwise,
+                } => {
+                    if let Some(id) = operand {
+                        mark(id)?;
+                    }
+                    for id in alternatives.get(self.children.slice())? {
+                        mark(*id)?;
+                    }
+                    mark(otherwise)?;
+                }
+                DraftExpr::List(range) | DraftExpr::Coalesce(range) => {
                     for id in range.get(self.children.slice())? {
                         mark(*id)?;
                     }

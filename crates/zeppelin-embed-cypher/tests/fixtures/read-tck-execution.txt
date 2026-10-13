@@ -694,10 +694,16 @@ expect bag
 side-effects none
 
 === expressions/list/List1.feature [5]
-expect reject-profile
 query
   WITH $expr AS expr, $idx AS idx
   RETURN expr[toInteger(idx)] AS value
+parameter expr = ['Apa']
+parameter idx = 0
+expect bag
+      | value |
+      | 'Apa' |
+side-effects none
+
 === expressions/list/List3.feature [1]
 query
       RETURN [1, 2] = 'foo' AS res

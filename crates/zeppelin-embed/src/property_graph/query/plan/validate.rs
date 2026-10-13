@@ -170,7 +170,13 @@ pub(super) fn preflight(
             Expression::Property { name, .. } | Expression::HasLabel { label: name, .. } => {
                 accounting.span(name.as_str().as_bytes(), context)?
             }
-            Expression::List(items) => {
+            Expression::Case { alternatives, .. } => {
+                if alternatives.is_empty() || alternatives.len() % 2 != 0 {
+                    return Err(PlanError::Arity);
+                }
+                accounting.span(alternatives, context)?;
+            }
+            Expression::List(items) | Expression::Coalesce(items) => {
                 if items.len() > super::super::MAX_LIST_ELEMENTS {
                     return Err(PlanError::Limit);
                 }

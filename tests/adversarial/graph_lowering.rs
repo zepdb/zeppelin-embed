@@ -80,6 +80,27 @@ fn expr(plan: PlanDescription<'_>, id: ExprId) -> String {
                 .collect::<Vec<_>>()
                 .join(",")
         ),
+        Expression::Coalesce(ids) => format!(
+            "coalesce({})",
+            ids.iter()
+                .map(|id| expr(plan, *id))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Expression::Case {
+            operand,
+            alternatives,
+            otherwise,
+        } => format!(
+            "case({};{};{})",
+            operand.map(|id| expr(plan, id)).unwrap_or("none".into()),
+            alternatives
+                .iter()
+                .map(|id| expr(plan, *id))
+                .collect::<Vec<_>>()
+                .join(","),
+            expr(plan, otherwise)
+        ),
         Expression::Binary {
             operation,
             left,

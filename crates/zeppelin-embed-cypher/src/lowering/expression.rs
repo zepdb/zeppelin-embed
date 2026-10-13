@@ -121,7 +121,20 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         child(right)?;
                         child(left)?;
                     }
-                    Expression::List(items) => {
+                    Expression::Case {
+                        operand,
+                        alternatives,
+                        otherwise,
+                    } => {
+                        child(otherwise)?;
+                        for id in alternatives.iter().rev() {
+                            child(*id)?;
+                        }
+                        if let Some(id) = operand {
+                            child(id)?;
+                        }
+                    }
+                    Expression::List(items) | Expression::Coalesce(items) => {
                         for id in items.iter().rev() {
                             child(*id)?;
                         }
@@ -167,7 +180,28 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     entity: self.mapped_mode(bound, entity, span, invariant_mode)?,
                     label: self.copy_text(label.as_str())?,
                 },
-                Expression::List(items) => {
+                Expression::Case {
+                    operand,
+                    alternatives,
+                    otherwise,
+                } => {
+                    let range = Range {
+                        start: self.children.len(),
+                        len: alternatives.len(),
+                    };
+                    for item in alternatives {
+                        let item = self.mapped_mode(bound, *item, span, invariant_mode)?;
+                        self.children.push(item, self.memory, self.control)?;
+                    }
+                    DraftExpr::Case {
+                        operand: operand
+                            .map(|id| self.mapped_mode(bound, id, span, invariant_mode))
+                            .transpose()?,
+                        alternatives: range,
+                        otherwise: self.mapped_mode(bound, otherwise, span, invariant_mode)?,
+                    }
+                }
+                Expression::List(items) | Expression::Coalesce(items) => {
                     let range = Range {
                         start: self.children.len(),
                         len: items.len(),
@@ -176,7 +210,11 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         let item = self.mapped_mode(bound, *item, span, invariant_mode)?;
                         self.children.push(item, self.memory, self.control)?;
                     }
-                    DraftExpr::List(range)
+                    if matches!(expression, Expression::Coalesce(_)) {
+                        DraftExpr::Coalesce(range)
+                    } else {
+                        DraftExpr::List(range)
+                    }
                 }
             };
             let id = self.expression(draft, span)?;
@@ -228,7 +266,20 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     mark(left)?;
                     mark(right)?;
                 }
-                DraftExpr::List(range) => {
+                DraftExpr::Case {
+                    operand,
+                    alternatives,
+                    otherwise,
+                } => {
+                    if let Some(id) = operand {
+                        mark(id)?;
+                    }
+                    for id in alternatives.get(self.children.slice())? {
+                        mark(*id)?;
+                    }
+                    mark(otherwise)?;
+                }
+                DraftExpr::List(range) | DraftExpr::Coalesce(range) => {
                     for id in range.get(self.children.slice())? {
                         mark(*id)?;
                     }

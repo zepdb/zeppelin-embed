@@ -388,7 +388,11 @@ fn ze59_call_positive_and_boundary_evidence() {
 
 #[test]
 fn ze59_functions_positive_and_boundary_evidence() {
-    inventory_evidence(&[], &["RETURN toInteger('1')"], &[]);
+    inventory_evidence(
+        &[("RETURN toInteger('1')", "|1|")],
+        &["RETURN toInteger([])"],
+        &[],
+    );
 }
 
 // Positive evidence: relational_execution::ze255_numeric_aggregates.

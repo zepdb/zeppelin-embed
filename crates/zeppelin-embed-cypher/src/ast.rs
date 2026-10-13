@@ -60,6 +60,15 @@ pub enum Function {
     Labels,
     Type,
     Size,
+    Coalesce,
+    ToInteger,
+    ToFloat,
+    Floor,
+    Round,
+    Head,
+    Last,
+    Abs,
+
     NodeId,
     RelationshipId,
     StoredText,
@@ -141,6 +150,10 @@ pub enum NodeKind {
     Null,
     List,
     Group,
+    /// Optional selector, WHEN/THEN pairs, and an explicit ELSE (null if absent).
+    Case {
+        simple: bool,
+    },
     PropertyAccess(TextId),
     LabelPredicate,
     Index,
