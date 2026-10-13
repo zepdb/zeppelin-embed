@@ -622,10 +622,10 @@ fn ze52_slice_d1_structured_path_is_unchanged() {
 /// canonical image back dominates the work one statement charges.
 const WIDE_TEXT_BYTES: usize = 64 * 1024;
 
-/// Five measured budgets inside the canonical comparison after sparse removal:
-/// 675,000 stops in the consumer, 700,000..825,000 preserves the typed
-/// canonical storage failure, and 850,000 completes the same NoOp.
-const CANONICAL_READ_WORK_BUDGETS: [u64; 5] = [710_000, 735_000, 760_000, 785_000, 810_000];
+/// Five measured budgets inside the warmed canonical comparison after ZE-436
+/// artifact-proof reuse: reads span 466,101..597,986 work units. The successful
+/// replacement below warms the proofs before these injections.
+const CANONICAL_READ_WORK_BUDGETS: [u64; 5] = [480_000, 505_000, 530_000, 555_000, 580_000];
 
 /// A budget the same statement completes under, proving the window above is a
 /// storage failure and not an unconditional rejection.
