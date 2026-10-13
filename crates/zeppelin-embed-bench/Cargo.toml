@@ -22,6 +22,11 @@ zeppelin-embed-text = { path = "../zeppelin-embed-text", version = "=0.7.0", opt
 [dev-dependencies]
 criterion.workspace = true
 
+[[bin]]
+name = "graph-bulk-load"
+path = "src/bin/graph-bulk-load.rs"
+required-features = ["graph-cypher"]
+
 [[bench]]
 name = "scaffold"
 harness = false
