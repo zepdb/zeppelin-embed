@@ -262,6 +262,7 @@ fn graph_runtime_header_matches_the_graph_export_allowlist() {
 #[cfg(feature = "graph-cypher")]
 #[test]
 fn ze399_external_c_applies_queries_and_reopens_a_document_node() {
+    let triple = format!("{}-apple-darwin", std::env::consts::ARCH);
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("graph_apply_v2");
@@ -285,6 +286,8 @@ fn ze399_external_c_applies_queries_and_reopens_a_document_node() {
             "--target-dir",
         ])
         .arg(&target)
+        .arg("--target")
+        .arg(&triple)
         .output()
         .unwrap();
     assert!(
@@ -292,8 +295,9 @@ fn ze399_external_c_applies_queries_and_reopens_a_document_node() {
         "{}",
         String::from_utf8_lossy(&build.stderr)
     );
-    let library = target.join("debug");
+    let library = target.join(&triple).join("debug");
     let result = Command::new("clang")
+        .arg(format!("--target={triple}"))
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
         .arg(root.join("include"))
         .arg(root.join("tests/c/graph_apply_v2.c"))
