@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir, release } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
@@ -75,7 +76,7 @@ test('graph support refuses macOS below 14', { skip: process.platform !== 'darwi
   const result = spawnSync(process.execPath, ['-e', `
     require('node:os').release = () => '22.6.0';
     const assert = require('node:assert/strict');
-    const { Store } = require(${JSON.stringify(new URL('../index.js', import.meta.url).pathname)});
+    const { Store } = require(${JSON.stringify(fileURLToPath(new URL('../index.js', import.meta.url)))});
     assert.equal(Store.graphSupported(), false);
     for (const name of ['enableGraph', 'graphResources', 'graphApply', 'graphQuery', 'cypher', 'graphGetNodes', 'graphGetRelationships']) assert.throws(() => Store.prototype[name].call(Object.create(Store.prototype)), e => e.code === 'ZE_ERR_GRAPH_UNSUPPORTED_BUILD');
   `], { encoding: 'utf8' });

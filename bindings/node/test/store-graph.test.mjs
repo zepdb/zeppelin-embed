@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import api from '../index.js';
 import {spawnSync} from 'node:child_process';
 const { Store, openNamespace } = api;
@@ -98,7 +99,7 @@ test('store graph: unsupported builds reject before looking up native graph meth
   const child = spawnSync(process.execPath, ['-e', `
     const assert = require('node:assert/strict');
     require('node:module')._extensions['.node'] = module => { module.exports = {graphSupported: false, abiVersion: 1}; };
-    const {Store} = require(${JSON.stringify(new URL('../index.js', import.meta.url).pathname)});
+    const {Store} = require(${JSON.stringify(fileURLToPath(new URL('../index.js', import.meta.url)))});
     assert.equal(Store.graphSupported(), false);
     for (const name of ['enableGraph', 'graphResources', 'graphApply', 'graphQuery', 'cypher', 'graphGetNodes', 'graphGetRelationships']) assert.throws(() => Store.prototype[name].call(Object.create(Store.prototype)), e => e.code === 'ZE_ERR_GRAPH_UNSUPPORTED_BUILD');
     (async () => {
