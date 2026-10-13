@@ -14,6 +14,9 @@ pub(crate) struct Report {
     pub protected_mark: Vec<(u64, u64, u16, u64)>,
     pub rejected: Option<(u64, u64)>,
     pub query_scratch: Vec<(u64, usize)>,
+    pub storage_peak_bytes: usize,
+    pub maintenance_inventory_bytes: u64,
+    pub maintenance_work_limit: Option<u64>,
 }
 thread_local! {
     static REPORT: RefCell<Option<Report>> = const { RefCell::new(None) };
@@ -33,6 +36,15 @@ fn update(f: impl FnOnce(&mut Report)) {
 }
 pub(crate) fn phase(name: &'static str, work: u64) {
     update(|r| r.phases.push((name, work)));
+}
+pub(crate) fn storage_peak(bytes: usize) {
+    update(|r| r.storage_peak_bytes = r.storage_peak_bytes.max(bytes));
+}
+pub(crate) fn maintenance_work(inventory_bytes: u64, limit: u64) {
+    update(|r| {
+        r.maintenance_inventory_bytes = inventory_bytes;
+        r.maintenance_work_limit = Some(limit);
+    });
 }
 #[track_caller]
 pub(crate) fn artifact(id: ArtifactId, bytes: u64) {

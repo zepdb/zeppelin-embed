@@ -280,6 +280,53 @@ fn cap_one_inventory_addition() -> super::super::maintenance::MaintenanceLimits 
     }
 }
 
+#[test]
+fn maintenance_work_budget_follows_inventory_bytes() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    const MINIMUM: u64 = 1024 * 1024 * 1024;
+    assert_eq!(
+        super::super::maintenance::maintenance_work_limit(MINIMUM / 8 + 1)
+            .expect("scaled work budget"),
+        MINIMUM + 8
+    );
+
+    let parent = tempfile::tempdir().expect("maintenance budget parent");
+    let path = parent.path().join("native");
+    let store =
+        Store::create_native_graph(&path, options(), None).expect("maintenance budget store");
+    let image = CanonicalContents::node(&mut [], &mut [], Some("inventory"), None)
+        .expect("maintenance budget node");
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "budget", "seed")
+                    .expect("maintenance budget key"),
+                revision: GraphRevision::new(1).expect("maintenance budget revision"),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("seed maintenance inventory");
+
+    capture::start();
+    commit_maintenance(&store).expect("maintenance from inventory-sized budget");
+    let report = capture::take();
+    let expected = (1024 * 1024 * 1024_u64).max(
+        report
+            .maintenance_inventory_bytes
+            .checked_mul(8)
+            .expect("test inventory byte total fits"),
+    );
+    assert!(report.maintenance_inventory_bytes > 0);
+    assert_eq!(report.maintenance_work_limit, Some(expected));
+    println!(
+        "ZE-431 maintenance inventory_bytes={} work_limit={}",
+        report.maintenance_inventory_bytes,
+        report.maintenance_work_limit.unwrap()
+    );
+}
+
 fn assert_live_files_unchanged(path: &Path, before: &BTreeMap<std::ffi::OsString, Vec<u8>>) {
     let after = directory_image(path);
     for (name, bytes) in before {
@@ -3398,8 +3445,8 @@ fn run_ze46_spill_merge_and_incomplete_mark_never_delete_candidates() {
         let mut restore = None;
         match refusal {
             "memory" => limits.storage_bytes = 256 * 1024,
-            "work before the mark" => limits.work = 4 * 1024,
-            "work during the graph mark" => limits.work = 2_000_000,
+            "work before the mark" => limits.work = Some(4 * 1024),
+            "work during the graph mark" => limits.work = Some(2_000_000),
             "cancel after the first spill create" => {
                 let token = token.clone();
                 vfs.after_next_create(move || token.cancel());

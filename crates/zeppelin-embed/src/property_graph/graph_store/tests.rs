@@ -75,6 +75,74 @@ fn node_id(result: &GraphWriteResult, index: usize) -> NodeId {
     }
 }
 
+#[test]
+fn a_node_batch_of_four_thousand_items_commits_on_an_empty_store() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(parent.path().join("graph"), options(), None).unwrap();
+    let keys: Vec<_> = (0..4_000).map(|index| format!("node-{index}")).collect();
+    let mut labels = [];
+    let mut properties = [];
+    let image = CanonicalContents::node(&mut labels, &mut properties, None, None).unwrap();
+    let writes: Vec<_> = keys
+        .iter()
+        .map(|key| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "scale", key).unwrap(),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        })
+        .collect();
+    let result = store.graph_apply(&writes, &control()).unwrap();
+    assert!(matches!(
+        result.outcome(),
+        GraphWriteOutcome::Committed { .. }
+    ));
+    assert_eq!(result.receipts().len(), 4_000);
+}
+
+#[test]
+fn a_full_max_graph_changes_node_batch_commits_inside_the_preparation_allowance() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    const MAX_GRAPH_CHANGES: usize = 16_384;
+    const MAX_PREPARATION_BYTES: usize = 32 * 1024 * 1024;
+
+    let parent = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(parent.path().join("graph"), options(), None).unwrap();
+    let keys: Vec<_> = (0..MAX_GRAPH_CHANGES)
+        .map(|index| format!("node-{index}"))
+        .collect();
+    let mut labels = [];
+    let mut properties = [];
+    let image = CanonicalContents::node(&mut labels, &mut properties, None, None).unwrap();
+    let writes: Vec<_> = keys
+        .iter()
+        .map(|key| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "scale", key).unwrap(),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        })
+        .collect();
+    capture::start();
+    let result = store.graph_apply(&writes, &control());
+    let report = capture::take();
+    let result = result.unwrap();
+    assert!(matches!(
+        result.outcome(),
+        GraphWriteOutcome::Committed { .. }
+    ));
+    assert_eq!(result.receipts().len(), MAX_GRAPH_CHANGES);
+    assert!(
+        report.storage_peak_bytes <= MAX_PREPARATION_BYTES,
+        "preparation peak was {} bytes",
+        report.storage_peak_bytes
+    );
+    println!(
+        "ZE-431 max node batch storage_peak_bytes={}",
+        report.storage_peak_bytes
+    );
+}
+
 fn rel_id(result: &GraphWriteResult, index: usize) -> RelId {
     match result.receipts()[index].entity {
         EntityId::Relationship(relationship) => relationship,

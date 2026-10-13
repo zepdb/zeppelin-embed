@@ -164,6 +164,15 @@ fn failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifac
         assert!(clean.sealed_bytes().is_some());
         (append, r.work() - start, admitted_reference)
     };
+    let repeat_append_work = {
+        let mut pack = PrivateArtifact::new(identity, 256 * 1024, 2, &memory, &mut r).unwrap();
+        pack.append(BlockKind::StoredText, b"previously admitted", &mut r)
+            .unwrap();
+        let start = r.work();
+        pack.append(BlockKind::StoredText, &payload, &mut r)
+            .unwrap();
+        r.work() - start
+    };
     assert_eq!(memory.reserved_bytes(), before);
     for limit in [payload.len() as u64 + 1, append_work - 1] {
         let mut pack = PrivateArtifact::new(identity, 256 * 1024, 2, &memory, &mut r).unwrap();
@@ -184,7 +193,7 @@ fn failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifac
             "failed mutation cannot be finalized on retry"
         );
     }
-    for limit in [payload.len() as u64 + 1, append_work - 1] {
+    for limit in [payload.len() as u64 + 1, repeat_append_work - 1] {
         let mut pack = PrivateArtifact::new(identity, 256 * 1024, 2, &memory, &mut r).unwrap();
         let first = pack
             .append(BlockKind::StoredText, b"previously admitted", &mut r)
@@ -194,10 +203,11 @@ fn failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifac
             b"previously admitted"
         );
         let mut limited = TreeResources::for_prepare(&memory, limit).unwrap();
-        assert!(matches!(
-            pack.append(BlockKind::StoredText, &payload, &mut limited),
-            Err(TreeError::Work)
-        ));
+        let result = pack.append(BlockKind::StoredText, &payload, &mut limited);
+        assert!(
+            matches!(result, Err(TreeError::Work)),
+            "append work refusal {limit}: {result:?}"
+        );
         let mut fresh = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
         assert!(
             matches!(

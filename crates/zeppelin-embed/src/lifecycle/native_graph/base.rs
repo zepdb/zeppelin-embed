@@ -197,6 +197,28 @@ impl CachedEntity<'_, '_, '_> {
     }
 }
 
+fn push_growing<'m, T>(
+    buffer: &mut StorageBuffer<'m, T>,
+    memory: &'m StorageMemory<'m>,
+    value: T,
+    resources: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    if buffer.as_slice().len() == buffer.capacity() {
+        let capacity = buffer
+            .capacity()
+            .max(1)
+            .checked_mul(2)
+            .ok_or(TreeError::Memory)?;
+        let mut replacement = StorageBuffer::new(memory, capacity)?;
+        std::mem::swap(buffer, &mut replacement);
+        for entry in replacement.drain() {
+            resources.step(1)?;
+            buffer.push(entry)?;
+        }
+    }
+    buffer.push(value)
+}
+
 /// Largest lazy target arena a caller may request. A query-driven executor
 /// discovers its targets while it runs, so the arena is admitted once at
 /// construction and never grows; a caller that asks for more is refused.
@@ -780,15 +802,32 @@ where
         } else {
             lazy_capacity
         };
-        let capacity = requests
+        let wanted_capacity = requests
             .len()
             .checked_mul(3)
             .and_then(|capacity| {
                 capacity.checked_add(documents.map_or(0, |documents| documents.documents().len()))
             })
             .ok_or(NativeGraphError::Invalid("native base cache capacity"))?;
+        let mut cache_capacity = documents.map_or(0, |documents| documents.documents().len());
+        for request in requests {
+            if !matches!(request.operation, StructuredOperation::Create) {
+                cache_capacity = cache_capacity
+                    .checked_add(1)
+                    .ok_or(NativeGraphError::Invalid("native base cache capacity"))?;
+            }
+            if let Some(WriteImage::Relationship { source, target, .. }) = request.image {
+                for endpoint in [source, target] {
+                    if matches!(endpoint, NodeRef::Existing(_)) {
+                        cache_capacity = cache_capacity
+                            .checked_add(1)
+                            .ok_or(NativeGraphError::Invalid("native base cache capacity"))?;
+                    }
+                }
+            }
+        }
         let mut cache =
-            StorageBuffer::<CachedEntity<'source, 'resources, 'm>>::new(memory, capacity)?;
+            StorageBuffer::<CachedEntity<'source, 'resources, 'm>>::new(memory, cache_capacity)?;
 
         if lease.bundle().base().generation.get() != 0 {
             let mut resources_ref = resources_cell
@@ -905,11 +944,11 @@ where
                             None,
                         )?
                     };
-                    cache.push(cached)?;
+                    push_growing(&mut cache, memory, cached, resources)?;
                 }
             }
 
-            let mut wanted = StorageBuffer::new(memory, capacity)?;
+            let mut wanted = StorageBuffer::new(memory, wanted_capacity)?;
             if let Some(documents) = documents {
                 for document in documents.documents() {
                     let node = NodeId::from(document.version().doc_id());
@@ -959,7 +998,7 @@ where
                     first_error,
                     resources,
                 )? {
-                    cache.push(cached)?;
+                    push_growing(&mut cache, memory, cached, resources)?;
                 }
             }
         }

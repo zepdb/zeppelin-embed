@@ -36,6 +36,15 @@ use crate::property_graph::wal::{
 };
 use std::sync::Arc;
 
+const DEFAULT_MAINTENANCE_WORK: u64 = 1024 * 1024 * 1024;
+
+pub(super) fn maintenance_work_limit(inventory_bytes: u64) -> Result<u64, NativeGraphError> {
+    let proportional = inventory_bytes
+        .checked_mul(8)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    Ok(DEFAULT_MAINTENANCE_WORK.max(proportional))
+}
+
 /// One host-call work ledger, shared by every step and reclaim continuation.
 pub(crate) struct NativeMaintenanceBudget {
     limit: u64,
@@ -761,6 +770,8 @@ fn prepare_durable_proof<'m>(
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
     remaining_manifests: &[crate::property_graph::wal::RequiredRef],
+    current_source: &NativePreparationSource<'_, 'm>,
+    mut census: StorageBuffer<'m, crate::property_graph::storage::consolidation::PackCensus>,
     storage: &'m StorageMemory<'m>,
     control: &crate::lifecycle::QueryControl,
     resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'m>,
@@ -802,20 +813,6 @@ fn prepare_durable_proof<'m>(
     #[cfg(not(any(test, feature = "test-seams")))]
     let chunk = crate::property_graph::storage::reclaim::SPILL_CHUNK_LIMIT;
     let mut mark = SpillMark::new(storage, binding, chunk)?;
-
-    let mut census = {
-        let source = NativePreparationSource::new(
-            &admission.lease,
-            storage,
-            crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
-        )?;
-        crate::property_graph::storage::consolidation::pack_census(
-            &source,
-            admitted.roots(),
-            admitted.prepared_inventories(),
-            resources,
-        )?
-    };
 
     if admitted.base().fold.envelope_sequence != admitted.sequence()
         || admitted.base().fold.manifest_generation < admitted.base().generation.get()
@@ -880,65 +877,80 @@ fn prepare_durable_proof<'m>(
         {
             continue;
         }
-        {
-            let source = NativePreparationSource::new(
+        let historical_source;
+        let source = if Arc::ptr_eq(bundle, admitted) {
+            current_source
+        } else {
+            historical_source = NativePreparationSource::new(
                 lease,
                 storage,
                 crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
             )?;
-            // A partial prepared manifest still requires every descriptor at
-            // the next fold. It releases these packs only when it retires.
-            let manifests = if Arc::ptr_eq(bundle, admitted) {
-                remaining_manifests
-            } else {
-                bundle.prepared_inventories()
-            };
-            for required in manifests.iter().copied() {
-                crate::property_graph::storage::inventory::for_each_prepared_descriptor(
-                    &source,
-                    required,
-                    bundle.base().store,
-                    bundle.base().generation,
-                    resources,
-                    |descriptor, resources| mark.emit(descriptor.artifact, &mut writer, resources),
-                )?;
-            }
-            let catalog = NativePreparationCatalog::open(&source, resources)?;
-            let mut range_scratch = RangeScratch::for_prepare(storage, resources)?;
-            if !Arc::ptr_eq(bundle, admitted) {
-                let mut visitor = |reference, resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>| {
-                    let required = reader_required(&source, reference, resources)?;
-                    protected.emit(ProtectedRecord::required(ProtectedClass::Reader, required), &mut writer, resources)?;
+            &historical_source
+        };
+        // A partial prepared manifest still requires every descriptor at
+        // the next fold. It releases these packs only when it retires.
+        let manifests = if Arc::ptr_eq(bundle, admitted) {
+            remaining_manifests
+        } else {
+            bundle.prepared_inventories()
+        };
+        for required in manifests.iter().copied() {
+            crate::property_graph::storage::inventory::for_each_prepared_descriptor(
+                source,
+                required,
+                bundle.base().store,
+                bundle.base().generation,
+                resources,
+                |descriptor, resources| mark.emit(descriptor.artifact, &mut writer, resources),
+            )?;
+        }
+        let catalog = NativePreparationCatalog::open(source, resources)?;
+        let mut range_scratch = RangeScratch::for_prepare(storage, resources)?;
+        if !Arc::ptr_eq(bundle, admitted) {
+            let mut visitor =
+                |reference,
+                 resources: &mut crate::property_graph::storage::tree::directory::TreeResources<
+                    '_,
+                >| {
+                    let required = reader_required(source, reference, resources)?;
+                    protected.emit(
+                        ProtectedRecord::required(ProtectedClass::Reader, required),
+                        &mut writer,
+                        resources,
+                    )?;
                     mark.emit(reference.artifact, &mut writer, resources)?;
-                    base.closure_count = base.closure_count.checked_add(1).ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?;
+                    base.closure_count = base
+                        .closure_count
+                        .checked_add(1)
+                        .ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?;
                     Ok(())
                 };
-                if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_state(
-                    &source,
-                    &catalog,
-                    bundle.roots(),
-                    bundle.sequence(),
-                    bundle.document(),
-                    &mut range_scratch,
-                    &mut visitor,
-                    resources,
-                ) {
-                    return Err(spill_error(&writer, error));
-                }
-            } else if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_bundle(
-                &source,
+            if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_state(
+                source,
                 &catalog,
                 bundle.roots(),
                 bundle.sequence(),
                 bundle.document(),
                 &mut range_scratch,
-                &mut mark,
-                &mut writer,
-                Arc::ptr_eq(bundle, admitted).then_some(census.as_mut_slice()),
+                &mut visitor,
                 resources,
             ) {
                 return Err(spill_error(&writer, error));
             }
+        } else if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_bundle(
+            source,
+            &catalog,
+            bundle.roots(),
+            bundle.sequence(),
+            bundle.document(),
+            &mut range_scratch,
+            &mut mark,
+            &mut writer,
+            Arc::ptr_eq(bundle, admitted).then_some(census.as_mut_slice()),
+            resources,
+        ) {
+            return Err(spill_error(&writer, error));
         }
         if bundle.text().is_some() || bundle.vector().is_some() {
             return Err(NativeGraphError::Invalid("retired sparse search roots"));
@@ -993,14 +1005,9 @@ fn prepare_durable_proof<'m>(
         relocation_bytes,
         storage,
     )?;
-    let source = NativePreparationSource::new(
-        &admission.lease,
-        storage,
-        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
-    )?;
     let pending_page_relocations =
         crate::property_graph::storage::consolidation::collect_drain_pages(
-            &source,
+            current_source,
             admitted.roots(),
             drain.as_slice(),
             storage,
@@ -1251,7 +1258,7 @@ fn resume_pending_reclaim(
     let mut resources =
         crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
             &storage,
-            limits.work,
+            limits.work.unwrap_or(DEFAULT_MAINTENANCE_WORK),
         )?;
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
@@ -1675,7 +1682,7 @@ fn retire_completed_reclaim(
     let mut resources =
         crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
             &storage,
-            limits.work,
+            limits.work.unwrap_or(DEFAULT_MAINTENANCE_WORK),
         )?;
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
@@ -1901,7 +1908,7 @@ pub(crate) struct MaintenanceLimits {
     pub(crate) sweep_limit: usize,
     pub(crate) inventory_additions: usize,
     pub(crate) storage_bytes: usize,
-    pub(crate) work: u64,
+    pub(crate) work: Option<u64>,
 }
 
 impl Default for MaintenanceLimits {
@@ -1911,7 +1918,7 @@ impl Default for MaintenanceLimits {
             relocation_bytes: crate::property_graph::storage::consolidation::RELOCATION_BYTES,
             inventory_additions: INVENTORY_FOLD_ADDITION_LIMIT,
             storage_bytes: 32 * 1024 * 1024,
-            work: 1024 * 1024 * 1024,
+            work: None,
         }
     }
 }
@@ -1969,10 +1976,41 @@ pub(super) fn commit_with_limits(
     let shared = GraphResources::from_store(store)?;
     let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
     let storage = StorageMemory::new(&write_memory, control, limits.storage_bytes)?;
+    let source = NativePreparationSource::new(
+        &admission.lease,
+        &storage,
+        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+    )?;
+    let census = {
+        let mut census_resources =
+            crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
+                &storage,
+                DEFAULT_MAINTENANCE_WORK,
+            )?;
+        crate::property_graph::storage::consolidation::pack_census(
+            &source,
+            admitted.roots(),
+            admitted.prepared_inventories(),
+            &mut census_resources,
+        )?
+    };
+    let inventory_bytes = census
+        .as_slice()
+        .iter()
+        .try_fold(0_u64, |total, row| total.checked_add(u64::from(row.bytes)))
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let work_limit = match limits.work {
+        Some(override_limit) => override_limit,
+        None => maintenance_work_limit(inventory_bytes)?,
+    };
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::maintenance_work(
+        inventory_bytes,
+        work_limit,
+    );
     let mut resources =
         crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
-            &storage,
-            limits.work,
+            &storage, work_limit,
         )?;
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
@@ -1980,13 +2018,8 @@ pub(super) fn commit_with_limits(
         resources.work(),
     );
     let folded_inventory = {
-        let fold_source = NativePreparationSource::new(
-            &admission.lease,
-            &storage,
-            crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
-        )?;
         prepare_inventory_fold(
-            &fold_source,
+            &source,
             admitted.prepared_inventories(),
             admitted.roots(),
             admitted.sequence(),
@@ -2018,6 +2051,8 @@ pub(super) fn commit_with_limits(
         super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
         drop(slot);
         drop(folded_inventory);
+        drop(census);
+        drop(source);
         drop(resources);
         drop(storage);
         let folded = store.admit_native_graph_maintenance()?;
@@ -2033,6 +2068,8 @@ pub(super) fn commit_with_limits(
             .prepared_inventories()
             .get(folded_inventory.retired()..)
             .ok_or(NativeGraphError::Invalid("inventory retirement prefix"))?,
+        &source,
+        census,
         &storage,
         control,
         &mut resources,
@@ -2065,11 +2102,6 @@ pub(super) fn commit_with_limits(
     // Replacement's sweep and directory edits share one attempt-wide source,
     // just like structured writes. Retain their authentication proofs under
     // the existing native artifact capacity rather than a 64-object window.
-    let source = NativePreparationSource::new(
-        &admission.lease,
-        &storage,
-        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
-    )?;
     let catalog = NativePreparationCatalog::open(&source, &mut resources)?;
     let _sequence = admitted
         .sequence()

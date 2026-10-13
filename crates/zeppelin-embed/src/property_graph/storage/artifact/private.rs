@@ -24,12 +24,14 @@ enum State {
 pub struct PrivateArtifact<'a> {
     bytes: StorageBuffer<'a, u8>,
     entries: StorageBuffer<'a, VerifiedEntry>,
+    artifact_limit: usize,
+    block_limit: usize,
     identity: ArtifactIdentity,
     memory: &'a StorageMemory<'a>,
     state: State,
 }
 impl<'a> PrivateArtifact<'a> {
-    /// Reserve complete object and directory capacities before writing any block.
+    /// Retain only the initial header; append grows both private buffers on demand.
     pub fn new(
         identity: ArtifactIdentity,
         capacity: usize,
@@ -43,13 +45,15 @@ impl<'a> PrivateArtifact<'a> {
         {
             return Err(TreeError::Memory);
         }
-        let mut bytes = StorageBuffer::new(memory, capacity)?;
-        let entries = StorageBuffer::new(memory, blocks)?;
+        let mut bytes = StorageBuffer::new(memory, HEADER_BYTES)?;
+        let entries = StorageBuffer::new(memory, 0)?;
         r.step(HEADER_BYTES as u64)?;
         bytes.extend_from_slice(&[0; HEADER_BYTES])?;
         Ok(Self {
             bytes,
             entries,
+            artifact_limit: capacity,
+            block_limit: blocks,
             identity,
             memory,
             state: State::Open,
@@ -66,7 +70,7 @@ impl<'a> PrivateArtifact<'a> {
     /// Whether this input fits without replacing or growing any live allocation.
     pub fn can_append(&self, payload_bytes: usize) -> bool {
         self.state == State::Open
-            && self.entries.as_slice().len() < self.entries.capacity()
+            && self.entries.as_slice().len() < self.block_limit
             && self
                 .bytes
                 .as_slice()
@@ -74,10 +78,70 @@ impl<'a> PrivateArtifact<'a> {
                 .checked_add(24)
                 .and_then(|n| n.checked_add(payload_bytes))
                 .and_then(|n| n.checked_add((self.entries.as_slice().len() + 1) * 24 + 8))
-                .is_some_and(|n| n <= self.bytes.capacity())
+                .is_some_and(|n| n <= self.artifact_limit)
     }
-    /// Append one immutable framed block. Insufficient capacity leaves this pack
-    /// usable; a control error after mutation permanently prevents sealing it.
+
+    fn ensure_capacity(
+        &mut self,
+        bytes_needed: usize,
+        entries_needed: usize,
+        r: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        const BYTE_STEP: usize = 512 * 1024;
+        const ENTRY_STEP: usize = 512;
+
+        let byte_capacity = if bytes_needed > self.bytes.capacity() {
+            let rounded = bytes_needed
+                .checked_add(BYTE_STEP - 1)
+                .ok_or(TreeError::Memory)?
+                / BYTE_STEP
+                * BYTE_STEP;
+            Some(rounded.min(self.artifact_limit))
+        } else {
+            None
+        };
+        let entry_capacity = if entries_needed > self.entries.capacity() {
+            let doubled = self
+                .entries
+                .capacity()
+                .max(ENTRY_STEP)
+                .checked_mul(2)
+                .ok_or(TreeError::Memory)?;
+            Some(doubled.max(entries_needed).min(self.block_limit))
+        } else {
+            None
+        };
+
+        // Admit every replacement while the old buffers remain live. A failure
+        // leaves the current artifact usable and releases any partial reserve.
+        let mut next_bytes = byte_capacity
+            .map(|capacity| StorageBuffer::new(self.memory, capacity))
+            .transpose()?;
+        let mut next_entries = entry_capacity
+            .map(|capacity| StorageBuffer::new(self.memory, capacity))
+            .transpose()?;
+        if let Some(bytes) = next_bytes.as_mut() {
+            for chunk in self.bytes.as_slice().chunks(65_536) {
+                r.step(chunk.len() as u64)?;
+                bytes.extend_from_slice(chunk)?;
+            }
+        }
+        if let Some(entries) = next_entries.as_mut() {
+            for entry in self.entries.as_slice() {
+                r.step(std::mem::size_of::<VerifiedEntry>() as u64)?;
+                entries.push(*entry)?;
+            }
+        }
+        if let Some(mut replacement) = next_bytes {
+            std::mem::swap(&mut self.bytes, &mut replacement);
+        }
+        if let Some(mut replacement) = next_entries {
+            std::mem::swap(&mut self.entries, &mut replacement);
+        }
+        Ok(())
+    }
+    /// Append one immutable framed block. Hard-cap refusal leaves this pack
+    /// usable; a control error after append admission permanently prevents sealing.
     pub fn append(
         &mut self,
         kind: BlockKind,
@@ -97,6 +161,24 @@ impl<'a> PrivateArtifact<'a> {
         }
         let checksum =
             controlled_checksum(payload, &mut |n| r.step(n as u64)).map_err(tree_error)?;
+        let body_end = self
+            .bytes
+            .as_slice()
+            .len()
+            .checked_add(24)
+            .and_then(|n| n.checked_add(payload.len()))
+            .ok_or(TreeError::Memory)?;
+        let directory_and_trailer = self
+            .entries
+            .as_slice()
+            .len()
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(24))
+            .and_then(|n| body_end.checked_add(n))
+            .and_then(|n| n.checked_add(8))
+            .ok_or(TreeError::Memory)?;
+        self.state = State::Failed;
+        self.ensure_capacity(directory_and_trailer, self.entries.as_slice().len() + 1, r)?;
         let reference = PhysicalRef {
             artifact: self.identity.artifact,
             offset: self.bytes.as_slice().len() as u64,
@@ -109,7 +191,6 @@ impl<'a> PrivateArtifact<'a> {
         put(&mut header, 2, &1u16.to_le_bytes())?;
         put(&mut header, 8, &(payload.len() as u64).to_le_bytes())?;
         put(&mut header, 16, &checksum.to_le_bytes())?;
-        self.state = State::Failed;
         r.step(24)?;
         self.bytes.extend_from_slice(&header)?;
         for chunk in payload.chunks(65_536) {
@@ -194,6 +275,15 @@ impl<'a> PrivateArtifact<'a> {
         if self.state != State::Open {
             return Err(TreeError::Invalid("private artifact cannot seal"));
         }
+        let seal_length = self
+            .entries
+            .as_slice()
+            .len()
+            .checked_mul(24)
+            .and_then(|n| self.bytes.as_slice().len().checked_add(n))
+            .and_then(|n| n.checked_add(8))
+            .ok_or(TreeError::Memory)?;
+        self.ensure_capacity(seal_length, self.entries.as_slice().len(), r)?;
         self.state = State::Failed;
         let body = self.bytes.as_slice().len() - HEADER_BYTES;
         for entry in self.entries.as_slice() {

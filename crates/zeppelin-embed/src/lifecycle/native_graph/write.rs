@@ -2516,6 +2516,10 @@ pub(super) fn commit_staged_batch_with_documents<'m>(
         resources,
     )?
     .prepare(staged_batch, resources);
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::storage_peak(
+        storage.peak_reserved_bytes(),
+    );
     let prepared = prepared_result.map_err(|failure| {
         let (error, _, _) = failure.into_parts();
         NativeGraphError::Read(error)

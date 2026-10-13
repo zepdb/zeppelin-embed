@@ -1279,6 +1279,95 @@ fn packed<'a, 'b, S: BlockSource>(
     )
     .unwrap()
 }
+
+#[test]
+fn a_pack_holds_blocks_until_its_bytes_are_full() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let shared = GraphResources::from_store(&store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+    let mut resources = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
+    let identity = ArtifactIdentity {
+        store: Empty.identity().store,
+        artifact: ArtifactId::new(101).unwrap(),
+        generation: GraphGeneration::new(1),
+        creation_serial: 1,
+    };
+    let mut serial = 1;
+    let mut objects = PreparedObjects::new(
+        &Missing,
+        || {
+            serial += 1;
+            Ok(ArtifactIdentity {
+                artifact: ArtifactId::new(100 + serial as u128).unwrap(),
+                creation_serial: serial,
+                ..identity
+            })
+        },
+        identity.store,
+        identity.generation,
+        PackLimits::default(),
+        &memory,
+        &mut resources,
+    )
+    .unwrap();
+    for _ in 0..1_025 {
+        objects
+            .append(
+                BlockKind::StoredText,
+                identity.generation,
+                &[7; 8],
+                &mut resources,
+            )
+            .unwrap();
+    }
+    assert_eq!(objects.len(), 1, "small blocks share a byte-bounded pack");
+}
+
+#[test]
+fn pack_memory_grows_with_appended_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let shared = GraphResources::from_store(&store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+    let mut resources = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
+    let identity = ArtifactIdentity {
+        store: Empty.identity().store,
+        artifact: ArtifactId::new(102).unwrap(),
+        generation: GraphGeneration::new(1),
+        creation_serial: 1,
+    };
+    let mut pack = PrivateArtifact::new(
+        identity,
+        MAX_ARTIFACT_BYTES,
+        PackLimits::default().blocks,
+        &memory,
+        &mut resources,
+    )
+    .unwrap();
+    for _ in 0..1_000 {
+        pack.append(BlockKind::StoredText, &[9; 100], &mut resources)
+            .unwrap();
+    }
+    assert!(
+        memory.peak_reserved_bytes() < 1024 * 1024,
+        "pack peak was {} bytes",
+        memory.peak_reserved_bytes()
+    );
+}
+
 fn record_ref(
     source: &impl BlockSource,
     roots: GraphRoots,

@@ -111,12 +111,22 @@ pub fn prepare_directories<'a, S: BlockSink>(
         });
     }
     let generation = batch.target_generation();
+    let (mut node_edits, mut relationship_edits, mut key_edits) = (0usize, 0usize, 0usize);
     for delta in batch.deltas() {
         r.step(1)?;
         if delta.provenance().fields().original_generation != generation
             || delta.canonical().is_some() != delta.shape().is_some()
         {
             return Err(TreeError::Invalid("normalized change generation/shape"));
+        }
+        let fields = delta.provenance().fields();
+        let count = match fields.incarnation {
+            EntityId::Node(_) => &mut node_edits,
+            EntityId::Relationship(_) => &mut relationship_edits,
+        };
+        *count = count.checked_add(1).ok_or(TreeError::Memory)?;
+        if fields.key.is_some() {
+            key_edits = key_edits.checked_add(1).ok_or(TreeError::Memory)?;
         }
     }
     let catalog = BatchCatalog {
@@ -132,23 +142,20 @@ pub fn prepare_directories<'a, S: BlockSink>(
         pending: [
             (
                 TreeKind::Nodes,
-                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+                Some(DirectoryBatch::new(memory, node_edits)?),
             ),
             (
                 TreeKind::Relationships,
-                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+                Some(DirectoryBatch::new(memory, relationship_edits)?),
             ),
-            (
-                TreeKind::Labels,
-                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
-            ),
+            (TreeKind::Labels, Some(DirectoryBatch::new(memory, 0)?)),
             (
                 TreeKind::RelationshipTypes,
-                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+                Some(DirectoryBatch::new(memory, 0)?),
             ),
             (
                 TreeKind::KeyFences,
-                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+                Some(DirectoryBatch::new(memory, key_edits)?),
             ),
         ],
     };

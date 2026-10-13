@@ -2,7 +2,8 @@
 //! exclusively creates files, synchronizes artifacts and publishes graph roots.
 pub use super::artifact::OwnedArtifact;
 use super::artifact::{
-    ArtifactIdentity, BlockKind, FramedBlock, MAX_ARTIFACT_BYTES, PhysicalRef, PrivateArtifact,
+    ArtifactIdentity, BlockKind, FramedBlock, MAX_ARTIFACT_BYTES, MAX_BODY_BYTES, PhysicalRef,
+    PrivateArtifact,
 };
 use super::memory::{MAX_STORAGE_PREPARE_BYTES, StorageBuffer, StorageMemory};
 use super::tree::directory::{BlockSink, BlockSource, TreeError, TreeResources};
@@ -23,7 +24,7 @@ impl Default for PackLimits {
     fn default() -> Self {
         Self {
             artifact_bytes: MAX_ARTIFACT_BYTES,
-            blocks: 1024,
+            blocks: (MAX_ARTIFACT_BYTES / 128).min(MAX_BODY_BYTES / 48),
             streams: PackStreams::Single,
         }
     }
