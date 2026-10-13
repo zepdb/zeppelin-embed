@@ -6387,7 +6387,9 @@ fn native_pattern_limits_cancel_close_no_output() {
                                 close_observation.store(true, Ordering::SeqCst);
                                 // Closing rejects new admissions before it cancels
                                 // retained readers. Wait for this reader's signal.
-                                loop {
+                                let deadline =
+                                    std::time::Instant::now() + std::time::Duration::from_secs(10);
+                                while std::time::Instant::now() < deadline {
                                     match runtime.checkpoint() {
                                         Err(RuntimeError::Value(QueryError::ReadCancelled)) => {
                                             return;
@@ -6396,6 +6398,7 @@ fn native_pattern_limits_cancel_close_no_output() {
                                         error => panic!("unexpected close checkpoint: {error:?}"),
                                     }
                                 }
+                                panic!("retained reader did not receive close cancellation");
                             }
                             Err(crate::lifecycle::native_graph::NativeGraphError::Read(
                                 crate::property_graph::storage::tree::directory::TreeError::Runtime(
