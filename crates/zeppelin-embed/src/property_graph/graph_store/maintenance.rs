@@ -64,8 +64,10 @@ impl crate::lifecycle::Store {
         self.maintain_native_graph_step(control).map_err(Into::into)
     }
     /// Runs at most four steps, stopping when the cycle completes.
+    /// If `cycle_complete` is false, progress and reclaim debt are retained;
+    /// call again to continue the cycle.
     /// # Errors
-    /// Returns the classified maintenance failure, including an exhausted step cap.
+    /// Returns the classified admission, preparation or storage failure.
     pub fn graph_maintain_cycle(
         &self,
         control: &QueryControl,

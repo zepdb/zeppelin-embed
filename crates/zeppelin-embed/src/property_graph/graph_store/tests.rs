@@ -1610,6 +1610,76 @@ fn ze260_maintenance_policy_and_public_step() {
 }
 
 #[test]
+fn ze451_maintenance_cycle_resumes_after_its_step_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(dir.path().join("graph"), options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let mut incomplete = 0;
+    let mut removed = 0;
+    for index in 0..64 {
+        let key = format!("node-{index}");
+        let write = store
+            .graph_apply(
+                &[StructuredWrite {
+                    key: node_key(&key),
+                    revision: revision(1),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &control(),
+            )
+            .unwrap();
+        if index % 32 != 31 {
+            continue;
+        }
+        let mut previous = generation(write.ack().generation());
+        let mut complete = false;
+        for _ in 0..8 {
+            let report = store.graph_maintain_cycle(&control()).unwrap();
+            assert!(
+                report.generation > previous,
+                "cycle made no progress: {report:?}"
+            );
+            previous = report.generation;
+            removed += report.removed_bytes;
+            if report.cycle_complete {
+                complete = true;
+                break;
+            }
+            incomplete += 1;
+        }
+        assert!(complete, "reclaim did not complete at commit {}", index + 1);
+    }
+    assert!(incomplete > 0, "workload did not exhaust a cycle budget");
+    assert!(removed > 0, "maintenance reclaimed no bytes");
+    store.close_graph().unwrap();
+}
+
+#[test]
+fn ze451_maintenance_still_rejects_invalid_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(dir.path().join("graph"), options(), None).unwrap();
+    let error = store
+        .set_graph_maintenance_policy(super::GraphMaintenancePolicy {
+            automatic: true,
+            reclaim_after_bytes: 0,
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), GraphStoreErrorKind::InvalidRequest);
+    assert!(matches!(
+        error.stage_error(),
+        Some(StageError::InvalidInput)
+    ));
+    assert!(
+        store
+            .graph_maintain_cycle(&control())
+            .unwrap()
+            .cycle_complete
+    );
+    store.close_graph().unwrap();
+}
+
+#[test]
 fn ze260_automatic_reclaim_failure_commits_nothing() {
     use super::GraphMaintenancePolicy;
     use std::sync::atomic::Ordering;

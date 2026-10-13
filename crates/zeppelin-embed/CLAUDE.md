@@ -1235,6 +1235,10 @@ so retained garbage cannot exhaust its preparation mapping table. Pending
 and completed reclaim validation retain a 64-slot directory reserve for
 borrowed root/child blocks; spill and callback reads remain scoped.
 
+ZE-451: explicit cycles that exhaust their four-step cap return the accumulated
+report with `cycle_complete = false`, retaining progress and debt. Call again
+until complete; exhausting the cycle cap is not invalid input.
+
 ## ZE-64 composed search statements
 
 The statement seam runs vector/text/hybrid retrieval on the Store's lexical

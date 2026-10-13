@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering;
 // Half the 64-manifest fold capacity leaves room for maintenance publications.
 pub(super) const RECLAIM_AFTER_COMMITS: u64 = 32;
 
-const CYCLE_STEP_LIMIT: &str = "graph maintenance cycle exceeded four steps";
 // Intent, completion and retirement may each require a checkpoint admission
 // before publication. Stop at the first completed cycle, never start a second.
 const WRITE_RECOVERY_STEPS: usize = 6;
@@ -169,11 +168,7 @@ impl Store {
             total.reclaimed_bytes += step.reclaimed_bytes;
             total.removed_bytes += step.removed_bytes;
         }
-        if total.cycle_complete {
-            Ok(total)
-        } else {
-            Err(NativeGraphError::Invalid(CYCLE_STEP_LIMIT))
-        }
+        Ok(total)
     }
 
     pub(super) fn native_graph_maintenance_due(&self) -> Result<bool, NativeGraphError> {
