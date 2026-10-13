@@ -303,14 +303,14 @@ extension GraphBindingsParityTests {
     var first = GraphBatch()
     first.node(key: GraphKey(namespace: "ze72", key: "first"), revision: 1,
       .create(GraphNodeImage(labels: ["First"])))
-    let writer = Task { try await store.graphApply(first) }
+    let writer = Task { [first] in try await store.graphApply(first) }
     XCTAssertEqual(barrier.entered.wait(timeout: .now() + 5), .success, "ZE-72 actual append reached")
     var second = GraphBatch()
     second.node(key: GraphKey(namespace: "ze72", key: "second"), revision: 1,
       .create(GraphNodeImage(labels: ["Second"])))
     // Native Busy is returned immediately; graphResponse's matching free
     // serializes behind the admitted response, so await it after release.
-    let contender = Task { try await store.graphApply(second) }
+    let contender = Task { [second] in try await store.graphApply(second) }
     XCTAssertEqual(barrier.busyReturned.wait(timeout: .now() + 5), .success, "ZE-72 actual Busy returned")
     let closer = Task { try await store.close() }
     XCTAssertEqual(barrier.closeEntered.wait(timeout: .now() + 5), .success, "ZE-72 actual close reached")
