@@ -835,10 +835,17 @@ fn eligible_collect_parity(hybrid: bool) {
                 "CALL ze.text_search('amber',10) YIELD node RETURN node"
             },
         );
+        // Leave headroom for Windows' larger native mapping descriptors.
+        let options = GraphQueryOptions::default()
+            .with_limits(
+                23 * 1024 * 1024,
+                zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default(),
+            )
+            .unwrap();
         let result = execute(
             &store,
             &control(),
-            &GraphQueryOptions::default(),
+            &options,
             &source,
             &parameters,
             CompileLimits::default(),

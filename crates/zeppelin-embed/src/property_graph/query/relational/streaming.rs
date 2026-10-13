@@ -435,11 +435,19 @@ impl<'v, 'm, 'g> StreamAggregate<'v, 'm, 'g> {
         Ok(fresh)
     }
     pub(crate) fn finish(
-        self,
+        mut self,
         keys: &[SlotProjection],
         aggregates: &[AggregateColumn],
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<Rows<'v, 'm, 'g>, RuntimeError> {
+        // Input is exhausted. DISTINCT indexes are no longer needed, and must
+        // not overlap the completed collect list's backing allocations.
+        for group in 0..self.groups.len() {
+            context.checkpoint()?;
+            for accumulator in self.groups.get_mut(group)?.as_mut_slice() {
+                drop(accumulator.distinct.take());
+            }
+        }
         let mut slots = QueryArena::new(context.memory(), keys.len() + aggregates.len())?;
         for key in keys {
             slots.push(key.output)?;
