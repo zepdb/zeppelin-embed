@@ -92,7 +92,22 @@ fn finish() -> (usize, usize, usize) {
 }
 #[test]
 fn read_lowering_real_allocator_fail_at_each_site_releases_all_backing() {
-    let path = std::env::temp_dir().join(format!("ze126-allocator-{}", std::process::id()));
+    read_allocator(
+        "ze126",
+        "MATCH (a:A:B {x:7})-[r:R|S]->(b) OPTIONAL MATCH (b)-[p:P*0..2 {weight:9}]->(c) WHERE c.ok=true WITH a,b,c,p,[1,2,3,'λ'] AS values ORDER BY b.x RETURN a,b,c,p,values",
+    );
+}
+
+#[test]
+fn ze443_predicate_allocator_faults_release_all_backing() {
+    read_allocator(
+        "ze443",
+        "MATCH (a), (b) WHERE NOT (a)-[:T]->(b) RETURN exists((a)-[:T]->()), NOT (b)-[:T]->()",
+    );
+}
+
+fn read_allocator(prefix: &str, query: &str) {
+    let path = std::env::temp_dir().join(format!("{prefix}-allocator-{}", std::process::id()));
     std::fs::create_dir(&path).unwrap();
     let store = Store::open(
         &path,
@@ -105,7 +120,6 @@ fn read_lowering_real_allocator_fail_at_each_site_releases_all_backing() {
         let control = QueryControl::Cancel(CancelToken::new());
         let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
         let mut context = ValueContext::new(&view, &control, 8_000_000).unwrap();
-        let query = "MATCH (a:A:B {x:7})-[r:R|S]->(b) OPTIONAL MATCH (b)-[p:P*0..2 {weight:9}]->(c) WHERE c.ok=true WITH a,b,c,p,[1,2,3,'λ'] AS values ORDER BY b.x RETURN a,b,c,p,values";
         let baseline = memory.reserved_bytes();
         start(&memory, 0);
         let result = compile_read_in(

@@ -1,0 +1,26 @@
+# ZE-443 local TCK-style fixtures; these are not original TCK coordinates.
+=== ZE-443 [1] Boolean combinations and anonymous label constraints
+setup
+      CREATE (a:A {id:1}), (b:A {id:2}), (a)-[:T]->(:B)
+query
+      MATCH (a:A)
+      WHERE (a)-[:T]->(:B) OR (a.id = 2 AND NOT exists((a)-[:T]->()))
+      RETURN a.id
+      ORDER BY a.id
+expect ordered
+      | a.id |
+      | 1    |
+      | 2    |
+side-effects none
+
+=== ZE-443 [2] Null correlation and anonymous variables do not escape
+setup
+      CREATE (:A)-[:T]->(:B)
+query
+      OPTIONAL MATCH (a:Missing)
+      WITH a, exists((a)-[:T]->()) AS found
+      RETURN found, NOT found
+expect bag
+      | found | NOT found |
+      | false | true      |
+side-effects none

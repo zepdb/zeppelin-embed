@@ -1,5 +1,5 @@
 //! PG17 primitive whole-plan observations. This crate imports no engine or
-//! compiler types, and constructs expectations from five fixed query recipes.
+//! compiler types, and constructs expectations from six fixed query recipes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Observation {
     pub operators: Vec<String>,
@@ -87,6 +87,26 @@ pub fn expected(case: usize, alias: &str, value: i64) -> Observation {
             columns: vec![("r".into(), 3, 128)],
             parameters: vec![],
             root: 3,
+            ordered: false,
+        },
+        5 => Observation {
+            operators: lines(&[
+                "[] unit",
+                "[0] scan 0",
+                "[1] scan 1",
+                "[2] filter IsNotNull(s0)",
+                "[3] expand 0->6 rel2 Outgoing types[\"T\"] pattern1",
+                "[4] filter Comparison(Equal)(s6,s1)",
+                "[5] project 0=s0,1=s1,2=s2",
+                "[6] bound 0 1",
+                "[7] project 0=s0,1=s1,3=true",
+                "[2, 8] optional none",
+                "[9] filter Not(IsNotNull(s3))",
+                "[10] project 4=s0,5=s1",
+            ]),
+            columns: vec![("a".into(), 4, 32), ("b".into(), 5, 32)],
+            parameters: vec![],
+            root: 11,
             ordered: false,
         },
         _ => unreachable!("PG17 fixed primitive query recipe"),

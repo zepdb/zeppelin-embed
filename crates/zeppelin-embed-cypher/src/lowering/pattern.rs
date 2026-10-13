@@ -2,6 +2,101 @@ use super::*;
 use zeppelin_embed::property_graph::query::{Comparison, plan::Direction as NativeDirection};
 
 impl Builder<'_, '_, '_> {
+    /// Attach existential branches before copying the scalar expression. All
+    /// temporary traversal slots stay on the right; only the witness crosses.
+    pub(super) fn lower_row_expression(
+        &mut self,
+        bound: &BoundQuery<'_>,
+        root: ExprId,
+        span: Span,
+        current: &mut PlanNodeId,
+    ) -> Result<ExprId, ParseError> {
+        if !self.has_pattern_predicates || root.0 as usize >= bound.syntax().nodes().len() {
+            return self.lower_expression(bound, root, span);
+        }
+        let mut seen = QueryArena::new(self.memory, root.0 as usize + 1).map_err(memory_error)?;
+        for index in 0..=root.0 {
+            check(self.control, span)?;
+            seen.push(index == root.0).map_err(memory_error)?;
+        }
+        for index in (0..=root.0 as usize).rev() {
+            check(self.control, span)?;
+            if !seen.as_slice().get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let node = syntax(bound, AstId(index))?;
+            if node.kind == NodeKind::PatternPredicate {
+                let Some(Expression::Unary {
+                    operation: UnaryExpression::IsNotNull,
+                    operand,
+                }) = bound.expressions().get(index)
+                else {
+                    return Err(invariant(node.span, "bound pattern predicate"));
+                };
+                let Some(Expression::Slot(witness)) = bound.expressions().get(operand.0 as usize)
+                else {
+                    return Err(invariant(node.span, "bound predicate witness"));
+                };
+                if self.scoped(*witness) {
+                    continue;
+                }
+                let outer = std::mem::replace(&mut self.scope, Buffer::new(self.memory)?);
+                for slot in outer.slice() {
+                    self.scope.push(*slot, self.memory, self.control)?;
+                }
+                let right = self.pattern(bound, node, *current, false, false)?;
+                let right = self.operator(
+                    DraftOp::OffsetLimit {
+                        offset: 0,
+                        limit: Some(1),
+                    },
+                    &[right],
+                    node.span,
+                )?;
+                let start = self.projections.len();
+                for slot in outer.slice() {
+                    let expression = self.expression(DraftExpr::Slot(*slot), node.span)?;
+                    self.projections.push(
+                        Projection {
+                            slot: *slot,
+                            expression,
+                        },
+                        self.memory,
+                        self.control,
+                    )?;
+                }
+                let expression =
+                    self.expression(DraftExpr::Literal(Literal::Bool(true)), node.span)?;
+                self.projections.push(
+                    Projection {
+                        slot: *witness,
+                        expression,
+                    },
+                    self.memory,
+                    self.control,
+                )?;
+                let right = self.operator(
+                    DraftOp::Project(Range {
+                        start,
+                        len: outer.len() + 1,
+                    }),
+                    &[right],
+                    node.span,
+                )?;
+                self.scope = outer;
+                self.add_scope(*witness, node.span)?;
+                *current = self.operator(DraftOp::Optional(None), &[*current, right], node.span)?;
+            } else {
+                for child in node.children().iter().rev() {
+                    *seen
+                        .as_mut_slice()
+                        .get_mut(child.0)
+                        .ok_or_else(|| invariant(node.span, "predicate expression child"))? = true;
+                }
+            }
+        }
+        self.lower_expression(bound, root, span)
+    }
     fn fresh(&mut self, span: Span) -> Result<SlotId, ParseError> {
         let slot = SlotId(self.next_slot);
         self.next_slot = self.next_slot.checked_add(1).ok_or_else(|| limit(span))?;
@@ -226,10 +321,11 @@ impl Builder<'_, '_, '_> {
         for id in clause.children() {
             let part = syntax(bound, *id)?;
             if part.kind == NodeKind::Predicate {
-                attached = Some(self.lower_expression(
+                attached = Some(self.lower_row_expression(
                     bound,
                     ExprId(child(part, 0)?.0 as u32),
                     part.span,
+                    &mut current,
                 )?);
                 continue;
             }

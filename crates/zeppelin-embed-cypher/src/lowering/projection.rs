@@ -33,7 +33,8 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             } else {
                 node.span
             };
-            let expression = self.lower_expression(bound, column.expression, origin)?;
+            let expression =
+                self.lower_row_expression(bound, column.expression, origin, &mut current)?;
             aggregate |= matches!(
                 self.expressions.slice().get(expression.0 as usize),
                 Some(DraftExpr::Aggregate { .. })
@@ -57,8 +58,12 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             check(self.control, item.span)?;
             match item.kind {
                 NodeKind::Order { descending } => {
-                    let expression =
-                        self.lower_expression(bound, ExprId(child(item, 0)?.0 as u32), item.span)?;
+                    let expression = self.lower_row_expression(
+                        bound,
+                        ExprId(child(item, 0)?.0 as u32),
+                        item.span,
+                        &mut current,
+                    )?;
                     self.sort_keys.push(
                         SortKey {
                             expression,
@@ -77,11 +82,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     has_bound = true;
                 }
                 NodeKind::Predicate => {
-                    predicate = Some(self.lower_expression(
-                        bound,
-                        ExprId(child(item, 0)?.0 as u32),
-                        item.span,
-                    )?)
+                    predicate = Some((ExprId(child(item, 0)?.0 as u32), item.span))
                 }
                 _ => {}
             }
@@ -183,12 +184,13 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
         if hidden.len() != 0 || aggregate && with {
             current = self.identity_projection(columns.slice(), current, with, node.span)?;
         }
-        if let Some(predicate) = predicate {
-            current = self.operator(DraftOp::Filter(predicate), &[current], node.span)?;
-        }
         self.scope.arena.clear();
         for column in projection.columns() {
             self.scope.push(column.slot, self.memory, self.control)?;
+        }
+        if let Some((root, span)) = predicate {
+            let predicate = self.lower_row_expression(bound, root, span, &mut current)?;
+            current = self.operator(DraftOp::Filter(predicate), &[current], node.span)?;
         }
         Ok(current)
     }

@@ -205,7 +205,12 @@ pub(crate) fn compile_route_in<'v, T, C: ReadContext<'v>>(
                 ));
             }
             builder.copy_parameters(bound.parameters())?;
-            for expression in bound.expressions() {
+            for (index, expression) in bound.expressions().iter().enumerate() {
+                builder.has_pattern_predicates |= bound
+                    .syntax()
+                    .nodes()
+                    .get(index)
+                    .is_some_and(|node| node.kind == NodeKind::PatternPredicate);
                 if let Expression::Slot(slot) = expression {
                     builder.next_slot = builder
                         .next_slot
@@ -405,6 +410,7 @@ struct Builder<'m, 'g, 'c> {
     parameter_names: Buffer<'m, 'g, Range>,
     next_slot: u32,
     pattern_id: u32,
+    has_pattern_predicates: bool,
     scope: Buffer<'m, 'g, SlotId>,
     names: Buffer<'m, 'g, Range>,
     remap: Buffer<'m, 'g, Option<ExprId>>,
@@ -435,6 +441,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             parameter_names: Buffer::new(memory)?,
             next_slot: 0,
             pattern_id: 0,
+            has_pattern_predicates: false,
             scope: Buffer::new(memory)?,
             names: Buffer::new(memory)?,
             remap: Buffer::new(memory)?,

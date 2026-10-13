@@ -102,6 +102,8 @@ pub enum NodeKind {
     },
     Call(Procedure),
     Pattern,
+    /// An existential expression with one Pattern child; local slots do not escape.
+    PatternPredicate,
     NodePattern {
         variable: Option<TextId>,
     },

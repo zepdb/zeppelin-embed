@@ -1,6 +1,53 @@
 use super::*;
 use zeppelin_embed::property_graph::GraphName;
 impl<'a> Binder<'a, '_> {
+    pub(super) fn pattern_predicate(
+        &mut self,
+        predicate: &'a Node,
+    ) -> Result<Expression<'a>, ParseError> {
+        let pattern = node(self.ast, child(predicate, 0)?)?;
+        for id in pattern.children() {
+            let part = node(self.ast, *id)?;
+            poll(self.resources, part.span)?;
+            let variable = match part.kind {
+                NodeKind::NodePattern { variable } => variable,
+                NodeKind::RelationshipPattern {
+                    variable,
+                    bounds: None,
+                    ..
+                } => variable,
+                _ => {
+                    return Err(ParseError::new(
+                        ErrorKind::Unsupported,
+                        part.span,
+                        "predicate requires fixed-length relationships",
+                    ));
+                }
+            };
+            if let Some(variable) = variable {
+                let name = self
+                    .ast
+                    .text(variable)
+                    .ok_or_else(|| error(part.span, "missing predicate variable"))?;
+                if self.lookup_optional(name, part.span)?.is_none() {
+                    return Err(ParseError::new(
+                        ErrorKind::Unsupported,
+                        part.span,
+                        "named new variable inside pattern predicate",
+                    ));
+                }
+            }
+        }
+        let singleton = self.singleton;
+        self.patterns(predicate, false, false)?;
+        self.singleton = singleton;
+        let witness = self.new_slot(predicate.span)?;
+        let operand = self.append_expression(Expression::Slot(witness), predicate.span)?;
+        Ok(Expression::Unary {
+            operation: UnaryExpression::IsNotNull,
+            operand,
+        })
+    }
     pub(super) fn graph_name(&self, id: TextId, span: Span) -> Result<GraphName<'a>, ParseError> {
         GraphName::new(
             self.ast
@@ -58,7 +105,9 @@ impl<'a> Binder<'a, '_> {
                     None
                 };
                 let symbol = if let Some(symbol) = existing {
-                    if bounded || !symbol.info.kinds.contains(kinds) {
+                    let null_predicate = clause.kind == NodeKind::PatternPredicate
+                        && symbol.info.kinds == ValueKinds::NULL;
+                    if bounded || (!symbol.info.kinds.contains(kinds) && !null_predicate) {
                         return Err(ParseError::new(
                             ErrorKind::Type,
                             part.span,

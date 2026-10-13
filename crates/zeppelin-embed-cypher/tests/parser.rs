@@ -818,6 +818,8 @@ fn recognized_out_of_profile_syntax_has_a_distinct_profile_error() {
     for query in [
         "MATCH (n) UNWIND [1] AS x RETURN x",
         "CALL { RETURN 1 } RETURN 1",
+        "MATCH (a) WHERE EXISTS { MATCH (a)-->() } RETURN a",
+        "MATCH (a) RETURN exists(a.x)",
         "MATCH (n) DELETE [n]",
         "RETURN {x:1}",
         "RETURN [1,2][1..2]",
@@ -832,5 +834,24 @@ fn recognized_out_of_profile_syntax_has_a_distinct_profile_error() {
     ] {
         let error = parse(query).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Unsupported, "{query}: {error:?}");
+    }
+}
+
+#[test]
+fn ze443_pattern_lookahead_preserves_grouped_arithmetic() {
+    for query in ["RETURN (1) - -2", "RETURN (1) < -2", "RETURN ((1) + 2) - 1"] {
+        parse(query).unwrap();
+    }
+    for query in [
+        "MATCH (a), (b) WHERE NOT (a)-[:T]-(b) RETURN a",
+        "MATCH (a) RETURN exists((a)-[:T]->())",
+        "MATCH (a) RETURN ((a)<-[:T]-())",
+    ] {
+        let ast = parse(query).unwrap();
+        assert!(
+            ast.nodes()
+                .iter()
+                .any(|node| node.kind == NodeKind::PatternPredicate)
+        );
     }
 }

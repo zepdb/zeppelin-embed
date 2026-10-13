@@ -39,6 +39,9 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.lowering.release",
     "property-graph.lowering.completed-path",
     "property-graph.lowering.case-coalesce",
+    "property-graph.lowering.pattern-predicate",
+    "property-graph.lowering.pattern-predicate.clock.fire",
+    "property-graph.lowering.pattern-predicate.budget.fire",
 ];
 #[derive(Default, Debug)]
 pub struct ProbeReport {
@@ -285,6 +288,7 @@ fn recipe(case: usize, alias: &str) -> String {
         2=>"MATCH (n) RETURN n.p AS x ORDER BY n.q DESC SKIP 1 LIMIT $limit".into(),
         3=>"MATCH (n) WITH count(*) AS c, n.p AS p ORDER BY p RETURN c,p".into(),
         4=>"MATCH (a)-[r:R*0..2 {x:size(r),y:7}]->(b) RETURN r".into(),
+        5=>"MATCH (a), (b) WHERE NOT (a)-[:T]->(b) RETURN a,b".into(),
         _=>unreachable!(),
     }
 }
@@ -456,6 +460,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
         REQUIRED_COVERAGE[2],
         REQUIRED_COVERAGE[3],
         "property-graph.lowering.completed-path",
+        "property-graph.lowering.pattern-predicate",
     ]
     .into_iter()
     .enumerate()
@@ -491,6 +496,15 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
                 .to_string();
             if oracle::check(case, &alias, value, &changed).is_ok() {
                 return Err("PG17 completed predicate omission escaped".into());
+            }
+            oracle::check(case, &alias, value, &observed)?;
+            report.comparator_fires += 1;
+        }
+        if case == 5 {
+            let mut changed = observed.clone();
+            changed.operators[7] = "[6] bound 0 2".into();
+            if oracle::check(case, &alias, value, &changed).is_ok() {
+                return Err("PG17 predicate cardinality violation escaped".into());
             }
             oracle::check(case, &alias, value, &observed)?;
             report.comparator_fires += 1;
@@ -540,5 +554,33 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
     for key in &REQUIRED_COVERAGE[7..12] {
         coverage.hit(*key);
     }
+    let compiler = trial(seed, 5, &alias, value, None, None, true)?;
+    let clean = trial(seed, 5, &alias, value, None, None, false)?;
+    report.fault_fires += trial(
+        seed,
+        5,
+        &alias,
+        value,
+        Some((compiler.compiler_polls + clean.consumer_polls) / 2),
+        None,
+        false,
+    )?
+    .fires;
+    trial(seed, 5, &alias, value, None, None, false)?;
+    report.clean_controls += 1;
+    coverage.hit("property-graph.lowering.pattern-predicate.clock.fire");
+    trial(
+        seed,
+        5,
+        &alias,
+        value,
+        None,
+        Some(compiler.compiler_peak + 1),
+        false,
+    )?;
+    report.fault_fires += 1;
+    trial(seed, 5, &alias, value, None, None, false)?;
+    report.clean_controls += 1;
+    coverage.hit("property-graph.lowering.pattern-predicate.budget.fire");
     Ok(report)
 }

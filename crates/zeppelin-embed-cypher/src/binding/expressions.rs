@@ -23,6 +23,26 @@ impl<'a> Binder<'a, '_> {
                 continue;
             }
             if !finish {
+                if node.kind == NodeKind::PatternPredicate {
+                    let expression = self.pattern_predicate(node)?;
+                    *self
+                        .expressions
+                        .get_mut(id.0)
+                        .ok_or_else(|| error(node.span, "missing predicate expression"))? =
+                        expression;
+                    *self
+                        .facts
+                        .get_mut(id.0)
+                        .ok_or_else(|| error(node.span, "missing predicate fact"))? = Some(Info {
+                        kinds: ValueKinds::BOOL,
+                        row: true,
+                        origin: None,
+                        eligible: false,
+                        constant: None,
+                        invariant: None,
+                    });
+                    continue;
+                }
                 if let Some(symbol) = self.projected_alias(id)? {
                     *self
                         .expressions

@@ -352,28 +352,70 @@ impl Parser<'_> {
     fn patterns(&mut self, create: bool) -> Result<Vec<AstId>, ParseError> {
         let mut patterns = Vec::new();
         loop {
-            let start = self.span().start;
             if self.kind() != Some(Kind::LParen) {
                 return Err(self.error(
                     ErrorKind::Unsupported,
                     "only unnamed node/relationship patterns are supported",
                 ));
             }
-            let node = self.node_pattern()?;
-            let mut parts = self.children(&[node])?;
-            while matches!(self.kind(), Some(Kind::Minus | Kind::Lt)) {
-                let relationship = self.relationship(create)?;
-                self.append(&mut parts, relationship)?;
-                let node = self.node_pattern()?;
-                self.append(&mut parts, node)?;
-            }
-            let pattern = self.add(NodeKind::Pattern, start, parts)?;
+            let pattern = self.pattern(create)?;
             self.append(&mut patterns, pattern)?;
             if !self.eat(Kind::Comma)? {
                 break;
             }
         }
         Ok(patterns)
+    }
+    fn pattern(&mut self, create: bool) -> Result<AstId, ParseError> {
+        let start = self.span().start;
+        let node = self.node_pattern()?;
+        let mut parts = self.children(&[node])?;
+        while matches!(self.kind(), Some(Kind::Minus | Kind::Lt)) {
+            let relationship = self.relationship(create)?;
+            self.append(&mut parts, relationship)?;
+            let node = self.node_pattern()?;
+            self.append(&mut parts, node)?;
+        }
+        self.add(NodeKind::Pattern, start, parts)
+    }
+    /// Look ahead without speculative parsing/allocation: `(a) - 1` remains
+    /// arithmetic, while `(a)-[...` / `(a)--` / `(a)<-` start a pattern.
+    fn starts_pattern(&mut self) -> Result<bool, ParseError> {
+        if self.kind() != Some(Kind::LParen) {
+            return Ok(false);
+        }
+        let mut depth = 0_usize;
+        for (offset, token) in self.ast.tokens.iter().skip(self.position).enumerate() {
+            poll(self.resources, token.span)?;
+            match token.kind {
+                Kind::LParen => depth += 1,
+                Kind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(matches!(
+                            (
+                                self.peek_kind(offset + 1),
+                                self.peek_kind(offset + 2),
+                                self.peek_kind(offset + 3)
+                            ),
+                            (Some(Kind::Minus), Some(Kind::LBracket), _)
+                                | (
+                                    Some(Kind::Minus),
+                                    Some(Kind::Minus),
+                                    Some(Kind::LParen | Kind::Gt)
+                                )
+                                | (
+                                    Some(Kind::Lt),
+                                    Some(Kind::Minus),
+                                    Some(Kind::LBracket | Kind::Minus)
+                                )
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
     }
     fn labels(&mut self, items: &mut Vec<AstId>) -> Result<(), ParseError> {
         while self.eat(Kind::Colon)? {
@@ -878,6 +920,26 @@ impl Parser<'_> {
     }
     fn prefix(&mut self) -> Result<AstId, ParseError> {
         let start = self.span().start;
+        if self.word("EXISTS") {
+            self.advance()?;
+            if self.kind() != Some(Kind::LParen) {
+                return Err(self.error(ErrorKind::Unsupported, "EXISTS subquery outside profile"));
+            }
+            self.advance()?;
+            if !self.starts_pattern()? {
+                return Err(self.error(
+                    ErrorKind::Unsupported,
+                    "exists requires a relationship pattern",
+                ));
+            }
+            let pattern = self.pattern(false)?;
+            self.expect(Kind::RParen, "expected closing exists parenthesis")?;
+            return self.wrap(NodeKind::PatternPredicate, start, &[pattern]);
+        }
+        if self.starts_pattern()? {
+            let pattern = self.pattern(false)?;
+            return self.wrap(NodeKind::PatternPredicate, start, &[pattern]);
+        }
         if self.eat_word("NOT")? {
             let inner = self.expression(7)?;
             return self.wrap(NodeKind::Unary(UnaryOp::Not), start, &[inner]);
