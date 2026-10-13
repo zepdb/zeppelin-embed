@@ -898,6 +898,7 @@ fn emit_preparation_report(
         .iter()
         .map(|(phase, work)| {
             if *phase == "staging-end"
+                || *phase == "maintenance-census-end"
                 || (phase.starts_with("maintenance-") && phase.ends_with("start"))
             {
                 before = 0;
