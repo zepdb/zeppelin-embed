@@ -314,12 +314,11 @@ impl crate::lifecycle::Store {
     {
         self.native_graph.require_writable()?;
         let mut maintenance_checked = held_writer.is_some();
-        let mut run_maintenance = false;
+        let mut run_maintenance = None;
         let mut allow_pending_checkpoint = true;
         loop {
-            if run_maintenance {
-                self.auto_maintain_native_graph(control)?;
-                run_maintenance = false;
+            if let Some(work) = run_maintenance.take() {
+                self.auto_maintain_native_graph(control, work)?;
             }
             let mut writer_slot = if held_writer.is_none() {
                 Some(self.native_graph.writer.lock().map_err(|_| {
@@ -488,7 +487,7 @@ impl crate::lifecycle::Store {
             if !maintenance_checked && disposition == BatchDisposition::Changed {
                 maintenance_checked = true;
                 if self.native_graph_maintenance_due()? {
-                    run_maintenance = true;
+                    run_maintenance = Some(preparation_work);
                     continue;
                 }
             }

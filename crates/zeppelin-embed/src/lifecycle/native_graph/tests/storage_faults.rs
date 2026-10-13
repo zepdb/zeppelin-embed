@@ -1928,11 +1928,10 @@ fn run_reclaim_cell(
             "count-delete" => vfs.recording.arm_fault_after(FaultPoint::Delete, 0),
             _ => panic!("unknown reclaim cell"),
         }
-        let result = if count_triggered {
-            count_foreground_write(&store).map(|_| ())
-        } else {
-            commit_maintenance(&store).map(|_| ())
-        };
+        // Count-triggered writes now fold inventories without unlinking.
+        // Exercise the deferred deletion through the explicit reclaim path;
+        // retain every fault, debt, preservation and reopen assertion below.
+        let result = commit_maintenance(&store).map(|_| ());
         println!(
             "ZE-172 reclaim {name} seed={seed} fault fires={} target={:?} result={result:?}",
             vfs.fires(),

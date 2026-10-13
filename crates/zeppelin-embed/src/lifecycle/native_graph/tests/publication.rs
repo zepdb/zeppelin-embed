@@ -2773,6 +2773,104 @@ fn ze39_fresh_create_failures_never_adopt_or_replace_identity() {
 }
 
 #[cfg(feature = "test-seams")]
+#[test]
+fn ze446_automatic_fold_preserves_atomicity() {
+    run_ze446_automatic_fold_preserves_atomicity();
+}
+
+fn run_ze446_automatic_fold_preserves_atomicity() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("automatic-fold");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::create_native_graph_with_infrastructure(
+        &path,
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            reclaim_after_bytes: 64 * 1024 * 1024,
+        })
+        .unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let keys: Vec<_> = (0..33).map(|i| i.to_string()).collect();
+    let writes: Vec<_> = keys
+        .iter()
+        .map(|key| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "automatic-fold", key).unwrap(),
+            revision: GraphRevision::new(1).unwrap(),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        })
+        .collect();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut nodes = Vec::new();
+    for write in writes.iter().take(32) {
+        let receipts = store
+            .apply_native_graph(std::slice::from_ref(write), &control)
+            .unwrap();
+        let EntityId::Node(node) = receipts[0].entity else {
+            panic!("node required")
+        };
+        nodes.push(node);
+    }
+    let before = super::mapping_slots::logical_state(&store, &nodes);
+    let generation = store
+        .admit_native_read()
+        .unwrap()
+        .bundle()
+        .base()
+        .generation;
+    store
+        .set_native_graph_maintenance_policy(
+            crate::property_graph::GraphMaintenancePolicy::default(),
+        )
+        .unwrap();
+    vfs.arm_fault(FaultPoint::Create);
+    assert!(store.apply_native_graph(&writes[32..], &control).is_err());
+    vfs.assert_fired_once();
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation,
+        generation
+    );
+    assert_eq!(super::mapping_slots::logical_state(&store, &nodes), before);
+    assert_eq!(
+        store
+            .apply_native_graph(&writes[32..], &control)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store.native_graph.proof_work.load(Ordering::Acquire),
+        u64::MAX,
+        "automatic folding must not mark the full store"
+    );
+    assert_eq!(super::mapping_slots::logical_state(&store, &nodes), before);
+    store.close().unwrap();
+    let reopened = Store::open_native_graph(
+        &path,
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        super::mapping_slots::logical_state(&reopened, &nodes),
+        before
+    );
+    reopened.close().unwrap();
+}
+
 pub(crate) fn run_actual_probe(
     _seed: u64,
 ) -> crate::graph_read_view_test_support::ActualProbeReport {
@@ -2840,6 +2938,13 @@ pub(crate) fn run_actual_probe(
             clean_controls: 1,
         });
     }
+    reset_verified_faults();
+    run_ze446_automatic_fold_preserves_atomicity();
+    receipts.push(PathReceipt {
+        key: "property-graph.publication.automatic-fold",
+        fires: take_verified_faults(),
+        clean_controls: 1,
+    });
     ActualProbeReport {
         receipts,
         relationships: rows

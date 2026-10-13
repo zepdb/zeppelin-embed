@@ -1915,11 +1915,11 @@ thread_local! {
     pub(super) static QUALIFICATION_RESUME_REPORT: std::cell::Cell<Option<NativeMaintenanceReport>> = const { std::cell::Cell::new(None) };
 }
 
-/// Budgets for one maintenance preparation. Production always uses
-/// `default()`; a focused test shrinks one field to fire that refusal on the
-/// real path.
+/// Budgets for one maintenance preparation. Automatic writes select only
+/// inventory folding; explicit maintenance also marks and reclaims.
 #[derive(Clone, Copy)]
 pub(crate) struct MaintenanceLimits {
+    pub(crate) reclaim: bool,
     pub(crate) relocation_bytes: u64,
     pub(crate) sweep_limit: usize,
     pub(crate) inventory_additions: usize,
@@ -1930,6 +1930,7 @@ pub(crate) struct MaintenanceLimits {
 impl Default for MaintenanceLimits {
     fn default() -> Self {
         Self {
+            reclaim: true,
             sweep_limit: 128,
             relocation_bytes: crate::property_graph::storage::consolidation::RELOCATION_BYTES,
             inventory_additions: INVENTORY_FOLD_ADDITION_LIMIT,
@@ -2003,7 +2004,12 @@ pub(super) fn commit_with_limits(
     limits: MaintenanceLimits,
     budget: Option<&NativeMaintenanceBudget>,
 ) -> Result<NativeMaintenanceReport, NativeGraphError> {
-    if admission.lease.bundle().reclaim().is_some() {
+    if !limits.reclaim
+        && (limits.relocation_bytes != 0 || limits.sweep_limit != 0 || limits.work.is_none())
+    {
+        return Err(NativeGraphError::Invalid("automatic inventory fold limits"));
+    }
+    if limits.reclaim && admission.lease.bundle().reclaim().is_some() {
         return match active_reclaim_subtype(store, admission, control)? {
             2 => resume_pending_reclaim(store, admission, control, limits, budget),
             3 => retire_completed_reclaim(store, admission, control, limits, budget),
@@ -2045,7 +2051,7 @@ pub(super) fn commit_with_limits(
             &storage,
             limits.work.unwrap_or(DEFAULT_MAINTENANCE_WORK),
         )?;
-    if admitted.base().fold.envelope_sequence != admitted.sequence() {
+    if limits.reclaim && admitted.base().fold.envelope_sequence != admitted.sequence() {
         let folded_inventory = prepare_inventory_fold(
             &source,
             admitted.prepared_inventories(),
@@ -2076,8 +2082,13 @@ pub(super) fn commit_with_limits(
         let folded = store.admit_native_graph_maintenance()?;
         return commit_with_limits(store, &folded, control, limits, budget);
     }
-    let (census, mut resources) =
-        maintenance_resources(&source, &admitted, &storage, limits, resources)?;
+    let (census, mut resources) = if limits.reclaim {
+        let (census, resources) =
+            maintenance_resources(&source, &admitted, &storage, limits, resources)?;
+        (Some(census), resources)
+    } else {
+        (None, resources)
+    };
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
         "maintenance-start",
@@ -2101,45 +2112,58 @@ pub(super) fn commit_with_limits(
         resources.work(),
     );
     let generation = super::write::assigned_generation(store, admitted.base().generation)?;
-    let proof = prepare_durable_proof(
-        limits.relocation_bytes,
-        generation,
-        store,
-        admission,
-        admitted
-            .prepared_inventories()
-            .get(folded_inventory.retired()..)
-            .ok_or(NativeGraphError::Invalid("inventory retirement prefix"))?,
-        &source,
-        census,
-        &storage,
-        control,
-        &mut resources,
-        budget,
-    )?;
+    let proof = if let Some(census) = census {
+        Some(prepare_durable_proof(
+            limits.relocation_bytes,
+            generation,
+            store,
+            admission,
+            admitted
+                .prepared_inventories()
+                .get(folded_inventory.retired()..)
+                .ok_or(NativeGraphError::Invalid("inventory retirement prefix"))?,
+            &source,
+            census,
+            &storage,
+            control,
+            &mut resources,
+            budget,
+        )?)
+    } else {
+        None
+    };
     #[cfg(all(test, feature = "graph-cypher"))]
-    crate::property_graph::storage::preparation_work_capture::phase(
-        "maintenance-proof-end",
-        resources.work(),
-    );
+    if proof.is_some() {
+        crate::property_graph::storage::preparation_work_capture::phase(
+            "maintenance-proof-end",
+            resources.work(),
+        );
+    }
     #[cfg(any(test, feature = "test-seams"))]
-    store.native_graph.proof_work.store(
-        resources.work().saturating_sub(work_before_proof),
-        std::sync::atomic::Ordering::Release,
-    );
-    let reclaim_id = BatchId::new(proof.durable.binding().session.get())?;
-    let mut reclaim_pending = StorageBuffer::new(&storage, proof.candidates.as_slice().len())?;
-    for descriptor in proof
-        .candidates
-        .as_slice()
-        .iter()
-        .copied()
-        .filter(|v| v.family == 17)
-    {
-        reclaim_pending.push(InventoryChange {
-            object: descriptor,
-            state: InventoryState::ReclaimPending(reclaim_id),
-        })?;
+    if proof.is_some() {
+        store.native_graph.proof_work.store(
+            resources.work().saturating_sub(work_before_proof),
+            std::sync::atomic::Ordering::Release,
+        );
+    }
+    let candidates = proof
+        .as_ref()
+        .map_or(&[][..], |proof| proof.candidates.as_slice());
+    let mut reclaim_pending = StorageBuffer::new(&storage, candidates.len())?;
+    if let Some(proof) = proof.as_ref() {
+        let reclaim_id = BatchId::new(proof.durable.binding().session.get())?;
+        for descriptor in proof
+            .candidates
+            .as_slice()
+            .iter()
+            .copied()
+            .filter(|v| v.family == 17)
+        {
+            reclaim_pending.push(InventoryChange {
+                object: descriptor,
+                state: InventoryState::ReclaimPending(reclaim_id),
+            })?;
+        }
     }
     // Replacement's sweep and directory edits share one attempt-wide source,
     // just like structured writes. Retain their authentication proofs under
@@ -2183,8 +2207,11 @@ pub(super) fn commit_with_limits(
         &storage,
         &mut resources,
     )?;
-    let drained_packs = u32::try_from(proof.drain.as_slice().len())
-        .map_err(|_| NativeGraphError::IdentityExhausted)?;
+    let drain = proof
+        .as_ref()
+        .map_or(&[][..], |proof| proof.drain.as_slice());
+    let drained_packs =
+        u32::try_from(drain.len()).map_err(|_| NativeGraphError::IdentityExhausted)?;
     let mut sweep_progress = store.native_graph.sweep_resume.lock().map_err(|_| {
         NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
             component: "native graph sweep progress",
@@ -2199,14 +2226,18 @@ pub(super) fn commit_with_limits(
         generation,
         &catalog,
         admitted.document(),
-        proof.drain.as_slice(),
+        drain,
         limits.relocation_bytes,
         limits.sweep_limit,
         &mut next_sweep,
         folded_inventory,
-        proof.pending_page_relocations.as_slice(),
+        proof
+            .as_ref()
+            .map_or(&[][..], |proof| proof.pending_page_relocations.as_slice()),
         reclaim_pending.as_slice(),
-        proof.adoptions.as_slice(),
+        proof
+            .as_ref()
+            .map_or(&[][..], |proof| proof.adoptions.as_slice()),
         &storage,
         &mut resources,
     )?;
@@ -2281,14 +2312,14 @@ pub(super) fn commit_with_limits(
         .checked_add(1)
         .ok_or(NativeGraphError::IdentityExhausted)?;
     let mut commit_artifacts = StorageBuffer::new(&storage, artifact_count)?;
-    let PreparedReclaimProof {
-        pending_page_relocations: _,
-        drain: _,
-        adoptions: _adoptions,
-        durable,
-        candidates,
-        partials,
-    } = proof;
+    let (durable, candidates, partials) = match proof {
+        Some(proof) => (
+            Some(proof.durable),
+            Some(proof.candidates),
+            Some(proof.partials),
+        ),
+        None => (None, None, None),
+    };
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
         "maintenance-transition-start",
@@ -2301,12 +2332,12 @@ pub(super) fn commit_with_limits(
         &admission.lease,
         &objects,
         &consolidated,
-        Some(durable),
+        durable,
         &catalog,
         inventory.as_slice(),
         reclaim_pending.as_slice(),
-        candidates.as_slice(),
-        partials.as_slice(),
+        candidates.as_ref().map_or(&[][..], |rows| rows.as_slice()),
+        partials.as_ref().map_or(&[][..], |rows| rows.as_slice()),
         inventory_identity,
         inventory_bytes.as_slice(),
         inventory_ref,

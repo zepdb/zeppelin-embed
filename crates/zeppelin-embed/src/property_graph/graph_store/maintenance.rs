@@ -3,11 +3,12 @@ use super::GraphStoreError;
 use crate::lifecycle::QueryControl;
 use crate::property_graph::GraphGeneration;
 
-/// Automatic reclamation policy for this open writer (not persisted).
+/// Automatic inventory-fold policy for this open writer (not persisted).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GraphMaintenancePolicy {
-    /// Run maintenance before a write once the byte threshold or the internal
-    /// 32-publication reclaim cadence is reached.
+    /// Fold a bounded inventory prefix before a write once the byte threshold
+    /// or internal 32-publication cadence is reached. Full reclamation runs
+    /// through `graph_maintain_step` or `graph_maintain_cycle`.
     pub automatic: bool,
     /// Committed artifact bytes between triggers; at least 1 MiB.
     pub reclaim_after_bytes: u64,

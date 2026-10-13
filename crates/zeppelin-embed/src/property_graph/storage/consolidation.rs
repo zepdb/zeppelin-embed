@@ -620,6 +620,9 @@ where
     C: for<'s> RecordCatalog<NativePreparationSource<'s, 'm>>,
 {
     let mut selected = StorageBuffer::new(source.memory(), RELOCATION_LIMIT)?;
+    if relocation_bytes == 0 {
+        return Ok(selected);
+    }
     let mut bytes = 0_u64;
     #[cfg(any(test, feature = "test-seams"))]
     let pinned = PINNED_SELECTION.with(std::cell::Cell::get);
@@ -1196,6 +1199,9 @@ pub(crate) fn select_hidden_relationships<'m, S: super::tree::directory::BlockSo
     r: &mut TreeResources<'_>,
 ) -> Result<StorageBuffer<'m, super::adjacency::RelationshipRow>, TreeError> {
     let mut selected = StorageBuffer::new(memory, limit)?;
+    if limit == 0 {
+        return Ok(selected);
+    }
     let root = roots.directory(TreeKind::Relationships)?;
     let lower = resume
         .and_then(|id| id.checked_add(1))
@@ -1271,6 +1277,9 @@ pub(crate) fn select_finished_tombstones<'m, S: super::tree::directory::BlockSou
     r: &mut TreeResources<'_>,
 ) -> Result<StorageBuffer<'m, NodeId>, TreeError> {
     let mut selected = StorageBuffer::new(memory, limit)?;
+    if limit == 0 {
+        return Ok(selected);
+    }
     let root = roots.directory(TreeKind::Nodes)?;
     let lower = resume
         .and_then(|id| id.checked_add(1))

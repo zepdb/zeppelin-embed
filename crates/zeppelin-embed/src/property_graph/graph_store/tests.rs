@@ -159,6 +159,177 @@ fn a_node_batch_of_four_thousand_items_commits_on_an_empty_store() {
 }
 
 #[test]
+#[ignore = "ZE-446 copied LDBC store; requires ZE446_FORUM_TSV"]
+fn ze446_forum_batch_commits_on_a_copy() {
+    use crate::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    use crate::property_graph::{GraphBatch, GraphNodeDocument, PropertyData, PropertyValue};
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tasks/ldbc-data/zeppelin-store");
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("copy");
+    std::fs::create_dir(&path).unwrap();
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), path.join(entry.file_name())).unwrap();
+    }
+    let input = std::fs::read_to_string(std::env::var("ZE446_FORUM_TSV").unwrap()).unwrap();
+    let rows: Vec<_> = input
+        .lines()
+        .map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            (
+                fields.next().unwrap(),
+                fields.next().unwrap().parse::<i64>().unwrap(),
+                fields.next().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(rows.len(), 2504);
+    let mut labels = vec![[GraphName::new("Forum").unwrap()]; rows.len()];
+    let mut properties: Vec<_> = rows
+        .iter()
+        .map(|(id, date, title)| {
+            [
+                GraphProperty::new(
+                    GraphName::new("id").unwrap(),
+                    PropertyValue::new(PropertyData::I64(id.parse().unwrap())).unwrap(),
+                ),
+                GraphProperty::new(
+                    GraphName::new("creationDate").unwrap(),
+                    PropertyValue::new(PropertyData::I64(*date)).unwrap(),
+                ),
+                GraphProperty::new(
+                    GraphName::new("title").unwrap(),
+                    PropertyValue::new(PropertyData::String(title)).unwrap(),
+                ),
+            ]
+        })
+        .collect();
+    let images: Vec<_> = labels
+        .iter_mut()
+        .zip(&mut properties)
+        .map(|(l, p)| CanonicalContents::node(l, p, None, None).unwrap())
+        .collect();
+    let writes: Vec<_> = rows
+        .iter()
+        .zip(&images)
+        .map(|((key, _, _), image)| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "Forum", key).unwrap(),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(image)),
+        })
+        .collect();
+    let documents: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .map(|(item_index, (id, _, _))| GraphNodeDocument {
+            item_index,
+            document: IngestDocument::new(
+                DocumentVersion::new(
+                    DocId::new((3_u128 << 64) | id.parse::<u128>().unwrap()),
+                    Revision::new(1),
+                ),
+                vec![1.0],
+            ),
+        })
+        .collect();
+    let store = Store::open(&path, options()).unwrap();
+    store.enable_graph().unwrap();
+    eprintln!("ZE446 opened copied LDBC store");
+    capture::start();
+    let result = store.graph_apply(
+        GraphBatch::with_node_documents(&writes, &documents),
+        &control(),
+    );
+    let report = capture::take();
+    eprintln!(
+        "ZE446 Forum result={:?} phases={:?} rejected={:?} children={} leaves={} maintenance_limit={:?} inventory_bytes={}",
+        result
+            .as_ref()
+            .map(|r| r.ack())
+            .map_err(ToString::to_string),
+        report.phases,
+        report.rejected,
+        report.child_pages,
+        report.leaf_entries,
+        report.maintenance_work_limit,
+        report.maintenance_inventory_bytes
+    );
+    let result = result.unwrap();
+    assert!(matches!(
+        result.outcome(),
+        GraphWriteOutcome::Committed { .. }
+    ));
+    assert_eq!(result.receipts().len(), 2504);
+    assert_eq!(
+        node_id(&result, 0).get(),
+        (3_u128 << 64) | rows[0].0.parse::<u128>().unwrap()
+    );
+    store.close().unwrap();
+}
+
+#[test]
+#[ignore = "ZE-446 176k-node deterministic counter qualification; run in release"]
+fn ze446_fixed_node_batch_directory_work_is_bounded() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    fn apply(store: &Store, start: usize, count: usize, measured_nodes: Option<usize>) -> u64 {
+        let keys: Vec<_> = (start..start + count).map(|i| format!("{i:020}")).collect();
+        let mut labels = [GraphName::new("Forum").unwrap()];
+        let image = CanonicalContents::node(&mut labels, &mut [], None, None).unwrap();
+        let writes: Vec<_> = keys
+            .iter()
+            .map(|key| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "Forum", key).unwrap(),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        capture::start();
+        let result = store.graph_apply(&writes, &control());
+        let report = capture::take();
+        if let Some(nodes) = measured_nodes {
+            eprintln!(
+                "ZE446 nodes={nodes} batch={count} phases={:?} children={} leaves={} rejected={:?}",
+                report.phases, report.child_pages, report.leaf_entries, report.rejected
+            );
+        }
+        assert_eq!(result.unwrap().receipts().len(), count);
+        report.directory_work
+    }
+    let mut counters = Vec::new();
+    for nodes in [0, 50_000, 176_559] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::create_graph(directory.path().join("graph"), options(), None).unwrap();
+        store
+            .set_graph_maintenance_policy(super::GraphMaintenancePolicy {
+                automatic: false,
+                reclaim_after_bytes: 64 * 1024 * 1024,
+            })
+            .unwrap();
+        for start in (0..nodes).step_by(2500) {
+            apply(&store, start, 2500.min(nodes - start), None);
+        }
+        store
+            .set_graph_maintenance_policy(super::GraphMaintenancePolicy::default())
+            .unwrap();
+        // Identical requests at every store size, disjoint from all seed keys.
+        counters.push(apply(&store, 1_000_000, 2500, Some(nodes)));
+        store.close().unwrap();
+    }
+    eprintln!("ZE446 fixed batch directory work={counters:?}");
+    assert!(
+        counters[2] <= counters[1] * 2,
+        "store growth exceeded a small log factor: {counters:?}"
+    );
+    assert!(
+        counters[2] <= counters[0] * 2,
+        "directory work grew with unrelated nodes: {counters:?}"
+    );
+}
+
+#[test]
 fn a_full_max_graph_changes_node_batch_commits_inside_the_preparation_allowance() {
     use crate::property_graph::storage::preparation_work_capture as capture;
     const MAX_GRAPH_CHANGES: usize = 16_384;
@@ -1520,8 +1691,20 @@ fn ze260_automatic_reclaim_failure_commits_nothing() {
 
 #[test]
 #[ignore = "slow: ~200 s in release; run explicitly"]
-fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
+fn ze260_explicit_reclaim_keeps_an_append_only_store_bounded() {
     use super::GraphMaintenancePolicy;
+    fn reclaim(store: &Store) {
+        for _ in 0..16 {
+            if store
+                .graph_maintain_step(&control())
+                .unwrap()
+                .cycle_complete
+            {
+                return;
+            }
+        }
+        panic!("explicit reclamation did not complete in sixteen steps");
+    }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph");
     let store = Store::create_graph(&path, options(), None).unwrap();
@@ -1561,6 +1744,7 @@ fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
         })
         .unwrap();
         ids.extend(result.receipts().iter().take(100).map(|r| r.entity));
+        reclaim(&store);
     }
     for batch in 0..10 {
         let keys: Vec<_> = (0..10).map(|i| format!("n{}", batch * 10 + i)).collect();
@@ -1575,6 +1759,7 @@ fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
             })
             .collect();
         store.graph_apply(&writes, &control()).unwrap();
+        reclaim(&store);
     }
     let files = snapshot(&path);
     assert!(files.values().map(Vec::len).sum::<usize>() <= 8_000_000);

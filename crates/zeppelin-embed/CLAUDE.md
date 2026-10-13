@@ -1214,6 +1214,14 @@ checkpoint reset both counters; ordinary checkpoints preserve debt. Nonempty
 writable reopen starts count-due. `GraphStore::maintain` exposes one step;
 `maintain_cycle` exposes one cycle.
 
+Owner decision 2026-10-13 (ZE-446) narrows this: an automatic trigger on a
+write only folds bounded inventories under the batch-derived write
+allowance. Full-store marking and reclamation run only through explicit
+maintenance (`maintain`, `maintain_cycle`), because a full mark grows with the
+store (1.59 G work units at 176k nodes) and failed large LDBC writes. A store
+that only receives writes keeps its garbage until the application runs
+maintenance. Incremental marking may restore automatic full reclamation later.
+
 ## ZE-64 composed search statements
 
 The statement seam runs vector/text/hybrid retrieval on the Store's lexical

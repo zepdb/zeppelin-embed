@@ -295,6 +295,10 @@ pub struct TreeResources<'a> {
 }
 impl Drop for TreeResources<'_> {
     fn drop(&mut self) {
+        #[cfg(all(test, feature = "graph-cypher"))]
+        if matches!(self.owner, CapacityOwner::Preparation(_)) {
+            crate::property_graph::storage::preparation_work_capture::directory_work(self.work);
+        }
         if self.work_delta == crate::lifecycle::stats::GraphWorkLedger::default() {
             return;
         }

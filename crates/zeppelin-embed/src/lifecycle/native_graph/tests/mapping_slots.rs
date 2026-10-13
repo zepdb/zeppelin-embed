@@ -845,6 +845,28 @@ fn ze276_single_node_preparation_work_bound() {
         .expect("store");
     for index in 0..=2022 {
         commit_probe_node(&store, index);
+        // This fixture measures mapping authentication, not retained garbage.
+        // ZE-446 requires the application to run reclamation explicitly.
+        if index % 32 == 31 {
+            let control = QueryControl::Cancel(CancelToken::new());
+            for _ in 0..16 {
+                if store
+                    .maintain_native_graph_step(&control)
+                    .unwrap()
+                    .cycle_complete
+                {
+                    break;
+                }
+            }
+            assert!(
+                store
+                    .admit_native_read()
+                    .unwrap()
+                    .bundle()
+                    .reclaim()
+                    .is_none()
+            );
+        }
     }
     assert_retained_authentication_work_bound(&store);
     store.close().expect("close");
@@ -1144,35 +1166,44 @@ fn ze316_count_trigger_lifecycle() {
             .any(|(phase, _)| *phase == "maintenance-start"),
         "count debt must make maintenance due: {report:?}"
     );
-    // A fresh cycle may only fold protected history. Its debt remains due
-    // until a later cycle can actually retire reclaim authority.
-    let mut retired = report
-        .phases
-        .iter()
-        .any(|(phase, _)| *phase == "maintenance-retired");
-    let mut next_index = 34;
-    for _ in 0..64 {
-        let debt = store
+    // Automatic folding keeps reclamation debt; only explicit maintenance
+    // may mark, reclaim and retire the protected history.
+    assert!(!report.phases.iter().any(|(phase, _)| matches!(
+        *phase,
+        "maintenance-census-end" | "maintenance-proof-end" | "maintenance-retired"
+    )));
+    assert!(
+        store
             .native_graph
             .commits_since_reclaim
-            .load(Ordering::Relaxed);
-        if retired {
-            assert_eq!(
-                debt, 1,
-                "retirement resets before the foreground publication"
-            );
+            .load(Ordering::Relaxed)
+            >= 32
+    );
+    capture::start();
+    for _ in 0..16 {
+        if store
+            .maintain_native_graph_step(&control)
+            .unwrap()
+            .cycle_complete
+        {
             break;
         }
-        assert!(debt >= 32, "incomplete cycle preserves count debt");
-        capture::start();
-        commit_probe_node(&store, next_index);
-        next_index += 1;
-        retired = capture::take()
+    }
+    assert!(
+        capture::take()
             .phases
             .iter()
-            .any(|(phase, _)| *phase == "maintenance-retired");
-    }
-    assert!(retired, "count-triggered retirement must make progress");
+            .any(|(phase, _)| *phase == "maintenance-retired"),
+        "explicit retirement must make progress"
+    );
+    assert_eq!(
+        store
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        0
+    );
+    let next_index = 34;
     let before = logical_state(&store, &[first]);
     store.close().unwrap();
     let reopened = Store::open_native_graph(&path, durable_options(), None).unwrap();
@@ -1252,6 +1283,7 @@ fn ze316_count_reclaim_bounds_census_and_work() {
     let store =
         Store::create_native_graph(parent.path().join("bounds"), durable_options(), None).unwrap();
     let started = std::time::Instant::now();
+    let control = QueryControl::Cancel(CancelToken::new());
     let mut bounds = Ze316Bounds::default();
     for index in 0..4000 {
         capture::start();
@@ -1267,7 +1299,28 @@ fn ze316_count_reclaim_bounds_census_and_work() {
             emit_preparation_report(index + 1, started.elapsed(), &report);
         }
         result.unwrap_or_else(|error| panic!("commit {index}: {error:?}"));
+        assert_eq!(
+            report.mark_entries, 0,
+            "plain commit ran a full mark: {report:?}"
+        );
         bounds.observe(&store, &report);
+        // Writes only fold inventories; reclaim explicitly at the old cadence.
+        if index % 32 == 31 {
+            let mut cycle_complete = false;
+            for _ in 0..16 {
+                capture::start();
+                cycle_complete = store.graph_maintain_step(&control).unwrap().cycle_complete;
+                bounds.observe(&store, &capture::take());
+                if cycle_complete {
+                    break;
+                }
+            }
+            assert!(
+                cycle_complete,
+                "reclaim did not complete at commit {}",
+                index + 1
+            );
+        }
         if [1000, 2000, 4000].contains(&(index + 1)) {
             assert!(
                 bounds.attempts > 0 && bounds.retirements > 0,

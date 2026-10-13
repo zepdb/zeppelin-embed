@@ -185,6 +185,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.publication.checkpoint",
     "property-graph.publication.capture",
     "property-graph.publication.creation",
+    "property-graph.publication.automatic-fold",
     "property-graph.publication.oracle.can-fire",
     "property-graph.pattern.native-source",
     "property-graph.pattern.path-predicates",

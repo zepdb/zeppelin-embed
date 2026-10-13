@@ -149,14 +149,26 @@ impl Store {
     pub(super) fn auto_maintain_native_graph(
         &self,
         control: &QueryControl,
+        work: u64,
     ) -> Result<(), NativeGraphError> {
         if self.native_graph_maintenance_due()? {
-            // One cycle per trigger. A cycle that needs more steps, or a
-            // concurrent commit, never refuses the caller's write: the
-            // counter stays above the trigger and the next write resumes.
-            match self.maintain_native_graph_cycle(control) {
+            // Writes fold a bounded inventory prefix. Reclamation's full-root
+            // mark belongs to explicit maintenance, not to a fixed-size write.
+            let admission = self.admit_native_graph_maintenance()?;
+            #[allow(unused_mut)]
+            let mut limits = super::maintenance::MaintenanceLimits {
+                reclaim: false,
+                relocation_bytes: 0,
+                sweep_limit: 0,
+                work: Some(work),
+                ..super::maintenance::MaintenanceLimits::default()
+            };
+            #[cfg(test)]
+            if PARTIAL_FOLD.with(std::cell::Cell::get) {
+                limits.inventory_additions = 1;
+            }
+            match super::maintenance::commit_with_limits(self, &admission, control, limits, None) {
                 Ok(_) | Err(NativeGraphError::StalePreparation) => {}
-                Err(NativeGraphError::Invalid(CYCLE_STEP_LIMIT)) => {}
                 Err(error) => return Err(error),
             }
         }
