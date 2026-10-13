@@ -5,6 +5,8 @@
     reason = "the typed graph cause stays unboxed and allocation-free, as in GraphQueryError"
 )]
 
+mod preparation;
+
 use crate::epoch::EmbeddingTower;
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
 use crate::lifecycle::native_graph::NativeGraphError;
@@ -171,6 +173,13 @@ impl Store {
     /// batch-local reference resolves to the identity at its request index.
     /// Nothing is retried: on any error the caller decides whether to
     /// resubmit, and an exact keyed resubmission replays.
+    ///
+    /// Before staging, a batch-derived bound checks preparation attributable
+    /// to the submitted items against the 32 MiB storage allowance. An
+    /// oversized estimate returns a distinct typed `Limit` rejection.
+    /// Existing records, catalogs and tree paths remain governed by the
+    /// existing in-flight storage checks: a batch within the caps can still
+    /// be refused by store-dependent limits.
     ///
     /// Identities keep their kind. A relationship endpoint is always a node,
     /// so a relationship identity cannot name one:
@@ -482,8 +491,12 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
     }
 
     fn bind(&self, store: &Store) -> Result<BoundGraphBatch<'a, 'b, 'c>, GraphStoreError> {
+        if self.writes.len() > crate::property_graph::MAX_GRAPH_CHANGES {
+            return Err(GraphStoreError::limit("graph batch exceeds 16,384 items"));
+        }
         let mut writes = std::borrow::Cow::Borrowed(self.writes);
         if self.node_documents.is_empty() {
+            admit_preparation(&writes)?;
             return Ok(BoundGraphBatch {
                 writes,
                 documents: self.documents.map(std::borrow::Cow::Borrowed),
@@ -594,6 +607,7 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
                 StageError::InvalidInput,
             )));
         }
+        admit_preparation(&writes)?;
         let mut batch = crate::ingest::IngestBatch::new(documents);
         if let Some(epoch) = store.epoch_identity() {
             batch = batch.with_epoch(epoch);
@@ -603,6 +617,17 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
             documents: Some(std::borrow::Cow::Owned(batch)),
         })
     }
+}
+
+fn admit_preparation(writes: &[StructuredWrite<'_, '_>]) -> Result<(), GraphStoreError> {
+    let bytes = preparation::estimate_preparation_bytes(writes)
+        .map_err(|error| GraphStoreError::graph(NativeGraphError::Stage(error)))?;
+    if bytes > crate::property_graph::storage::memory::MAX_STORAGE_PREPARE_BYTES {
+        return Err(GraphStoreError::limit(
+            "estimated graph preparation exceeds 32 MiB",
+        ));
+    }
+    Ok(())
 }
 
 impl<'a, 'b, 'c> From<&'a [StructuredWrite<'b, 'c>]> for GraphBatch<'a, 'b, 'c> {

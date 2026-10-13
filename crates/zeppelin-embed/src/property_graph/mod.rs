@@ -43,12 +43,17 @@ pub use values::{GraphVector, PropertyData, PropertyValue};
 
 /// Maximum canonical input bytes per graph statement/batch (ZE-102).
 /// Individual borrowed inputs cannot exceed this; staging charges their total.
+/// This and MAX_GRAPH_CHANGES are upper bounds: graph_apply also refuses,
+/// before staging, when its conservative batch preparation estimate exceeds
+/// the unchanged 32 MiB storage allowance. Store-dependent preparation still
+/// enforces that allowance during execution.
 pub const MAX_GRAPH_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Maximum scalar elements in a stored property list (ZE-102).
 pub const MAX_PROPERTY_LIST_ELEMENTS: usize = 524_288;
 
 /// Maximum normalized entity changes in one atomic graph batch (ZE-102).
+/// graph_apply also applies the byte-derived preparation admission rule above.
 pub const MAX_GRAPH_CHANGES: usize = 16_384;
 
 /// Invalid logical graph input, rejected before staging or publication.

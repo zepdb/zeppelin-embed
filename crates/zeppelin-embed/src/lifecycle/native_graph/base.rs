@@ -134,6 +134,10 @@ struct CachedEntity<'source, 'resources, 'm> {
     properties: StorageBuffer<'m, CachedProperty<'m>>,
 }
 
+pub(crate) const fn admission_cache_row_bytes() -> usize {
+    std::mem::size_of::<CachedEntity<'_, '_, '_>>()
+}
+
 impl CachedEntity<'_, '_, '_> {
     /// Application key, when this entity has one. Absence (a Cypher-created
     /// entity) is distinct from an empty namespace/key and is never forced

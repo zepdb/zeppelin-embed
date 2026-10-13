@@ -26,6 +26,7 @@ use std::time::Instant;
 
 pub(crate) mod automatic;
 mod base;
+pub(crate) use base::admission_cache_row_bytes;
 pub(crate) mod documents;
 pub(crate) mod maintenance;
 mod mutate;

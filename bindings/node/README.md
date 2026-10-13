@@ -586,7 +586,13 @@ revisions. Exact retries report `Replayed`. `put` replaces the full image and
 requires `expectedId`; `delete` also requires `expectedId` (node deletion accepts
 `detach: true`); `recreate` requires `expectedDeletionRevision`. Endpoints are
 node IDs (`bigint`) or `{ local: index }` references into the same batch. At most
-16,384 items are accepted. Omitted image fields are empty/absent, not patches.
+16,384 items and 8 MiB of encoded graph input are permitted. Before staging,
+the engine also checks a batch-derived bound on preparation attributable to
+the submitted items against the 32 MiB preparation allowance. An oversized
+estimate returns a distinct `Limit` message without staging the batch.
+Existing records, catalogs and tree paths remain subject to the existing
+in-flight storage limits: a batch within the caps can still be refused by
+store-dependent limits. Omitted image fields are empty/absent, not patches.
 
 Query results contain `columns`, `rows`, `receipts`, `disposition`,
 `admittedGeneration`, `changedGeneration`, and `generation` (changed when known,

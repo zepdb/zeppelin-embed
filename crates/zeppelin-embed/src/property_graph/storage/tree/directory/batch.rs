@@ -13,6 +13,10 @@ pub(crate) struct DirectoryBatch<'m> {
     edits: StorageBuffer<'m, Edit<'m>>,
 }
 impl<'m> DirectoryBatch<'m> {
+    pub(crate) const fn admission_descriptor_bytes() -> usize {
+        std::mem::size_of::<Edit<'_>>()
+    }
+
     pub(crate) fn new(memory: &'m StorageMemory<'m>, capacity: usize) -> Result<Self, TreeError> {
         Ok(Self {
             memory,

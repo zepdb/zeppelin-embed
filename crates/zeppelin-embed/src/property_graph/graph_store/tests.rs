@@ -182,6 +182,13 @@ fn a_full_max_graph_changes_node_batch_commits_inside_the_preparation_allowance(
     capture::start();
     let result = store.graph_apply(&writes, &control());
     let report = capture::take();
+    let estimate = super::preparation::estimate_preparation_bytes(&writes).unwrap();
+    println!(
+        "ZE-442 nodes estimate={estimate} actual={} ratio={:.6}",
+        report.storage_peak_bytes,
+        estimate as f64 / report.storage_peak_bytes as f64
+    );
+    assert!(estimate >= report.storage_peak_bytes);
     let result = result.unwrap();
     assert!(matches!(
         result.outcome(),
@@ -197,6 +204,215 @@ fn a_full_max_graph_changes_node_batch_commits_inside_the_preparation_allowance(
         "ZE-431 max node batch storage_peak_bytes={}",
         report.storage_peak_bytes
     );
+}
+
+#[test]
+fn ze442_multilabel_batch_is_refused_before_staging_and_small_batch_commits() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = Store::create_graph(&path, options(), None).unwrap();
+    let names: Vec<_> = (0..32).map(|i| format!("L{i:02}")).collect();
+    let mut labels: Vec<_> = names.iter().map(|s| GraphName::new(s).unwrap()).collect();
+    let image = CanonicalContents::node(&mut labels, &mut [], None, None).unwrap();
+    let keys: Vec<_> = (0..16_384).map(|i| format!("{i:020}")).collect();
+    let writes: Vec<_> = keys
+        .iter()
+        .map(|key| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "scale", key).unwrap(),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        })
+        .collect();
+    let framing = crate::property_graph::provenance::measure_operation_framing(
+        Some(writes[0].key),
+        crate::property_graph::ExpectedGraphState::Absent,
+        &mut || Ok(()),
+    )
+    .unwrap();
+    let input = writes.len() as u64 * (image.encoded_len() + framing);
+    assert!(input <= crate::property_graph::MAX_GRAPH_INPUT_BYTES as u64);
+    let estimate = super::preparation::estimate_preparation_bytes(&writes).unwrap();
+    println!("ZE-442 multilabel input={input} estimate={estimate}");
+    let before = snapshot(&path);
+    capture::start();
+    let error = store.graph_apply(&writes, &control()).unwrap_err();
+    let report = capture::take();
+    assert_eq!(error.kind(), GraphStoreErrorKind::Limit);
+    assert!(error.nothing_committed());
+    assert!(
+        error
+            .to_string()
+            .contains("estimated graph preparation exceeds 32 MiB"),
+        "{error}"
+    );
+    assert!(report.phases.is_empty(), "staging ran: {:?}", report.phases);
+    assert_eq!(report.storage_peak_bytes, 0);
+    assert_eq!(snapshot(&path), before);
+    let result = create_node(&store, "later", 1);
+    assert_eq!(result.admitted_generation(), generation(1));
+    assert_eq!(node_id(&result, 0), NodeId::new(1).unwrap());
+    assert!(matches!(
+        result.outcome(),
+        GraphWriteOutcome::Committed { .. }
+    ));
+}
+
+#[test]
+fn ze442_bench_shaped_12288_node_batch_commits() {
+    ze442_bench_shaped_nodes(12_288);
+}
+
+#[test]
+fn ze442_bench_shaped_16384_node_batch_reports_refusal_phase() {
+    ze442_bench_shaped_nodes(16_384);
+}
+
+fn ze442_bench_shaped_nodes(count: usize) {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    use crate::property_graph::{PropertyData, PropertyValue};
+    let parent = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(parent.path().join("graph"), options(), None).unwrap();
+    let first: Vec<_> = (0..count).map(|i| format!("FirstName{i:09}")).collect();
+    let last: Vec<_> = (0..count).map(|i| format!("LastName{i:08}")).collect();
+    let keys: Vec<_> = (0..count).map(|i| format!("person-{i:020}")).collect();
+    let mut labels = vec![[GraphName::new("Person").unwrap()]; count];
+    let mut properties: Vec<_> = (0..count)
+        .map(|i| {
+            [
+                GraphProperty::new(
+                    GraphName::new("id").unwrap(),
+                    PropertyValue::new(PropertyData::I64(i as i64)).unwrap(),
+                ),
+                GraphProperty::new(
+                    GraphName::new("firstName").unwrap(),
+                    PropertyValue::new(PropertyData::String(&first[i])).unwrap(),
+                ),
+                GraphProperty::new(
+                    GraphName::new("lastName").unwrap(),
+                    PropertyValue::new(PropertyData::String(&last[i])).unwrap(),
+                ),
+                GraphProperty::new(
+                    GraphName::new("birthday").unwrap(),
+                    PropertyValue::new(PropertyData::I64(i as i64 % 36_500)).unwrap(),
+                ),
+            ]
+        })
+        .collect();
+    let images: Vec<_> = labels
+        .iter_mut()
+        .zip(&mut properties)
+        .map(|(labels, properties)| {
+            CanonicalContents::node(labels, properties, None, None).unwrap()
+        })
+        .collect();
+    let writes: Vec<_> = keys
+        .iter()
+        .zip(&images)
+        .map(|(key, image)| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "ldbc-snb", key).unwrap(),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(image)),
+        })
+        .collect();
+    capture::start();
+    let result = store.graph_apply(&writes, &control());
+    let report = capture::take();
+    let estimate = super::preparation::estimate_preparation_bytes(&writes).unwrap();
+    println!(
+        "ZE-442 bench count={count} estimate={estimate} actual={} ratio={:.6}",
+        report.storage_peak_bytes,
+        estimate as f64 / report.storage_peak_bytes as f64
+    );
+    if count == 16_384 {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), GraphStoreErrorKind::Limit);
+        assert!(error.nothing_committed());
+        let refused_by_estimate = error
+            .to_string()
+            .contains("estimated graph preparation exceeds 32 MiB");
+        println!(
+            "ZE-442 bench count={count} refused_by_estimate={refused_by_estimate} error={error}"
+        );
+        assert!(refused_by_estimate);
+        assert!(report.phases.is_empty());
+        assert_eq!(report.storage_peak_bytes, 0);
+        return;
+    }
+    assert!(estimate >= report.storage_peak_bytes);
+    let result = result.unwrap();
+    assert_eq!(result.receipts().len(), count);
+    assert!(matches!(
+        result.outcome(),
+        GraphWriteOutcome::Committed { .. }
+    ));
+}
+
+#[test]
+fn ze442_relationship_batch_with_local_endpoints_commits() {
+    ze442_relationship_batch(4_096, false);
+}
+
+#[test]
+fn ze442_7000_shared_relationships_commit() {
+    ze442_relationship_batch(7_000, false);
+}
+
+#[test]
+fn ze442_3000_distinct_relationships_commit() {
+    ze442_relationship_batch(3_000, true);
+}
+
+fn ze442_relationship_batch(count: usize, distinct: bool) {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(parent.path().join("graph"), options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let keys: Vec<_> = (0..count).map(|i| format!("rel-{i}")).collect();
+    let endpoints = if distinct { 2 * count } else { 2 };
+    let node_keys: Vec<_> = (0..endpoints).map(|i| format!("node-{i}")).collect();
+    capture::start();
+    let result = with_local_refs(|refs| {
+        let mut writes: Vec<_> = node_keys
+            .iter()
+            .map(|key| StructuredWrite {
+                key: node_key(key),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        writes.extend(keys.iter().enumerate().map(|(i, key)| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Relationship, "scale", key).unwrap(),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Relationship {
+                source: NodeRef::Local(refs.node(if distinct { 2 * i } else { 0 }).unwrap()),
+                target: NodeRef::Local(refs.node(if distinct { 2 * i + 1 } else { 1 }).unwrap()),
+                relationship_type: GraphName::new("LINKS").unwrap(),
+                properties: &[],
+            }),
+        }));
+        let estimate = super::preparation::estimate_preparation_bytes(&writes).unwrap();
+        (store.graph_apply(&writes, &control()), estimate)
+    });
+    let report = capture::take();
+    let (result, estimate) = result;
+    println!(
+        "ZE-442 relationships count={count} distinct={distinct} estimate={estimate} actual={} ratio={:.6}",
+        report.storage_peak_bytes,
+        estimate as f64 / report.storage_peak_bytes as f64
+    );
+    assert!(estimate >= report.storage_peak_bytes);
+    let result = result.expect("relationship batch commits");
+    assert!(matches!(
+        result.outcome(),
+        GraphWriteOutcome::Committed { .. }
+    ));
+    assert_eq!(result.receipts().len(), count + endpoints);
+    assert!(estimate as f64 / report.storage_peak_bytes as f64 <= 1.10);
 }
 
 fn rel_id(result: &GraphWriteResult, index: usize) -> RelId {
