@@ -632,7 +632,7 @@ struct ActAfterFirst<O, F> {
 impl<'v, 'm, 'g, O, F> PullOperator<'v, 'm, 'g, NativeExecutionError> for ActAfterFirst<O, F>
 where
     O: PullOperator<'v, 'm, 'g, NativeExecutionError>,
-    F: FnOnce(),
+    F: FnOnce(&RuntimeContext<'v, 'm, 'g>),
 {
     fn node(&self) -> PlanNodeId {
         self.source.node()
@@ -655,7 +655,7 @@ where
         if output.rows() != 0
             && let Some(action) = self.action.take()
         {
-            action();
+            action(context);
         }
         Ok(state)
     }
@@ -5789,7 +5789,7 @@ impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<Nat
     }
 }
 
-impl<F: FnOnce()>
+impl<F: FnOnce(&RuntimeContext<'_, '_, '_>)>
     NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for ControlledPathConsumer<F>
 {
@@ -6207,7 +6207,7 @@ fn native_pattern_limits_cancel_close_no_output() {
                 consumer: ControlledPathConsumer {
                     start,
                     completion_called: Arc::clone(&result_completion_called),
-                    action: Some(|| {}),
+                    action: Some(|_: &RuntimeContext<'_, '_, '_>| {}),
                     result_rows: 1,
                     result_payload_bytes: 8192,
                 },
@@ -6238,7 +6238,7 @@ fn native_pattern_limits_cancel_close_no_output() {
                 consumer: ControlledPathConsumer {
                     start,
                     completion_called: Arc::clone(&result_bytes_completion_called),
-                    action: Some(|| {}),
+                    action: Some(|_: &RuntimeContext<'_, '_, '_>| {}),
                     result_rows: 16,
                     result_payload_bytes: 0,
                 },
@@ -6270,7 +6270,7 @@ fn native_pattern_limits_cancel_close_no_output() {
             consumer: ControlledPathConsumer {
                 start,
                 completion_called: Arc::clone(&cancel_completion_called),
-                action: Some(move || cancel_action.cancel()),
+                action: Some(move |_: &RuntimeContext<'_, '_, '_>| cancel_action.cancel()),
                 result_rows: 16,
                 result_payload_bytes: 8192,
             },
@@ -6304,7 +6304,7 @@ fn native_pattern_limits_cancel_close_no_output() {
             consumer: ControlledPathConsumer {
                 start,
                 completion_called: Arc::clone(&timeout_completion_called),
-                action: Some(move || {
+                action: Some(move |_: &RuntimeContext<'_, '_, '_>| {
                     timeout_action.store(true, Ordering::SeqCst);
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 }),
@@ -6369,7 +6369,7 @@ fn native_pattern_limits_cancel_close_no_output() {
             consumer: ControlledPathConsumer {
                 start,
                 completion_called: Arc::clone(&close_completion_called),
-                action: Some(move || {
+                action: Some(move |runtime: &RuntimeContext<'_, '_, '_>| {
                     std::thread::spawn(move || {
                         let _ = closed_tx.send(close_store.close());
                     });
@@ -6385,7 +6385,17 @@ fn native_pattern_limits_cancel_close_no_output() {
                                 crate::lifecycle::StoreError::Closing,
                             )) => {
                                 close_observation.store(true, Ordering::SeqCst);
-                                return;
+                                // Closing rejects new admissions before it cancels
+                                // retained readers. Wait for this reader's signal.
+                                loop {
+                                    match runtime.checkpoint() {
+                                        Err(RuntimeError::Value(QueryError::ReadCancelled)) => {
+                                            return;
+                                        }
+                                        Ok(()) => std::thread::yield_now(),
+                                        error => panic!("unexpected close checkpoint: {error:?}"),
+                                    }
+                                }
                             }
                             Err(crate::lifecycle::native_graph::NativeGraphError::Read(
                                 crate::property_graph::storage::tree::directory::TreeError::Runtime(
