@@ -243,11 +243,20 @@ fn observe_active_id_map_denial(directory: &std::path::Path) -> Result<(), Strin
         .map_err(|error| error.to_string())?
         .resident_owned_bytes;
     baseline.close().map_err(|error| error.to_string())?;
-    // The batch first allocates one DocId, then three hash slots. Leave
-    // the map exactly one byte short, before later row/text allocations.
+    // The batch first allocates one DocId, then four buckets and controls.
+    // Leave the map one byte short, before later row/text allocations.
+    let group = if cfg!(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse2",
+        not(miri)
+    )) {
+        16
+    } else {
+        std::mem::size_of::<usize>()
+    };
     let needed = resident
         + std::mem::size_of::<DocId>() as u64
-        + (3 * (std::mem::size_of::<(DocId, usize)>() + 1)) as u64;
+        + (4 * std::mem::size_of::<(DocId, usize)>() + 4 + group) as u64;
     let budget = needed - 1;
     let store = Store::open(
         &path,
@@ -280,6 +289,100 @@ fn observe_active_id_map_denial(directory: &std::path::Path) -> Result<(), Strin
         );
     }
     store.close().map_err(|error| error.to_string())
+}
+
+/// Exercise the new map-growth, map-copy and delete-set admission boundaries
+/// using the existing allocation-denial mode and public mutation paths.
+fn observe_hash_table_denials(directory: &std::path::Path) -> Result<(), String> {
+    use zeppelin_embed::ingest::{
+        DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
+    };
+    let group = if cfg!(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse2",
+        not(miri)
+    )) {
+        16
+    } else {
+        std::mem::size_of::<usize>()
+    };
+    let id_map = 4 * std::mem::size_of::<(DocId, usize)>() + 4 + group;
+    let row_bytes = std::mem::size_of::<DocId>()
+        + 4 * 8
+        + 4
+        + 1
+        + std::mem::size_of::<zeppelin_embed::quant::Bit4Factors>()
+        + 1
+        + 8
+        + 5;
+    let document = |revision| {
+        IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(revision)),
+                vec![1.0],
+            )
+            .with_text("alpha"),
+        ])
+    };
+    for case in ["terms-growth", "terms-copy", "delete-seen"] {
+        let path = directory.join(case);
+        let seed = Store::open(&path, OpenOptions::default()).map_err(|error| error.to_string())?;
+        if case == "terms-copy" {
+            seed.ingest(document(1))
+                .map_err(|error| error.to_string())?;
+        }
+        seed.close().map_err(|error| error.to_string())?;
+        let probe =
+            Store::open(&path, OpenOptions::default()).map_err(|error| error.to_string())?;
+        let resident = probe
+            .stats()
+            .map_err(|error| error.to_string())?
+            .resident_owned_bytes;
+        probe.close().map_err(|error| error.to_string())?;
+        let allowance = match case {
+            "terms-growth" => row_bytes + id_map,
+            "terms-copy" => 2 * row_bytes + id_map,
+            _ => 4 * std::mem::size_of::<DocId>() + 4 + group - 1,
+        };
+        let budget = resident + allowance as u64;
+        let store = Store::open(
+            &path,
+            OpenOptions::default().with_max_resident_bytes(budget),
+        )
+        .map_err(|error| error.to_string())?;
+        let before = store.stats().map_err(|error| error.to_string())?;
+        let wal = std::fs::read(path.join("wal.ze")).map_err(|error| error.to_string())?;
+        let result = if case == "delete-seen" {
+            store.delete(DeleteBatch::new(vec![DocId::new(1)]))
+        } else {
+            store.ingest(document(2))
+        };
+        let component = if case == "delete-seen" {
+            "temporary"
+        } else {
+            "active segment"
+        };
+        if !matches!(result, Err(IngestError::Store(StoreError::BudgetExceeded {
+            needed, budget: limit, component: actual,
+        })) if needed > budget && limit == budget && actual == component)
+        {
+            return Err(format!(
+                "{case} did not refuse its hash reservation: {result:?}"
+            ));
+        }
+        let after = store.stats().map_err(|error| error.to_string())?;
+        if after.resident_owned_bytes != before.resident_owned_bytes
+            || after.active_segment_bytes != before.active_segment_bytes
+            || after.active_row_count != before.active_row_count
+            || std::fs::read(path.join("wal.ze")).map_err(|error| error.to_string())? != wal
+        {
+            return Err(format!(
+                "{case} refusal changed the store or leaked a reservation"
+            ));
+        }
+        store.close().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn observe_accounting(
@@ -335,6 +438,7 @@ fn observe_accounting(
     }
     denied.close().map_err(|error| error.to_string())?;
     observe_active_id_map_denial(directory)?;
+    observe_hash_table_denials(directory)?;
     Ok(observed)
 }
 
@@ -457,6 +561,12 @@ mod tests {
     fn active_id_map_budget_refusal_leaves_store_unchanged() {
         let directory = tempdir().expect("directory");
         observe_active_id_map_denial(directory.path()).expect("atomic map refusal");
+    }
+
+    #[test]
+    fn hash_table_budget_refusals_leave_store_unchanged() {
+        let directory = tempdir().expect("directory");
+        observe_hash_table_denials(directory.path()).expect("atomic hash table refusals");
     }
 
     #[test]

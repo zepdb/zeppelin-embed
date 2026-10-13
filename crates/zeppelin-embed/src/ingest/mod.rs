@@ -502,6 +502,12 @@ impl std::error::Error for IngestError {
     }
 }
 
+impl From<crate::fts::index::IndexError> for IngestError {
+    fn from(error: crate::fts::index::IndexError) -> Self {
+        Self::Lexical(error)
+    }
+}
+
 impl From<StoreError> for IngestError {
     fn from(error: StoreError) -> Self {
         Self::Store(error)

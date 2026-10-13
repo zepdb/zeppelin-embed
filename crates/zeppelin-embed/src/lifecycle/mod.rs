@@ -9,6 +9,7 @@ pub mod durability;
 mod expansion;
 pub(crate) mod graph_cache;
 mod group_count;
+pub(crate) mod hash_table;
 mod hybrid;
 pub mod lock;
 pub(crate) mod materialize;

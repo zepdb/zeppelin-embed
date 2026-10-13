@@ -5995,6 +5995,9 @@ fn run_lifecycle_campaign_operation(
             .case_identity = Some(case_identity);
         if operation == super::campaign::LifecycleOperation::Accounting {
             coverage.hit("lifecycle.accounting.active-id-map-denial");
+            coverage.hit("lifecycle.accounting.terms-growth-denial");
+            coverage.hit("lifecycle.accounting.terms-copy-denial");
+            coverage.hit("lifecycle.accounting.delete-seen-denial");
         }
         let _ = control_records;
         receipts.extend(

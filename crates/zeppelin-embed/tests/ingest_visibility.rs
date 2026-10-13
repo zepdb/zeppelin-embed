@@ -1,5 +1,9 @@
 #![allow(clippy::expect_used)]
 
+#[cfg(not(feature = "allocation-audit"))]
+#[path = "ingest_visibility/hash_allocations.rs"]
+mod hash_allocations;
+
 use std::error::Error as _;
 use std::path::Path;
 use std::sync::{Arc, mpsc};
@@ -942,8 +946,17 @@ fn every_active_segment_byte_is_accounted() {
         + (2 * std::mem::size_of::<f32>())
         + 1
         + std::mem::size_of::<zeppelin_embed::quant::Bit4Factors>();
-    // A one-entry std HashMap has capacity for three key/row slots.
-    let expected = expected + 3 * (std::mem::size_of::<(DocId, usize)>() + 1);
+    // Four buckets plus their control tags and the trailing group.
+    let group = if cfg!(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse2",
+        not(miri)
+    )) {
+        16
+    } else {
+        std::mem::size_of::<usize>()
+    };
+    let expected = expected + 4 * std::mem::size_of::<(DocId, usize)>() + 4 + group;
     let expected = u64::try_from(expected).expect("active byte count fits u64");
 
     assert_eq!(stats.active_segment_bytes, expected);

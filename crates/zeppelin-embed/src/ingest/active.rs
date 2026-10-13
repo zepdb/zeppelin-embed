@@ -8,6 +8,7 @@ use crate::fts::index::{Document as LexicalDocument, SegmentIndex};
 use crate::fts::tokenizer::Analyzer;
 use crate::lifecycle::StoreError;
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
+use crate::lifecycle::hash_table::allocation_bytes;
 use crate::lifecycle::stats::{Accounted, AccountedCounter, Accounting, AllocationComponent};
 use crate::meta::AliveSet;
 use crate::quant::{Bit4Factors, quantize_bit4};
@@ -456,12 +457,11 @@ impl ActiveState {
         if let Some((seq, op)) = last_record
             && segment.tracks_text()
         {
-            segment.lexical = segment
-                .rebuild_lexical(None, analyzer)
+            let (lexical, lexical_bytes) = segment
+                .rebuild_lexical(None, analyzer, accounting)
                 .map_err(|error| recovery_apply_error(seq, op, error))?;
-            segment
-                .refresh_lexical_accounting(accounting)
-                .map_err(|error| recovery_apply_error(seq, op, error))?;
+            segment.lexical = lexical;
+            segment.lexical_bytes = Some(lexical_bytes);
         }
         Ok(RecoveredState {
             active: Self {
@@ -544,12 +544,16 @@ impl ActiveRows {
         capacity: usize,
         accounting: &Arc<Accounting>,
     ) -> Result<Self, StoreError> {
-        let mut rows = HashMap::with_capacity(capacity);
+        let needed =
+            allocation_bytes::<(DocId, usize)>(capacity).ok_or(StoreError::ActiveRowOverflow)?;
+        let mut rows = HashMap::new();
         let mut bytes = AccountedCounter::new(accounting, AllocationComponent::Active)?;
-        bytes.set(
-            rows.capacity()
-                .saturating_mul(std::mem::size_of::<(DocId, usize)>().saturating_add(1)),
-        )?;
+        bytes.set(needed)?;
+        rows.try_reserve(capacity)
+            .map_err(|_| StoreError::AllocationFailed {
+                needed: needed as u64,
+                component: "active id map",
+            })?;
         for (row, id) in ids.iter().enumerate() {
             lookup::work(1);
             rows.entry(*id).or_insert(row);
@@ -733,12 +737,8 @@ impl ActiveSegment {
         let codes = copy_accounted(accounting, &self.codes, capacities.code_count)?;
         let factors = copy_accounted(accounting, &self.factors, capacities.row_count)?;
         let tombstones = copy_accounted(accounting, &self.tombstones, self.tombstones.len())?;
-        let lexical = self.lexical.clone();
-        let lexical_bytes = self
-            .lexical_bytes
-            .as_ref()
-            .map(|_| account_lexical(accounting, &lexical))
-            .transpose()?;
+        let (lexical, counter) = self.lexical.clone_accounted(accounting)?;
+        let lexical_bytes = self.lexical_bytes.as_ref().map(|_| counter);
         Ok(Self {
             dims: self.dims,
             doc_ids,
@@ -783,9 +783,22 @@ impl ActiveSegment {
             let lexical_document = document
                 .text()
                 .map_or_else(LexicalDocument::new, LexicalDocument::with_text);
-            self.lexical
-                .push_document(analyzer, &lexical_document)
-                .map_err(IngestError::Lexical)?;
+            if self.lexical_bytes.is_none() {
+                self.lexical_bytes = Some(account_lexical(accounting, &self.lexical)?);
+            }
+            let counter = self
+                .lexical_bytes
+                .as_mut()
+                .ok_or(StoreError::ActiveRowOverflow)?;
+            self.lexical.push_document_controlled(
+                analyzer,
+                &lexical_document,
+                &mut |index, capacity| {
+                    index
+                        .reserve_terms(capacity, counter)
+                        .map_err(IngestError::Store)
+                },
+            )?;
             self.refresh_lexical_accounting(accounting)?;
         }
         Ok(row)
@@ -864,9 +877,24 @@ impl ActiveSegment {
             .map_or_else(LexicalDocument::new, LexicalDocument::with_text);
         let lexical_row =
             u32::try_from(row).map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
-        self.lexical
-            .replace_document(analyzer, lexical_row, &previous, &replacement)
-            .map_err(IngestError::Lexical)?;
+        if self.lexical_bytes.is_none() {
+            self.lexical_bytes = Some(account_lexical(accounting, &self.lexical)?);
+        }
+        let counter = self
+            .lexical_bytes
+            .as_mut()
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        self.lexical.replace_document_controlled(
+            analyzer,
+            lexical_row,
+            &previous,
+            &replacement,
+            &mut |index, capacity| {
+                index
+                    .reserve_terms(capacity, counter)
+                    .map_err(IngestError::Store)
+            },
+        )?;
         self.refresh_lexical_accounting(accounting)
     }
 
@@ -1029,7 +1057,17 @@ impl ActiveSegment {
         let factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
         // Preserve request order and keep deleted IDs addressable for retries.
         let row_index = ActiveRows::copy(&self.doc_ids, self.row_count(), accounting)?;
+        let needed =
+            allocation_bytes::<DocId>(doc_ids.len()).ok_or(StoreError::ActiveRowOverflow)?;
+        let mut seen_bytes = AccountedCounter::new(accounting, AllocationComponent::Temporary)?;
+        seen_bytes.set(needed)?;
         let mut seen_ids = std::collections::HashSet::new();
+        seen_ids
+            .try_reserve(doc_ids.len())
+            .map_err(|_| StoreError::AllocationFailed {
+                needed: needed as u64,
+                component: "delete seen ids",
+            })?;
         let mut rows = Vec::new();
         for doc_id in doc_ids {
             if seen_ids.insert(*doc_id)
@@ -1053,12 +1091,8 @@ impl ActiveSegment {
                 tombstones.push(row)?;
             }
         }
-        let lexical = self.lexical.clone();
-        let lexical_bytes = self
-            .lexical_bytes
-            .as_ref()
-            .map(|_| account_lexical(accounting, &lexical))
-            .transpose()?;
+        let (lexical, counter) = self.lexical.clone_accounted(accounting)?;
+        let lexical_bytes = self.lexical_bytes.as_ref().map(|_| counter);
         Ok((
             Self {
                 dims: self.dims,
@@ -1126,6 +1160,7 @@ impl ActiveSegment {
             mut tombstones,
         } = allocate_retained_buffers(accounting, &capacities, tracks_text, tracks_columns)?;
         let mut lexical = SegmentIndex::new();
+        let mut lexical_counter = AccountedCounter::new(accounting, AllocationComponent::Active)?;
         let mut next_row = 0_u32;
         for row in 0..self.row_count() {
             let doc_id = self
@@ -1175,11 +1210,17 @@ impl ActiveSegment {
                 let lexical_document =
                     text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
                 lexical
-                    .push_document(analyzer, &lexical_document)
-                    .map_err(|error| StoreError::WalMutation {
-                        seq: LogSeq::new(0),
-                        op: wal_payload::UPSERT_V2,
-                        source: wal_payload::PayloadError::Lexical(error.to_string()),
+                    .push_document_controlled(
+                        analyzer,
+                        &lexical_document,
+                        &mut |index, capacity| {
+                            index
+                                .reserve_terms(capacity, &mut lexical_counter)
+                                .map_err(IngestError::Store)
+                        },
+                    )
+                    .map_err(|error| {
+                        recovery_apply_error(LogSeq::new(0), wal_payload::UPSERT_V2, error)
                     })?;
             }
             if tracks_columns {
@@ -1232,9 +1273,8 @@ impl ActiveSegment {
                 .ok_or(StoreError::ActiveRowOverflow)?;
         }
         let row_index = ActiveRows::copy(&doc_id_rows, rows, accounting)?;
-        let lexical_bytes = (tracks_text && rows != 0)
-            .then(|| account_lexical(accounting, &lexical))
-            .transpose()?;
+        lexical_counter.set(lexical.resident_bytes())?;
+        let lexical_bytes = (tracks_text && rows != 0).then_some(lexical_counter);
         Ok((
             Self {
                 dims: (rows != 0).then_some(dims),
@@ -1895,19 +1935,24 @@ impl ActiveSegment {
         &self,
         replacement: Option<(usize, Option<&str>)>,
         analyzer: &Analyzer,
-    ) -> Result<SegmentIndex, IngestError> {
+        accounting: &Arc<Accounting>,
+    ) -> Result<(SegmentIndex, AccountedCounter), IngestError> {
         let mut lexical = SegmentIndex::new();
+        let mut counter = AccountedCounter::new(accounting, AllocationComponent::Active)?;
         for row in 0..self.row_count() {
             let text = match replacement {
                 Some((target, text)) if target == row => text,
                 _ => self.text(row).map_err(IngestError::Store)?,
             };
             let document = text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
-            lexical
-                .push_document(analyzer, &document)
-                .map_err(IngestError::Lexical)?;
+            lexical.push_document_controlled(analyzer, &document, &mut |index, capacity| {
+                index
+                    .reserve_terms(capacity, &mut counter)
+                    .map_err(IngestError::Store)
+            })?;
         }
-        Ok(lexical)
+        counter.set(lexical.resident_bytes())?;
+        Ok((lexical, counter))
     }
 
     fn retained_row_bytes_capacity(
@@ -1934,12 +1979,8 @@ impl ActiveSegment {
     }
 
     fn copy(&self, accounting: &Arc<Accounting>) -> Result<Self, StoreError> {
-        let lexical = self.lexical.clone();
-        let lexical_bytes = self
-            .lexical_bytes
-            .as_ref()
-            .map(|_| account_lexical(accounting, &lexical))
-            .transpose()?;
+        let (lexical, counter) = self.lexical.clone_accounted(accounting)?;
+        let lexical_bytes = self.lexical_bytes.as_ref().map(|_| counter);
         Ok(Self {
             dims: self.dims,
             doc_ids: copy_accounted(accounting, &self.doc_ids, self.doc_ids.len())?,
@@ -2633,6 +2674,41 @@ mod tests {
     use crate::fts::tokenizer::TokenizerConfig;
     use crate::meta::DocBitmap;
 
+    #[test]
+    fn id_map_charge_includes_empty_buckets_and_controls() {
+        let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+        let rows = ActiveRows::copy(&[], 1, &accounting).expect("map");
+        let group = if cfg!(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "sse2",
+            not(miri)
+        )) {
+            16
+        } else {
+            8
+        };
+        assert_eq!(
+            rows.bytes.as_ref().expect("charge").bytes(),
+            (4 * std::mem::size_of::<(DocId, usize)>() + 4 + group) as u64
+        );
+        drop(rows);
+        assert_eq!(accounting.audit().expect("audit").active_bytes, 0);
+    }
+
+    #[test]
+    fn delete_seen_ids_refuses_unadmitted_allocation() {
+        let accounting = Arc::new(Accounting::new(1, u64::MAX));
+        let result = ActiveSegment::empty().tombstone(&[DocId::new(1)], &accounting);
+        assert!(matches!(
+            result,
+            Err(IngestError::Store(StoreError::BudgetExceeded {
+                component: "temporary",
+                ..
+            }))
+        ));
+        assert_eq!(accounting.audit().expect("audit").temporary_bytes, 0);
+    }
+
     #[cfg(feature = "graph-cypher")]
     #[test]
     fn a_namespace_truncate_that_reports_failure_after_succeeding_fences_the_writer() {
@@ -2860,8 +2936,12 @@ mod tests {
     /// statistics and BM25 hits of every vocabulary term over live rows.
     fn assert_index_matches_rebuild(segment: &ActiveSegment, analyzer: &Analyzer, step: usize) {
         let incremental = segment.lexical();
-        let rebuilt = segment
-            .rebuild_lexical(None, analyzer)
+        let (rebuilt, _counter) = segment
+            .rebuild_lexical(
+                None,
+                analyzer,
+                &Arc::new(Accounting::new(u64::MAX, u64::MAX)),
+            )
             .expect("rebuild oracle");
         assert_eq!(incremental.row_count(), rebuilt.row_count(), "step {step}");
         let ours: Vec<_> = incremental.postings().collect();

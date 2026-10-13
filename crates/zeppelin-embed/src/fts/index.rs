@@ -37,6 +37,9 @@ use super::bm25::{Bm25Error, CorpusStats};
 use super::postings::{Posting, PostingList, PostingsError};
 use super::sealed::SealedSegment;
 use super::tokenizer::{Analyzer, Token};
+use crate::lifecycle::StoreError;
+use crate::lifecycle::hash_table::allocation_bytes;
+use crate::lifecycle::stats::{AccountedCounter, Accounting, AllocationComponent};
 use crate::meta::DocBitmap;
 
 /// A field identifier within a document schema.
@@ -267,6 +270,8 @@ fn count_tokens_indexed(tokens: usize) {
 pub struct SegmentIndex {
     /// Term key to slot in `lists`.
     terms: HashMap<TermKey, usize, Xxh3State>,
+    // Removals can lower HashMap::capacity without freeing any buckets.
+    term_capacity: usize,
     /// Posting lists, in first-seen order; `terms` holds the slots.
     lists: Vec<PostingList>,
     /// Per-field analyzed token counts, ascending by field id.
@@ -283,8 +288,15 @@ pub struct SegmentIndex {
 // Vec cloning can shrink capacities, so a copy measures its own allocations.
 impl Clone for SegmentIndex {
     fn clone(&self) -> Self {
+        self.clone_with_terms(self.terms.clone())
+    }
+}
+
+impl SegmentIndex {
+    fn clone_with_terms(&self, terms: HashMap<TermKey, usize, Xxh3State>) -> Self {
         let mut copy = Self {
-            terms: self.terms.clone(),
+            terms,
+            term_capacity: self.term_capacity,
             lists: self.lists.clone(),
             lengths: self.lengths.clone(),
             row_count: self.row_count,
@@ -316,6 +328,59 @@ enum Placement {
 }
 
 impl SegmentIndex {
+    pub(crate) fn clone_accounted(
+        &self,
+        accounting: &Arc<Accounting>,
+    ) -> Result<(Self, AccountedCounter), StoreError> {
+        let mut counter = AccountedCounter::new(accounting, AllocationComponent::Active)?;
+        counter.set(self.resident_bytes())?;
+        let mut terms = HashMap::with_hasher(Xxh3State);
+        terms
+            .try_reserve(self.term_capacity)
+            .map_err(|_| StoreError::AllocationFailed {
+                needed: allocation_bytes::<(TermKey, usize)>(self.term_capacity)
+                    .unwrap_or(usize::MAX) as u64,
+                component: "lexical terms map",
+            })?;
+        terms.extend(self.terms.iter().map(|(key, slot)| (key.clone(), *slot)));
+        let copy = self.clone_with_terms(terms);
+        counter.set(copy.resident_bytes())?;
+        Ok((copy, counter))
+    }
+
+    pub(crate) fn reserve_terms(
+        &mut self,
+        capacity: usize,
+        counter: &mut AccountedCounter,
+    ) -> Result<(), StoreError> {
+        // Below half-full, hashbrown only clears deleted control tags in place.
+        let allocation_capacity = if capacity <= self.term_capacity / 2 {
+            0
+        } else {
+            capacity.max(
+                self.term_capacity
+                    .checked_add(1)
+                    .ok_or(StoreError::ActiveRowOverflow)?,
+            )
+        };
+        let needed = allocation_bytes::<(TermKey, usize)>(allocation_capacity)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        // Keep the old table charged until try_reserve releases it.
+        counter.set(
+            self.resident_bytes()
+                .checked_add(needed)
+                .ok_or(StoreError::ActiveRowOverflow)?,
+        )?;
+        self.terms
+            .try_reserve(capacity.saturating_sub(self.terms.len()))
+            .map_err(|_| StoreError::AllocationFailed {
+                needed: needed as u64,
+                component: "lexical terms map",
+            })?;
+        self.term_capacity = self.term_capacity.max(self.terms.capacity());
+        counter.set(self.resident_bytes())
+    }
+
     /// Creates an empty segment index.
     #[must_use]
     pub fn new() -> Self {
@@ -411,10 +476,8 @@ impl SegmentIndex {
     }
 
     pub(crate) fn resident_bytes(&self) -> usize {
-        let term_slots = self
-            .terms
-            .capacity()
-            .saturating_mul(std::mem::size_of::<(TermKey, usize)>().saturating_add(1));
+        let term_slots =
+            allocation_bytes::<(TermKey, usize)>(self.term_capacity).unwrap_or(usize::MAX);
         let term_bytes = self.term_bytes;
         let list_bytes = self
             .lists
@@ -445,10 +508,8 @@ impl SegmentIndex {
     /// Independent full scan used to prove the incremental charge stays exact.
     #[cfg(test)]
     pub(crate) fn resident_bytes_rescan(&self) -> usize {
-        let term_slots = self
-            .terms
-            .capacity()
-            .saturating_mul(std::mem::size_of::<(TermKey, usize)>().saturating_add(1));
+        let term_slots =
+            allocation_bytes::<(TermKey, usize)>(self.term_capacity).unwrap_or(usize::MAX);
         let term_bytes = self
             .terms
             .keys()
@@ -542,10 +603,19 @@ impl SegmentIndex {
         analyzer: &Analyzer,
         document: &Document,
     ) -> Result<u32, IndexError> {
+        self.push_document_controlled(analyzer, document, &mut |_, _| Ok(()))
+    }
+
+    pub(crate) fn push_document_controlled<E: From<IndexError>>(
+        &mut self,
+        analyzer: &Analyzer,
+        document: &Document,
+        reserve: &mut impl FnMut(&mut Self, usize) -> Result<(), E>,
+    ) -> Result<u32, E> {
         let row = self.row_count;
         for (field, text) in document.fields() {
             let tokens = analyzer.analyze(text);
-            self.accumulate(row, field, &tokens, Placement::Append)?;
+            self.accumulate(row, field, &tokens, Placement::Append, reserve)?;
         }
         self.finish_row();
         Ok(row)
@@ -574,12 +644,23 @@ impl SegmentIndex {
         previous: &Document,
         replacement: &Document,
     ) -> Result<(), IndexError> {
+        self.replace_document_controlled(analyzer, row, previous, replacement, &mut |_, _| Ok(()))
+    }
+
+    pub(crate) fn replace_document_controlled<E: From<IndexError>>(
+        &mut self,
+        analyzer: &Analyzer,
+        row: u32,
+        previous: &Document,
+        replacement: &Document,
+        reserve: &mut impl FnMut(&mut Self, usize) -> Result<(), E>,
+    ) -> Result<(), E> {
         let out_of_range = IndexError::ReplacedRowOutOfRange {
             row,
             row_count: self.row_count,
         };
         if row >= self.row_count {
-            return Err(out_of_range);
+            return Err(out_of_range.into());
         }
         let slot = usize::try_from(row).map_err(|_| out_of_range)?;
         for (field, text) in previous.fields() {
@@ -611,7 +692,7 @@ impl SegmentIndex {
                     .saturating_mul(4);
                 crate::fts::postings::count_accounting_visits(1);
                 if !list.remove(row) {
-                    return Err(missing);
+                    return Err(missing.into());
                 }
                 self.posting_bytes = self.posting_bytes.saturating_sub(position_bytes);
                 if list.is_empty() {
@@ -631,7 +712,7 @@ impl SegmentIndex {
         }
         for (field, text) in replacement.fields() {
             let tokens = analyzer.analyze(text);
-            self.accumulate(row, field, &tokens, Placement::Insert)?;
+            self.accumulate(row, field, &tokens, Placement::Insert, reserve)?;
         }
         // A field new to the segment must still cover every row.
         self.pad_lengths_to(usize::try_from(self.row_count).unwrap_or(usize::MAX));
@@ -696,7 +777,9 @@ impl SegmentIndex {
             for fields in &analyzed {
                 let row = self.row_count;
                 for (field, tokens) in fields {
-                    self.accumulate(row, *field, tokens, Placement::Append)?;
+                    self.accumulate(row, *field, tokens, Placement::Append, &mut |_, _| {
+                        Ok::<(), IndexError>(())
+                    })?;
                 }
                 self.finish_row();
             }
@@ -705,13 +788,14 @@ impl SegmentIndex {
     }
 
     /// Folds one field's analyzed tokens into the postings for one row.
-    fn accumulate(
+    fn accumulate<E: From<IndexError>>(
         &mut self,
         row: u32,
         field: FieldId,
         tokens: &[Token],
         placement: Placement,
-    ) -> Result<(), IndexError> {
+        reserve: &mut impl FnMut(&mut Self, usize) -> Result<(), E>,
+    ) -> Result<(), E> {
         count_tokens_indexed(tokens.len());
         // Position count is the analyzed length: stacked variants share
         // a position and must not inflate the document length, or avgdl
@@ -771,8 +855,8 @@ impl SegmentIndex {
                     if let Some(list) = self.lists.get_mut(slot) {
                         let previous = list.allocation_bytes();
                         match placement {
-                            Placement::Append => list.push(posting)?,
-                            Placement::Insert => list.insert(posting)?,
+                            Placement::Append => list.push(posting).map_err(IndexError::from)?,
+                            Placement::Insert => list.insert(posting).map_err(IndexError::from)?,
                         }
                         self.posting_bytes = self
                             .posting_bytes
@@ -782,8 +866,12 @@ impl SegmentIndex {
                     }
                 }
                 None => {
+                    let grows = self.terms.len() == self.terms.capacity();
+                    if grows {
+                        reserve(self, self.terms.len().saturating_add(1))?;
+                    }
                     let mut list = PostingList::new();
-                    list.push(posting)?;
+                    list.push(posting).map_err(IndexError::from)?;
                     self.posting_bytes = self
                         .posting_bytes
                         .saturating_add(list.allocation_bytes())
@@ -804,6 +892,9 @@ impl SegmentIndex {
                     };
                     self.term_bytes = self.term_bytes.saturating_add(key.term.capacity());
                     self.terms.insert(key, slot);
+                    if grows {
+                        self.term_capacity = self.term_capacity.max(self.terms.capacity());
+                    }
                 }
             }
             start = end;
@@ -1181,6 +1272,36 @@ fn live_segment_counters_controlled<E: From<IndexError>>(
     clippy::unwrap_used
 )]
 mod tests {
+
+    #[test]
+    fn terms_table_charge_includes_empty_buckets_and_controls() {
+        let mut index = SegmentIndex::new();
+        index
+            .push_document(&analyzer(), &Document::with_text("alpha"))
+            .expect("index");
+        let group = if cfg!(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "sse2",
+            not(miri)
+        )) {
+            16
+        } else {
+            8
+        };
+        let other = index.term_bytes
+            + index.posting_bytes
+            + index.lists.capacity() * std::mem::size_of::<PostingList>()
+            + index.lengths.capacity() * std::mem::size_of::<FieldLengths>()
+            + index
+                .lengths
+                .iter()
+                .map(|entry| entry.lengths.capacity() * 4)
+                .sum::<usize>();
+        assert_eq!(
+            index.resident_bytes() - other,
+            4 * std::mem::size_of::<(TermKey, usize)>() + 4 + group
+        );
+    }
 
     #[test]
     fn parallel_analysis_is_identical_to_the_sequential_loop() {
