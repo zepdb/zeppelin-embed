@@ -992,8 +992,9 @@ or separately charged copies. A binding callback is not writer/runtime admission
 
 ## ZE-180 native graph registry accounting
 
-The native graph publication's four fixed-capacity registries (read leases,
-mappings, preparations, spills) are a store-lifetime arena, not scratch. They
+The native graph publication's five fixed-capacity registries (read leases,
+mappings, preparations, spills, validated-artifact proofs) are a store-lifetime
+arena, not scratch. They
 charge `AllocationComponent::NativeGraph` and surface as
 `Stats::native_graph_bytes`, which is always present and is zero unless
 `graph-cypher` is enabled. Never charge them to `Temporary`: `Temporary` means
@@ -1003,7 +1004,7 @@ every `temporary_bytes == 0` assertion and made `with_max_temp_bytes(n)` refuse
 to open for any `n` below that arena.
 
 Per Task 09 Part C the component returns to zero at close. `drain_and_clear`,
-the `Store::close` path, empties the four registries and zeroes the charge
+the `Store::close` path, empties the five registries and zeroes the charge
 after its final unconditional wait for every read lease. This is safe only
 because that path has drained: admission refuses while `closing`.
 `cancel_and_clear_best_effort` runs from `Store::drop`, cancels without
@@ -1016,6 +1017,14 @@ runs them explicitly and unconditionally. The workspace run enables the feature
 on macOS and Windows x64 hosts, through
 `zeppelin-embed-workspace-tests/graph-result-test-support`, so before ZE-180 no
 gate proved these tests on any other host.
+
+ZE-436 reserves the sorted artifact-proof registry at `MAX_NATIVE_ARTIFACTS`
+and charges its exact backing alongside the other registries. Preparation
+hits bind the mapped identity, exact directory entry, requested block checksum,
+admitted cutoff and required-object descriptor. Both reclaim unlink sites
+forget proofs on success or absence. Full-file authentication occurs once per
+store open for cached artifacts; corruption outside the requested block may
+remain undetected until reopen or the independent retirement audit.
 
 ## ZE-56 Cypher statement seam
 

@@ -1508,11 +1508,17 @@ fn resume_pending_reclaim(
                         })?;
                     match admitted.vfs().delete(&path) {
                         Ok(()) => {
+                            store
+                                .native_graph
+                                .forget_validated_proof(candidate.artifact)?;
                             removed_bytes = removed_bytes
                                 .checked_add(u64::from(candidate.bytes))
                                 .ok_or(NativeGraphError::IdentityExhausted)?;
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            store
+                                .native_graph
+                                .forget_validated_proof(candidate.artifact)?;
                             already_missing = already_missing
                                 .checked_add(1)
                                 .ok_or(NativeGraphError::IdentityExhausted)?;
@@ -1525,6 +1531,9 @@ fn resume_pending_reclaim(
                 Err(crate::property_graph::storage::tree::directory::TreeError::Io(error))
                     if error.kind() == std::io::ErrorKind::NotFound =>
                 {
+                    store
+                        .native_graph
+                        .forget_validated_proof(candidate.artifact)?;
                     already_missing = already_missing
                         .checked_add(1)
                         .ok_or(NativeGraphError::IdentityExhausted)?;
@@ -1549,6 +1558,7 @@ fn resume_pending_reclaim(
             };
             match observed {
                 None => {
+                    store.native_graph.forget_validated_proof(target.artifact)?;
                     already_missing = already_missing
                         .checked_add(1)
                         .ok_or(NativeGraphError::IdentityExhausted)?;
@@ -1568,11 +1578,13 @@ fn resume_pending_reclaim(
                         .and_then(|()| budget.map_or(Ok(()), |budget| budget.charge(length)))?;
                     match admitted.vfs().delete(&path) {
                         Ok(()) => {
+                            store.native_graph.forget_validated_proof(target.artifact)?;
                             removed_bytes = removed_bytes
                                 .checked_add(target.observed)
                                 .ok_or(NativeGraphError::IdentityExhausted)?;
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            store.native_graph.forget_validated_proof(target.artifact)?;
                             already_missing = already_missing
                                 .checked_add(1)
                                 .ok_or(NativeGraphError::IdentityExhausted)?;

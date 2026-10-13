@@ -260,6 +260,28 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<ValidatedArtifact, TreeError> {
+        let publication = self.lease.publication().ok_or(TreeError::Invalid(
+            "native preparation publication is absent",
+        ))?;
+        if let Some(validation) = publication
+            .validated_proof(reference.artifact)
+            .map_err(|_| TreeError::Invalid("native graph publication poisoned"))?
+        {
+            let identity = validation.identity();
+            let bundle = self.lease.bundle();
+            if identity.generation > bundle.base().generation
+                || identity.creation_serial > bundle.high_waters().creation_serial
+            {
+                return Err(TreeError::Invalid(
+                    "native preparation artifact is newer than admitted cutoff",
+                ));
+            }
+            let block = validation
+                .checked_framed_block(mapping.as_bytes(), reference)
+                .map_err(TreeError::Format)?;
+            let _ = self.check_required(block)?;
+            return Ok(validation);
+        }
         #[cfg(all(test, feature = "graph-cypher"))]
         crate::property_graph::storage::preparation_work_capture::artifact(
             reference.artifact,
@@ -287,6 +309,9 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         let block = frame.framed_block(reference).map_err(TreeError::Format)?;
         let validation = frame.validation();
         let _ = self.check_required(block)?;
+        publication
+            .remember_validated_proof(reference.artifact, validation)
+            .map_err(|_| TreeError::Invalid("native graph publication poisoned"))?;
         Ok(validation)
     }
 

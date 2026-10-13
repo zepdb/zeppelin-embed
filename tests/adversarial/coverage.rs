@@ -174,6 +174,8 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.storage-faults.count-delete.fire",
     "property-graph.storage-faults.count-delete.clean",
     "property-graph.storage-faults.page-proof.preparation-scope",
+    "property-graph.storage-faults.proof-reuse.fire",
+    "property-graph.storage-faults.proof-reuse.clean",
     "property-graph.publication.coherent",
     "property-graph.publication.retained",
     "property-graph.publication.noop",

@@ -923,8 +923,8 @@ fn emit_preparation_report(
     ).expect("write qualification counters");
 }
 
-/// Two block reads and a semantic window need one full 2L-8 proof and four
-/// framed-block read steps, plus four table probes or three scoped probes.
+/// Two block reads and a semantic window need a full 2L-8 proof only on a
+/// store-lifetime miss, plus four read steps and bounded table/scoped probes.
 /// A substituted physical
 /// role must still fail after reuse.
 fn assert_retained_authentication_work_bound(store: &Store) {
@@ -954,6 +954,11 @@ fn assert_retained_authentication_work_bound(store: &Store) {
             .expect("nodes")
             .reference()
             .expect("root");
+        let already_validated = store
+            .native_graph
+            .validated_proof(reference.artifact)
+            .expect("proof registry")
+            .is_some();
         let length = source
             .with_block(reference, &mut resources, |block, _| {
                 Ok(block.file_length() as u64)
@@ -969,8 +974,8 @@ fn assert_retained_authentication_work_bound(store: &Store) {
             .expect("semantic window");
         assert_eq!(
             resources.work(),
-            2 * length - 8 + if scoped { 7 } else { 8 },
-            "one complete authentication proof plus bounded read/probe steps"
+            if already_validated { 0 } else { 2 * length - 8 } + if scoped { 7 } else { 8 },
+            "full authentication on a registry miss plus bounded read/probe steps"
         );
         let mut substituted = reference;
         substituted.kind = crate::property_graph::storage::artifact::BlockKind::CanonicalImage;

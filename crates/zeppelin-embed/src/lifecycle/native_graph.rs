@@ -13,7 +13,10 @@ use crate::property_graph::query::QueryView;
 use crate::property_graph::query::runtime::RetainedView;
 use crate::property_graph::resources::{GraphReservation, GraphResources};
 use crate::property_graph::staging::{BaseIdentity, FoldMark};
-use crate::property_graph::storage::artifact::{BlockKind, PhysicalRef};
+use crate::property_graph::storage::MAX_NATIVE_ARTIFACTS;
+use crate::property_graph::storage::artifact::{
+    ArtifactId, BlockKind, PhysicalRef, ValidatedArtifact,
+};
 use crate::property_graph::storage::tree::directory::GraphRoots;
 use crate::property_graph::wal::{
     ArtifactDescriptor, HighWaters, InventoryChange, RequiredRef, WalGraphRoots,
@@ -652,13 +655,14 @@ struct NativeSpillEntry {
 struct PublicationState {
     documents: Option<documents::NativeDocuments>,
     current: Option<Arc<NativeGraphBundle>>,
-    /// Exact accounting for the four fixed-capacity registries below. It lives
+    /// Exact accounting for the fixed-capacity registries below. It lives
     /// beside the vectors it charges so that close releases both together.
     charge: super::stats::AccountedCounter,
     leases: Vec<Option<RegistryEntry>>,
     mappings: Vec<Option<NativeMappingEntry>>,
     preparations: Vec<Option<NativePreparationEntry>>,
     spills: Vec<Option<NativeSpillEntry>>,
+    proofs: Vec<(ArtifactId, ValidatedArtifact)>,
     next_token: u64,
     next_mapping_token: u64,
     next_preparation_token: u64,
@@ -690,6 +694,7 @@ impl PublicationState {
         self.mappings = Vec::new();
         self.preparations = Vec::new();
         self.spills = Vec::new();
+        self.proofs = Vec::new();
         self.charge.set(0)
     }
 }
@@ -744,6 +749,7 @@ impl NativeGraphPublication {
                 mappings,
                 preparations,
                 spills,
+                proofs: Vec::new(),
                 next_token: 1,
                 next_mapping_token: 1,
                 next_preparation_token: 1,
@@ -825,6 +831,12 @@ impl NativeGraphPublication {
                 needed: u64::MAX,
                 component: "native graph spill registry",
             })?;
+        let proof_bytes = MAX_NATIVE_ARTIFACTS
+            .checked_mul(std::mem::size_of::<(ArtifactId, ValidatedArtifact)>())
+            .ok_or(StoreError::AllocationFailed {
+                needed: u64::MAX,
+                component: "native graph proof registry",
+            })?;
         let bytes = std::mem::size_of::<Self>()
             .checked_add(2 * std::mem::size_of::<usize>())
             .and_then(|bytes| bytes.checked_add(lease_bytes))
@@ -834,6 +846,8 @@ impl NativeGraphPublication {
             .and_then(|bytes| bytes.checked_add(preparation_bytes))
             .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
             .and_then(|bytes| bytes.checked_add(spill_bytes))
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .and_then(|bytes| bytes.checked_add(proof_bytes))
             .ok_or(StoreError::AllocationFailed {
                 needed: u64::MAX,
                 component: "native graph registry",
@@ -887,11 +901,64 @@ impl NativeGraphPublication {
             component: "native graph spill registry",
         })?;
         spills.resize_with(MAX_NATIVE_SPILL_PREPARATIONS, || None);
+        let mut proofs = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved =
+            crate::allocation_audit::attributed(|| proofs.try_reserve_exact(MAX_NATIVE_ARTIFACTS));
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = proofs.try_reserve_exact(MAX_NATIVE_ARTIFACTS);
+        reserved.map_err(|_| StoreError::AllocationFailed {
+            needed: proof_bytes as u64,
+            component: "native graph proof registry",
+        })?;
+        state.proofs = proofs;
         state.charge = charge;
         state.leases = leases;
         state.mappings = mappings;
         state.preparations = preparations;
         state.spills = spills;
+        Ok(())
+    }
+
+    pub(crate) fn validated_proof(
+        &self,
+        artifact: ArtifactId,
+    ) -> Result<Option<ValidatedArtifact>, StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        Ok(state
+            .proofs
+            .binary_search_by_key(&artifact, |(id, _)| *id)
+            .ok()
+            .and_then(|index| state.proofs.get(index))
+            .map(|(_, proof)| *proof))
+    }
+
+    pub(crate) fn remember_validated_proof(
+        &self,
+        artifact: ArtifactId,
+        proof: ValidatedArtifact,
+    ) -> Result<(), StoreError> {
+        let mut state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        if let Err(index) = state.proofs.binary_search_by_key(&artifact, |(id, _)| *id)
+            && state.proofs.len() < MAX_NATIVE_ARTIFACTS
+            && state.proofs.len() < state.proofs.capacity()
+        {
+            state.proofs.insert(index, (artifact, proof));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn forget_validated_proof(&self, artifact: ArtifactId) -> Result<(), StoreError> {
+        let mut state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        if let Ok(index) = state.proofs.binary_search_by_key(&artifact, |(id, _)| *id) {
+            state.proofs.remove(index);
+        }
         Ok(())
     }
 
@@ -1996,6 +2063,10 @@ impl Clone for NativeReadLease {
 }
 
 impl NativeReadLease {
+    pub(crate) fn publication(&self) -> Option<Arc<NativeGraphPublication>> {
+        self.owner.registration.publication.upgrade()
+    }
+
     pub(crate) fn bundle(&self) -> &Arc<NativeGraphBundle> {
         &self.owner.bundle
     }

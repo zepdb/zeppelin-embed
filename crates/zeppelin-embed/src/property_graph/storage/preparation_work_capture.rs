@@ -4,6 +4,7 @@ use std::{cell::RefCell, collections::BTreeMap};
 #[derive(Debug, Default)]
 pub(crate) struct Report {
     pub phases: Vec<(&'static str, u64)>,
+    /// Artifacts subjected to full validation (bytes hashed), including audits.
     pub artifacts: BTreeMap<ArtifactId, (u64, usize)>,
     pub origins: BTreeMap<(&'static str, u32), (u64, usize)>,
     pub leaf_entries: usize,

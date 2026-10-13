@@ -8,7 +8,7 @@ use crate::property_graph::{GraphGeneration, StoreInstanceId};
 use std::convert::Infallible;
 mod private;
 pub use private::{OwnedArtifact, PrivateArtifact};
-use xxhash_rust::xxh3::Xxh3;
+use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
 /// Framing failure or the caller's typed cancellation/work rejection.
 #[derive(Debug)]
@@ -267,6 +267,39 @@ impl ArtifactFrame<'_> {
 }
 
 impl ValidatedArtifact {
+    pub(crate) const fn identity(self) -> ArtifactIdentity {
+        self.identity
+    }
+
+    pub(crate) fn checked_framed_block<'a>(
+        self,
+        bytes: &'a [u8],
+        reference: PhysicalRef,
+    ) -> Result<FramedBlock<'a>, FormatError> {
+        let block = self.framed_block(bytes, reference)?;
+        // A substituted file can share the requested block's payload and geometry.
+        // Bind the mapping itself to the cached identity before exposing bytes.
+        if read_u128(bytes, 32)? != self.identity.store.get()
+            || read_u128(bytes, 48)? != self.identity.artifact.get()
+            || frame::read_u64("native graph artifact", bytes, 64)?
+                != self.identity.generation.get()
+            || frame::read_u64("native graph artifact", bytes, 88)? != self.identity.creation_serial
+        {
+            return Err(invalid(
+                FormatCheck::ObjectIdentity,
+                "validated artifact mapping identity changed",
+            ));
+        }
+        let offset = usize_from(reference.offset)?;
+        let block_checksum = frame::read_u64("native graph artifact", bytes, add(offset, 16)?)?;
+        checksum(
+            FormatCheck::BlockChecksum,
+            block_checksum,
+            xxh3_64(block.payload()),
+        )?;
+        Ok(block)
+    }
+
     pub(crate) const fn artifact(self) -> ArtifactId {
         self.identity.artifact
     }

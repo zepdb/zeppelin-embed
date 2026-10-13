@@ -6072,6 +6072,63 @@ fn ze260_duplicate_heavy_mark_uses_one_run() {
 }
 
 #[test]
+fn a_retired_artifact_proof_is_dropped_on_unlink() {
+    use crate::property_graph::resources::GraphResources;
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = create_reclaim_test_store(&path, &vfs);
+    ze163_base_write(&store, "proof-unlink", 0);
+    let old = store.admit_native_read().unwrap();
+    let reference = old
+        .bundle()
+        .roots()
+        .directory(TreeKind::Nodes)
+        .unwrap()
+        .reference()
+        .unwrap();
+    {
+        let shared = GraphResources::from_store(&store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let storage = StorageMemory::new(&writer, &control, 8 * 1024 * 1024).unwrap();
+        let source = NativePreparationSource::new(&old, &storage, 64).unwrap();
+        let mut resources = source.resources(u64::MAX).unwrap();
+        source
+            .with_block(reference, &mut resources, |_, _| Ok(()))
+            .unwrap();
+    }
+    assert!(
+        store
+            .native_graph
+            .validated_proof(reference.artifact)
+            .unwrap()
+            .is_some()
+    );
+    let victim =
+        crate::property_graph::storage::allocation::artifact_path(&path, reference.artifact);
+    drop(old);
+    ze163_base_write(&store, "proof-unlink", 1);
+    let mut removed = 0;
+    for _ in 0..24 {
+        removed += commit_maintenance(&store).unwrap().removed_bytes;
+        if !victim.exists() {
+            break;
+        }
+    }
+    assert!(removed > 0);
+    assert!(!victim.exists(), "retired root must be unlinked");
+    assert!(
+        store
+            .native_graph
+            .validated_proof(reference.artifact)
+            .unwrap()
+            .is_none()
+    );
+    store.close().unwrap();
+}
+
+#[test]
 fn ze260_superseded_history_is_reclaimed_after_reader_drops() {
     run_ze260_superseded_history_is_reclaimed_after_reader_drops();
 }

@@ -44,6 +44,8 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.storage-faults.count-delete.fire",
     "property-graph.storage-faults.count-delete.clean",
     "property-graph.storage-faults.page-proof.preparation-scope",
+    "property-graph.storage-faults.proof-reuse.fire",
+    "property-graph.storage-faults.proof-reuse.clean",
 ];
 
 /// Keys whose body must have fired at least one scheduled fault or refusal.
@@ -60,6 +62,7 @@ const FIRED: &[&str] = &[
     "property-graph.storage-faults.mapping-bit-flip.fire",
     "property-graph.storage-faults.mapping-WrongObject.fire",
     "property-graph.storage-faults.mapping-PostCommitError.fire",
+    "property-graph.storage-faults.proof-reuse.fire",
 ];
 
 /// Smallest discovery cap that still reaches a real 16 KiB leaf split. A node
@@ -355,11 +358,12 @@ fn check_receipts(
         }
         coverage.hit(receipt.key);
     }
-    if seen.len() != 24
+    if seen.len() != 26
         || REQUIRED_COVERAGE[..8]
             .iter()
             .chain(REQUIRED_COVERAGE[9..23].iter())
             .chain(REQUIRED_COVERAGE[27..29].iter())
+            .chain(REQUIRED_COVERAGE[30..32].iter())
             .any(|key| !seen.contains(key))
     {
         return Err("ZE-47 missing storage-fault boundary receipts".into());
@@ -627,7 +631,7 @@ mod ze172_tests {
             println!("ZE-172 seed={seed} mapping={mapping} schedule={schedule:?}: {report:?}");
             assert_eq!(
                 report.cells.len(),
-                if mapping { 3 } else { 5 },
+                if mapping { 4 } else { 5 },
                 "missing class-5/6 observations"
             );
             let mut coverage = CoverageRegistry::default();
@@ -656,6 +660,7 @@ fn qualification_keys(mapping: bool) -> Vec<&'static str> {
     };
     if mapping {
         keys.push(REQUIRED_COVERAGE[25]);
+        keys.extend_from_slice(&REQUIRED_COVERAGE[30..32]);
     } else {
         keys.extend_from_slice(&REQUIRED_COVERAGE[23..25]);
         keys.extend_from_slice(&REQUIRED_COVERAGE[27..30]);
@@ -770,6 +775,7 @@ fn check_qualification_report(
     let names: &[&str] = match only {
         Some(false) => &["spill", "proof", "delete", "fold", "count-delete"],
         Some(true) => &[
+            "mapping-proof-reuse",
             "mapping-bit-flip",
             "mapping-WrongObject",
             "mapping-PostCommitError",
@@ -780,6 +786,7 @@ fn check_qualification_report(
             "delete",
             "fold",
             "count-delete",
+            "mapping-proof-reuse",
             "mapping-bit-flip",
             "mapping-WrongObject",
             "mapping-PostCommitError",
@@ -829,9 +836,14 @@ fn check_qualification_report(
                 ));
             }
         }
+        let coverage_name = if *name == "mapping-proof-reuse" {
+            "proof-reuse"
+        } else {
+            name
+        };
         let index = REQUIRED_COVERAGE
             .iter()
-            .position(|key| *key == format!("property-graph.storage-faults.{name}.fire"))
+            .position(|key| *key == format!("property-graph.storage-faults.{coverage_name}.fire"))
             .ok_or("ZE-172 unregistered fault")?;
         if only.is_some() {
             coverage.hit(REQUIRED_COVERAGE[index]);

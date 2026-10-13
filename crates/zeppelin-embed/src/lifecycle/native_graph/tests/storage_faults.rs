@@ -347,6 +347,71 @@ fn preparation_page_probe_kind(
 }
 
 #[test]
+fn preparation_validates_an_artifact_once_per_store_lifetime() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = tempfile::tempdir().unwrap();
+    let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+    let store = create_store(&parent.path().join("native"), &vfs);
+    let node = commit_node(&store, "artifact-proof", "store lifetime");
+    preparation_page_probe(&store, node).unwrap();
+    capture::start();
+    preparation_page_probe(&store, node).unwrap();
+    let report = capture::take();
+    assert!(
+        report.artifacts.is_empty(),
+        "fresh sources rehashed: {:?}",
+        report.artifacts
+    );
+    store.close().unwrap();
+}
+
+#[test]
+fn a_replaced_artifact_file_with_the_same_id_is_refused() {
+    use crate::format::frame::FormatCheck;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+    let store = create_store(&path, &vfs);
+    let node = commit_node(&store, "replaced-artifact", "checksum guard");
+    preparation_page_probe(&store, node).unwrap();
+    let lease = store.admit_native_read().unwrap();
+    let reference = lease
+        .bundle()
+        .roots()
+        .directory(TreeKind::Nodes)
+        .unwrap()
+        .reference()
+        .unwrap();
+    drop(lease);
+    let victim =
+        crate::property_graph::storage::allocation::artifact_path(&path, reference.artifact);
+    let original = std::fs::read(&victim).unwrap();
+    for (bytes, expected) in [
+        (
+            original[..original.len() - 1].to_vec(),
+            FormatCheck::FileLength,
+        ),
+        (
+            {
+                let mut bytes = original.clone();
+                bytes[reference.offset as usize + 24 + 56] ^= 1;
+                bytes
+            },
+            FormatCheck::BlockChecksum,
+        ),
+    ] {
+        std::fs::write(&victim, bytes).unwrap();
+        let error = preparation_page_probe(&store, node).unwrap_err();
+        std::fs::write(&victim, &original).unwrap();
+        let TreeError::Format(error) = error else {
+            panic!("typed format refusal expected: {error:?}");
+        };
+        assert_eq!(error.check(), expected);
+    }
+    store.close().unwrap();
+}
+
+#[test]
 fn page_memo_does_not_cross_preparations() {
     let parent = tempfile::tempdir().unwrap();
     let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
@@ -392,8 +457,8 @@ fn corrupt_page_fails_on_first_use_after_preparation_memo() {
     let TreeError::Format(error) = error else {
         panic!("typed checksum error expected: {error:?}");
     };
-    // Part 2b retains full artifact validation on each fresh preparation.
-    assert_eq!(error.check(), FormatCheck::FileChecksum);
+    // A store-lifetime hit still checks the requested block checksum.
+    assert_eq!(error.check(), FormatCheck::BlockChecksum);
     store.close().unwrap();
 }
 
@@ -1488,6 +1553,10 @@ pub(super) fn run_actual_probe(
                 "property-graph.storage-faults.count-delete.fire",
                 "property-graph.storage-faults.count-delete.clean",
             ),
+            "mapping-proof-reuse" => (
+                "property-graph.storage-faults.proof-reuse.fire",
+                "property-graph.storage-faults.proof-reuse.clean",
+            ),
             "mapping-bit-flip" => (
                 "property-graph.storage-faults.mapping-bit-flip.fire",
                 "property-graph.storage-faults.mapping-bit-flip.clean",
@@ -2078,18 +2147,39 @@ fn run_scoped_mapping_fault_class(
         commits,
         ..Default::default()
     };
+    // Warm with a source that is dropped before the faulted source is created.
+    {
+        let shared = GraphResources::from_store(&store).expect("shared");
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).expect("write memory");
+        let guard = control();
+        let memory = StorageMemory::new(&writer, &guard, 32 * 1024 * 1024).expect("storage memory");
+        let source = NativePreparationSource::new(&lease, &memory, 64).expect("warm source");
+        let mut resources = source.resources(u64::MAX).expect("resources");
+        source
+            .with_block(references[65], &mut resources, |_, _| Ok(()))
+            .expect("warm proof");
+        let opens = source.mapping_slot_report().opens;
+        assert_eq!(opens, 1);
+        source
+            .with_block(references[65], &mut resources, |_, _| Ok(()))
+            .expect("warm reread");
+        assert_eq!(source.mapping_slot_report().opens, opens);
+    }
     for name in [
+        "mapping-proof-reuse",
         "mapping-bit-flip",
         "mapping-WrongObject",
         "mapping-PostCommitError",
     ] {
         let damaged = parent.path().join("damaged-pack");
         let mut bytes = original.clone();
-        let offset = payload_offset(&bytes, seed);
+        let reference = references[65];
+        let offset =
+            reference.offset as usize + 24 + seed as usize % (reference.length as usize - 24);
         bytes[offset] ^= 1;
         std::fs::write(&damaged, bytes).expect("damaged temporary file");
         let replacement = match name {
-            "mapping-bit-flip" => Some(damaged),
+            "mapping-bit-flip" | "mapping-proof-reuse" => Some(damaged),
             "mapping-WrongObject" => Some(foreign_file.clone()),
             _ => None,
         };
@@ -2127,6 +2217,7 @@ fn run_scoped_mapping_fault_class(
                 if fault {
                     targeted_damage(&vfs, &target, replacement.clone());
                 }
+                let work_before = resources.work();
                 let result = source.with_block(references[65], &mut resources, |block, _| {
                     if fault {
                         cell.exposed_blocks += 1;
@@ -2146,6 +2237,12 @@ fn run_scoped_mapping_fault_class(
                     cell.logged_opens = vfs.opens.lock().expect("log").len();
                 } else {
                     result.expect("same-seed scoped clean control");
+                    if name == "mapping-proof-reuse" {
+                        assert!(
+                            resources.work() - work_before < references[65].length as u64,
+                            "proof reuse must not perform full artifact validation"
+                        );
+                    }
                     let observed = source.mapping_slot_report();
                     assert_eq!(observed.opens, vfs.opens.lock().expect("clean log").len());
                     assert_eq!(
@@ -2159,6 +2256,7 @@ fn run_scoped_mapping_fault_class(
         cell.changed_live_files =
             u64::from(std::fs::read(&target).expect("original target") != original);
         cell.resumed = mapping_logical_state(&store, &nodes) == before;
+        eprintln!("ZE-436 mapping cell: {cell:?}");
         report.cells.push(cell);
     }
     drop(lease);
