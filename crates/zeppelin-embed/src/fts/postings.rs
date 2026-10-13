@@ -166,6 +166,24 @@ pub struct Posting {
     pub positions: Vec<u32>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static ACCOUNTING_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_accounting_visits() -> usize {
+    ACCOUNTING_VISITS.with(|count| count.replace(0))
+}
+
+#[inline]
+pub(crate) fn count_accounting_visits(amount: usize) {
+    #[cfg(test)]
+    ACCOUNTING_VISITS.with(|count| count.set(count.get() + amount));
+    #[cfg(not(test))]
+    let _ = amount;
+}
+
 /// An in-memory posting list for one term.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PostingList {
@@ -187,7 +205,14 @@ impl PostingList {
         &self.postings
     }
 
+    pub(crate) fn allocation_bytes(&self) -> usize {
+        self.postings
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Posting>())
+    }
+
     pub(crate) fn resident_bytes(&self) -> usize {
+        count_accounting_visits(self.postings.len());
         self.postings
             .capacity()
             .saturating_mul(std::mem::size_of::<Posting>())

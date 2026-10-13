@@ -3004,7 +3004,12 @@ const TIER_COVERAGE: [&str; 8] = [
     "tier.refine.neighbor-reorder.phase",
     "tier.refine.connectivity-repair.phase",
 ];
-const LIFECYCLE_COVERAGE: [&str; 3] = ["op.deadline_probe", "op.close", "op.stats"];
+const LIFECYCLE_COVERAGE: [&str; 4] = [
+    "op.deadline_probe",
+    "op.close",
+    "op.stats",
+    "lifecycle.accounting.active-id-map-denial",
+];
 const DIAGNOSTIC_COVERAGE: [&str; 2] = ["op.stats", "op.search"];
 const FFI_COVERAGE: [&str; 1] = ["op.ffi_probe"];
 

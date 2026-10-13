@@ -525,9 +525,62 @@ fn recovery_apply_error(seq: LogSeq, op: u16, error: IngestError) -> StoreError 
     }
 }
 
+/// Same first-row semantics as the delete lookup, retained across writes.
+struct ActiveRows {
+    rows: HashMap<DocId, usize>,
+    bytes: Option<AccountedCounter>,
+}
+
+impl ActiveRows {
+    fn empty() -> Self {
+        Self {
+            rows: HashMap::new(),
+            bytes: None,
+        }
+    }
+
+    fn copy(
+        ids: &[DocId],
+        capacity: usize,
+        accounting: &Arc<Accounting>,
+    ) -> Result<Self, StoreError> {
+        let mut rows = HashMap::with_capacity(capacity);
+        let mut bytes = AccountedCounter::new(accounting, AllocationComponent::Active)?;
+        bytes.set(
+            rows.capacity()
+                .saturating_mul(std::mem::size_of::<(DocId, usize)>().saturating_add(1)),
+        )?;
+        for (row, id) in ids.iter().enumerate() {
+            lookup::work(1);
+            rows.entry(*id).or_insert(row);
+        }
+        Ok(Self {
+            rows,
+            bytes: Some(bytes),
+        })
+    }
+
+    fn get(&self, id: &DocId) -> Option<usize> {
+        lookup::work(1);
+        self.rows.get(id).copied()
+    }
+
+    fn insert(&mut self, id: DocId, row: usize) -> Result<(), StoreError> {
+        // Every working copy reserves its full batch before mutation. Refuse
+        // unexpected growth rather than allocate outside that reservation.
+        if self.rows.len() == self.rows.capacity() {
+            return Err(StoreError::ActiveRowOverflow);
+        }
+        lookup::work(1);
+        self.rows.entry(id).or_insert(row);
+        Ok(())
+    }
+}
+
 pub(crate) struct ActiveSegment {
     dims: Option<usize>,
     doc_ids: Accounted<Vec<DocId>>,
+    row_index: ActiveRows,
     revisions: Accounted<Vec<Revision>>,
     sequences: Accounted<Vec<LogSeq>>,
     timestamps: Accounted<Vec<i64>>,
@@ -608,6 +661,7 @@ impl ActiveSegment {
         Self {
             dims: None,
             doc_ids: Accounted::unaccounted_empty(),
+            row_index: ActiveRows::empty(),
             revisions: Accounted::unaccounted_empty(),
             sequences: Accounted::unaccounted_empty(),
             timestamps: Accounted::unaccounted_empty(),
@@ -638,6 +692,7 @@ impl ActiveSegment {
         crate::allocation_audit::record_full_segment_clone();
         let capacities = self.working_capacities(first_document, remaining)?;
         let doc_ids = copy_accounted(accounting, &self.doc_ids, capacities.row_count)?;
+        let row_index = ActiveRows::copy(&self.doc_ids, capacities.row_count, accounting)?;
         let revisions = copy_accounted(accounting, &self.revisions, capacities.row_count)?;
         let sequences = copy_accounted(accounting, &self.sequences, capacities.row_count)?;
         let timestamps = copy_accounted(accounting, &self.timestamps, capacities.row_count)?;
@@ -687,6 +742,7 @@ impl ActiveSegment {
         Ok(Self {
             dims: self.dims,
             doc_ids,
+            row_index,
             revisions,
             sequences,
             timestamps,
@@ -745,6 +801,7 @@ impl ActiveSegment {
         let dims = document.vector().len();
         let row_stride = capacities.row_stride;
 
+        self.row_index.insert(document.version().doc_id(), row)?;
         self.doc_ids.push(document.version().doc_id())?;
         self.revisions.push(document.version().revision())?;
         self.sequences.push(LogSeq::new(0))?;
@@ -828,6 +885,21 @@ impl ActiveSegment {
                 expected: dims,
                 actual: document.vector().len(),
             }));
+        }
+        let old_id = self
+            .doc_ids
+            .get(row)
+            .copied()
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        let new_id = document.version().doc_id();
+        if old_id != new_id {
+            if self.row_index.get(&new_id).is_some() {
+                return Err(IngestError::Store(StoreError::Synchronization {
+                    component: "replacement id already exists",
+                }));
+            }
+            self.row_index.rows.remove(&old_id);
+            self.row_index.insert(new_id, row)?;
         }
         *self
             .doc_ids
@@ -955,16 +1027,14 @@ impl ActiveSegment {
         let vectors = copy_accounted(accounting, &self.vectors, self.vectors.len())?;
         let codes = copy_accounted(accounting, &self.codes, self.codes.len())?;
         let factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
-        // Keep the first row for each id and preserve request order, as before.
-        let mut first_rows = HashMap::with_capacity(self.row_count());
-        for (row, id) in self.doc_ids.iter().enumerate() {
-            lookup::work(1);
-            first_rows.entry(*id).or_insert(row);
-        }
+        // Preserve request order and keep deleted IDs addressable for retries.
+        let row_index = ActiveRows::copy(&self.doc_ids, self.row_count(), accounting)?;
+        let mut seen_ids = std::collections::HashSet::new();
         let mut rows = Vec::new();
         for doc_id in doc_ids {
-            lookup::work(1);
-            if let Some(row) = first_rows.remove(doc_id) {
+            if seen_ids.insert(*doc_id)
+                && let Some(row) = self.row_index.get(doc_id)
+            {
                 rows.push(row);
             }
         }
@@ -993,6 +1063,7 @@ impl ActiveSegment {
             Self {
                 dims: self.dims,
                 doc_ids: doc_ids_buffer,
+                row_index,
                 revisions,
                 sequences,
                 timestamps,
@@ -1160,6 +1231,7 @@ impl ActiveSegment {
                 .checked_add(1)
                 .ok_or(StoreError::ActiveRowOverflow)?;
         }
+        let row_index = ActiveRows::copy(&doc_id_rows, rows, accounting)?;
         let lexical_bytes = (tracks_text && rows != 0)
             .then(|| account_lexical(accounting, &lexical))
             .transpose()?;
@@ -1167,6 +1239,7 @@ impl ActiveSegment {
             Self {
                 dims: (rows != 0).then_some(dims),
                 doc_ids: doc_id_rows,
+                row_index,
                 revisions,
                 sequences,
                 timestamps,
@@ -1267,8 +1340,7 @@ impl ActiveSegment {
         })
     }
 
-    /// Refuses to append a row for an id the segment already holds. The scan
-    /// is linear, so WAL replay, which tracks its ids itself, skips it.
+    /// Refuses to append a row for an id the segment already holds.
     fn refuse_existing(&self, document: &IngestDocument) -> Result<(), IngestError> {
         if self.existing(document.version().doc_id()).is_some() {
             return Err(IngestError::Store(StoreError::Synchronization {
@@ -1617,10 +1689,7 @@ impl ActiveSegment {
     }
 
     pub(crate) fn existing(&self, doc_id: DocId) -> Option<(usize, DocumentVersion, LogSeq)> {
-        let row = self
-            .doc_ids
-            .iter()
-            .position(|candidate| *candidate == doc_id)?;
+        let row = self.row_index.get(&doc_id)?;
         self.document(row)
             .zip(self.sequences.get(row).copied())
             .map(|(version, seq)| (row, version, seq))
@@ -1653,6 +1722,12 @@ impl ActiveSegment {
     pub(crate) fn resident_bytes(&self) -> u64 {
         self.doc_ids
             .resident_bytes()
+            .saturating_add(
+                self.row_index
+                    .bytes
+                    .as_ref()
+                    .map_or(0, AccountedCounter::bytes),
+            )
             .saturating_add(self.revisions.resident_bytes())
             .saturating_add(self.sequences.resident_bytes())
             .saturating_add(self.timestamps.resident_bytes())
@@ -1868,6 +1943,7 @@ impl ActiveSegment {
         Ok(Self {
             dims: self.dims,
             doc_ids: copy_accounted(accounting, &self.doc_ids, self.doc_ids.len())?,
+            row_index: ActiveRows::copy(&self.doc_ids, self.row_count(), accounting)?,
             revisions: copy_accounted(accounting, &self.revisions, self.revisions.len())?,
             sequences: copy_accounted(accounting, &self.sequences, self.sequences.len())?,
             timestamps: copy_accounted(accounting, &self.timestamps, self.timestamps.len())?,
@@ -2607,6 +2683,38 @@ mod tests {
     }
 
     #[test]
+    fn text_ingest_accounting_work_per_row_does_not_grow() {
+        let mut visits = Vec::new();
+        for n in [128, 512] {
+            crate::fts::postings::take_accounting_visits();
+            let (_segment, _accounting, _) = lookup_fixture(n);
+            visits.push(crate::fts::postings::take_accounting_visits());
+        }
+        eprintln!("N/4N work: {visits:?}");
+        let small = visits.first().copied().expect("N measurement");
+        let large = visits.last().copied().expect("4N measurement");
+        assert!(small > 0);
+        assert!(large <= 4 * small, "accounting visits N/4N: {visits:?}");
+    }
+
+    #[test]
+    fn active_id_lookup_work_per_row_does_not_grow() {
+        let mut visits = Vec::new();
+        for n in [128, 512] {
+            lookup::take_work();
+            let (segment, _accounting, _) = lookup_fixture(n);
+            // A missing-id revision probe traverses the full prefix too.
+            assert!(segment.existing(DocId::new(u128::MAX)).is_none());
+            visits.push(lookup::take_work());
+        }
+        eprintln!("N/4N work: {visits:?}");
+        let small = visits.first().copied().expect("N measurement");
+        let large = visits.last().copied().expect("4N measurement");
+        assert!(small > 0);
+        assert!(large <= 4 * small, "id lookup work N/4N: {visits:?}");
+    }
+
+    #[test]
     fn active_delete_lookup_work_is_linear() {
         for n in [128, 512, 2048] {
             let (segment, accounting, _) = lookup_fixture(n);
@@ -2656,8 +2764,22 @@ mod tests {
             for (row, id) in survivors.iter().enumerate() {
                 assert_eq!(purged.is_tombstoned(row), id % 2 == 0);
                 assert_eq!(purged.text(row).expect("text"), Some("alpha"));
+                assert_eq!(
+                    purged
+                        .existing(DocId::new(*id as u128))
+                        .expect("retained id")
+                        .0,
+                    row
+                );
             }
             assert!(work <= 8 * (n + ids.len()), "{n} rows: {work} lookup work");
+            assert_eq!(
+                purged.lexical.resident_bytes(),
+                purged.lexical.resident_bytes_rescan()
+            );
+            for id in &ids {
+                assert!(purged.existing(*id).is_none());
+            }
         }
     }
 
@@ -2845,7 +2967,27 @@ mod tests {
                     .expect("tombstone")
                     .0;
             }
+            for (row, id) in segment.doc_ids.iter().enumerate() {
+                assert_eq!(
+                    segment.existing(*id).expect("indexed id").0,
+                    row,
+                    "step {step}"
+                );
+            }
             if segment.has_text() {
+                assert_eq!(
+                    segment.lexical.resident_bytes(),
+                    segment.lexical.resident_bytes_rescan(),
+                    "step {step}"
+                );
+                assert_eq!(
+                    segment
+                        .lexical_bytes
+                        .as_ref()
+                        .expect("charged lexical")
+                        .bytes(),
+                    segment.lexical.resident_bytes_rescan() as u64
+                );
                 assert_index_matches_rebuild(&segment, &analyzer, step);
             }
         }

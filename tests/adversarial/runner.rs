@@ -5993,6 +5993,9 @@ fn run_lifecycle_campaign_operation(
             .last_mut()
             .expect("lifecycle comparison appended one oracle record")
             .case_identity = Some(case_identity);
+        if operation == super::campaign::LifecycleOperation::Accounting {
+            coverage.hit("lifecycle.accounting.active-id-map-denial");
+        }
         let _ = control_records;
         receipts.extend(
             evidence

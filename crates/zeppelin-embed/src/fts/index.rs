@@ -263,7 +263,7 @@ fn count_tokens_indexed(tokens: usize) {
 /// probe; an xxh3 probe is one hash and usually one compare. The sorted
 /// view the seal needs is materialized ONCE, in [`Self::postings`],
 /// instead of being maintained on every insert.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct SegmentIndex {
     /// Term key to slot in `lists`.
     terms: HashMap<TermKey, usize, Xxh3State>,
@@ -275,6 +275,35 @@ pub struct SegmentIndex {
     /// Slots in `lists` whose term a replacement dropped; new terms reuse
     /// them before growing `lists`. Each holds an empty list no key names.
     free_slots: Vec<usize>,
+    /// Heap owned by term keys and postings; updated only for touched terms.
+    term_bytes: usize,
+    posting_bytes: usize,
+}
+
+// Vec cloning can shrink capacities, so a copy measures its own allocations.
+impl Clone for SegmentIndex {
+    fn clone(&self) -> Self {
+        let mut copy = Self {
+            terms: self.terms.clone(),
+            lists: self.lists.clone(),
+            lengths: self.lengths.clone(),
+            row_count: self.row_count,
+            free_slots: self.free_slots.clone(),
+            term_bytes: 0,
+            posting_bytes: 0,
+        };
+        copy.term_bytes = copy
+            .terms
+            .keys()
+            .map(|key| key.term.capacity())
+            .fold(0, usize::saturating_add);
+        copy.posting_bytes = copy
+            .lists
+            .iter()
+            .map(PostingList::resident_bytes)
+            .fold(0, usize::saturating_add);
+        copy
+    }
 }
 
 /// Where [`SegmentIndex::accumulate`] places a row's postings.
@@ -382,6 +411,40 @@ impl SegmentIndex {
     }
 
     pub(crate) fn resident_bytes(&self) -> usize {
+        let term_slots = self
+            .terms
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(TermKey, usize)>().saturating_add(1));
+        let term_bytes = self.term_bytes;
+        let list_bytes = self
+            .lists
+            .capacity()
+            .saturating_mul(std::mem::size_of::<PostingList>())
+            .saturating_add(self.posting_bytes);
+        let free_slot_bytes = self
+            .free_slots
+            .capacity()
+            .saturating_mul(std::mem::size_of::<usize>());
+        let length_bytes = self
+            .lengths
+            .capacity()
+            .saturating_mul(std::mem::size_of::<FieldLengths>())
+            .saturating_add(
+                self.lengths
+                    .iter()
+                    .map(|entry| entry.lengths.capacity().saturating_mul(4))
+                    .fold(0_usize, usize::saturating_add),
+            );
+        term_slots
+            .saturating_add(term_bytes)
+            .saturating_add(list_bytes)
+            .saturating_add(length_bytes)
+            .saturating_add(free_slot_bytes)
+    }
+
+    /// Independent full scan used to prove the incremental charge stays exact.
+    #[cfg(test)]
+    pub(crate) fn resident_bytes_rescan(&self) -> usize {
         let term_slots = self
             .terms
             .capacity()
@@ -535,12 +598,28 @@ impl SegmentIndex {
                 let missing = IndexError::ReplacedPostingMissing { row };
                 let list_slot = self.terms.get(&probe).copied().ok_or(missing.clone())?;
                 let list = self.lists.get_mut(list_slot).ok_or(missing.clone())?;
+                let posting_slot = list
+                    .postings()
+                    .binary_search_by_key(&row, |posting| posting.docid)
+                    .map_err(|_| missing.clone())?;
+                let position_bytes = list
+                    .postings()
+                    .get(posting_slot)
+                    .ok_or(missing.clone())?
+                    .positions
+                    .capacity()
+                    .saturating_mul(4);
+                crate::fts::postings::count_accounting_visits(1);
                 if !list.remove(row) {
                     return Err(missing);
                 }
+                self.posting_bytes = self.posting_bytes.saturating_sub(position_bytes);
                 if list.is_empty() {
+                    self.posting_bytes = self.posting_bytes.saturating_sub(list.allocation_bytes());
                     *list = PostingList::new();
-                    self.terms.remove(&probe);
+                    if let Some((key, _)) = self.terms.remove_entry(&probe) {
+                        self.term_bytes = self.term_bytes.saturating_sub(key.term.capacity());
+                    }
                     self.free_slots.push(list_slot);
                 }
             }
@@ -682,21 +761,33 @@ impl SegmentIndex {
                 tf,
                 positions,
             };
+            let position_bytes = posting.positions.capacity().saturating_mul(4);
+            crate::fts::postings::count_accounting_visits(1);
             match self.terms.get(&probe).copied() {
                 Some(slot) => {
                     // The map only ever hands out slots minted below, so
                     // the lookup cannot miss; the `if let` is the panic-free
                     // spelling of that impossibility.
                     if let Some(list) = self.lists.get_mut(slot) {
+                        let previous = list.allocation_bytes();
                         match placement {
                             Placement::Append => list.push(posting)?,
                             Placement::Insert => list.insert(posting)?,
                         }
+                        self.posting_bytes = self
+                            .posting_bytes
+                            .saturating_sub(previous)
+                            .saturating_add(list.allocation_bytes())
+                            .saturating_add(position_bytes);
                     }
                 }
                 None => {
                     let mut list = PostingList::new();
                     list.push(posting)?;
+                    self.posting_bytes = self
+                        .posting_bytes
+                        .saturating_add(list.allocation_bytes())
+                        .saturating_add(position_bytes);
                     let slot = if let Some(slot) = self.free_slots.pop()
                         && let Some(free) = self.lists.get_mut(slot)
                     {
@@ -707,13 +798,12 @@ impl SegmentIndex {
                         self.lists.push(list);
                         slot
                     };
-                    self.terms.insert(
-                        TermKey {
-                            term: probe.term.clone(),
-                            field,
-                        },
-                        slot,
-                    );
+                    let key = TermKey {
+                        term: probe.term.clone(),
+                        field,
+                    };
+                    self.term_bytes = self.term_bytes.saturating_add(key.term.capacity());
+                    self.terms.insert(key, slot);
                 }
             }
             start = end;

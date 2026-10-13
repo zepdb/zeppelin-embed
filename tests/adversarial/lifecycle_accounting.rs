@@ -230,6 +230,58 @@ fn observe_locking(
     Ok(observed)
 }
 
+/// Refuse specifically at the active ID-map reservation and release the
+/// preceding row buffer. This extends the existing allocation-denial mode.
+fn observe_active_id_map_denial(directory: &std::path::Path) -> Result<(), String> {
+    use zeppelin_embed::ingest::{
+        DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
+    };
+    let path = directory.join("active-id-map-denied");
+    let baseline = Store::open(&path, OpenOptions::default()).map_err(|error| error.to_string())?;
+    let resident = baseline
+        .stats()
+        .map_err(|error| error.to_string())?
+        .resident_owned_bytes;
+    baseline.close().map_err(|error| error.to_string())?;
+    // The batch first allocates one DocId, then three hash slots. Leave
+    // the map exactly one byte short, before later row/text allocations.
+    let needed = resident
+        + std::mem::size_of::<DocId>() as u64
+        + (3 * (std::mem::size_of::<(DocId, usize)>() + 1)) as u64;
+    let budget = needed - 1;
+    let store = Store::open(
+        &path,
+        OpenOptions::default().with_max_resident_bytes(budget),
+    )
+    .map_err(|error| error.to_string())?;
+    let before = store.stats().map_err(|error| error.to_string())?;
+    let wal = std::fs::read(path.join("wal.ze")).map_err(|error| error.to_string())?;
+    let result = store.ingest(IngestBatch::new(vec![
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(1), Revision::new(1)),
+            vec![1.0],
+        )
+        .with_text("alpha beta"),
+    ]));
+    if !matches!(result, Err(IngestError::Store(StoreError::BudgetExceeded { needed: actual, budget: limit, component: "active segment" })) if actual == needed && limit == budget)
+    {
+        return Err(format!(
+            "active ID-map refusal: {result:?}; expected needed={needed} budget={budget}"
+        ));
+    }
+    let after = store.stats().map_err(|error| error.to_string())?;
+    if after.resident_owned_bytes != before.resident_owned_bytes
+        || after.active_segment_bytes != 0
+        || after.active_row_count != before.active_row_count
+        || std::fs::read(path.join("wal.ze")).map_err(|error| error.to_string())? != wal
+    {
+        return Err(
+            "active ID-map refusal changed the store or leaked its working copy".to_owned(),
+        );
+    }
+    store.close().map_err(|error| error.to_string())
+}
+
 fn observe_accounting(
     store: &Store,
     directory: &std::path::Path,
@@ -282,6 +334,7 @@ fn observe_accounting(
         return Err("denied query retained an admission or allocation".to_owned());
     }
     denied.close().map_err(|error| error.to_string())?;
+    observe_active_id_map_denial(directory)?;
     Ok(observed)
 }
 
@@ -398,6 +451,12 @@ mod tests {
             };
             result.unwrap();
         }
+    }
+
+    #[test]
+    fn active_id_map_budget_refusal_leaves_store_unchanged() {
+        let directory = tempdir().expect("directory");
+        observe_active_id_map_denial(directory.path()).expect("atomic map refusal");
     }
 
     #[test]

@@ -942,6 +942,8 @@ fn every_active_segment_byte_is_accounted() {
         + (2 * std::mem::size_of::<f32>())
         + 1
         + std::mem::size_of::<zeppelin_embed::quant::Bit4Factors>();
+    // A one-entry std HashMap has capacity for three key/row slots.
+    let expected = expected + 3 * (std::mem::size_of::<(DocId, usize)>() + 1);
     let expected = u64::try_from(expected).expect("active byte count fits u64");
 
     assert_eq!(stats.active_segment_bytes, expected);
