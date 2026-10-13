@@ -26,7 +26,12 @@ pub(super) fn estimate_preparation_bytes(
     let mut previous = [None; 2];
     let mut input = 0usize;
     let mut record_scratch = 0usize;
+    let mut caller_nodes = 0usize;
     for write in writes {
+        caller_nodes = caller_nodes.saturating_add(usize::from(matches!(
+            write.operation,
+            StructuredOperation::CreateWithId(_)
+        )));
         let expected = match write.operation {
             StructuredOperation::Create | StructuredOperation::CreateWithId(_) => {
                 ExpectedGraphState::Absent
@@ -146,11 +151,21 @@ pub(super) fn estimate_preparation_bytes(
     let fixed = 2_usize * 1024 * 1024;
     let cache =
         cache_rows.saturating_mul(crate::lifecycle::native_graph::admission_cache_row_bytes());
+    // Linked documents retain one version per caller ID (base.rs), in
+    // addition to their cache rows and temporary wanted-entity descriptors.
+    let versions = caller_nodes.saturating_mul(size_of::<crate::ingest::DocumentVersion>());
     // Wanted entities are reserved at three rows/request, then dropped before
     // directories and packs exist (base.rs). Do not sum disjoint phases.
     let preload = fixed
         .saturating_add(cache)
-        .saturating_add(writes.len().saturating_mul(3 * size_of::<EntityId>()));
+        .saturating_add(versions)
+        .saturating_add(
+            writes
+                .len()
+                .saturating_mul(3)
+                .saturating_add(caller_nodes)
+                .saturating_mul(size_of::<EntityId>()),
+        );
     let capacity = |count: usize| {
         if count == 0 {
             0
@@ -177,7 +192,10 @@ pub(super) fn estimate_preparation_bytes(
     let mut pending = entity_charge
         .saturating_add(key_charge)
         .saturating_add(member_charge);
-    let common = fixed.saturating_add(cache).saturating_add(record_scratch);
+    let common = fixed
+        .saturating_add(cache)
+        .saturating_add(versions)
+        .saturating_add(record_scratch);
     // Descriptor doubling admits old + replacement; old backing disappears
     // before sorting/flush scratch is allocated.
     let growth = (label_capacity.max(type_capacity) / 2).saturating_mul(edit);

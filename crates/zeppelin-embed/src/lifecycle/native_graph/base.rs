@@ -815,7 +815,12 @@ where
             .ok_or(NativeGraphError::Invalid("native base cache capacity"))?;
         let mut cache_capacity = documents.map_or(0, |documents| documents.documents().len());
         for request in requests {
-            if !matches!(request.operation, StructuredOperation::Create) {
+            // Linked caller IDs are already counted by the document batch.
+            // Any other caller ID found in the base uses push_growing below.
+            if !matches!(
+                request.operation,
+                StructuredOperation::Create | StructuredOperation::CreateWithId(_)
+            ) {
                 cache_capacity = cache_capacity
                     .checked_add(1)
                     .ok_or(NativeGraphError::Invalid("native base cache capacity"))?;

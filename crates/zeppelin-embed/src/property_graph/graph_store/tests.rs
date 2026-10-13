@@ -22,6 +22,8 @@ use crate::property_graph::{
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+mod ldbc;
+
 fn control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
 }
