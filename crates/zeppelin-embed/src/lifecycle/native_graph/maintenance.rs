@@ -1869,14 +1869,7 @@ fn retire_completed_reclaim(
         .map(|_| crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()));
     let publication_control = completion_control.as_ref().unwrap_or(control);
     super::write::checkpoint_current(store, writer, &cleared_bundle, &shared, publication_control)?;
-    store
-        .native_graph
-        .pack_bytes_since_reclaim
-        .store(0, std::sync::atomic::Ordering::Relaxed);
-    store
-        .native_graph
-        .commits_since_reclaim
-        .store(0, std::sync::atomic::Ordering::Relaxed);
+    store.reset_native_graph_maintenance_due();
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
         "maintenance-retired",
@@ -2023,10 +2016,20 @@ pub(super) fn commit_with_limits(
         .checkpoint()
         .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
     let admitted = Arc::clone(admission.lease.bundle());
-    if admitted.sequence() == 0 {
-        // Nothing was ever committed: no record or inventory
-        // exists to move, fold or reclaim. Publishing a Maintenance envelope
-        // over the empty base would only burn a generation.
+    if admitted.sequence() == 0 || (!limits.reclaim && admitted.prepared_inventories().is_empty()) {
+        if !limits.reclaim {
+            let _writer = store
+                .native_graph
+                .writer
+                .lock()
+                .map_err(|_| NativeGraphError::Invalid("native graph writer lock"))?;
+            if !store.native_graph.is_current_bundle(&admitted)? {
+                return Err(NativeGraphError::StalePreparation);
+            }
+            store.reset_native_graph_maintenance_due();
+        }
+        // An empty store or automatic fold has no work to publish. Explicit
+        // reclamation still runs over a nonempty base with no pending fold.
         return Ok(NativeMaintenanceReport {
             relocated_bytes: 0,
             drained_packs: 0,
@@ -2041,11 +2044,19 @@ pub(super) fn commit_with_limits(
     let shared = GraphResources::from_store(store)?;
     let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
     let storage = StorageMemory::new(&write_memory, control, limits.storage_bytes)?;
-    let source = NativePreparationSource::new(
-        &admission.lease,
-        &storage,
-        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
-    )?;
+    let source = if limits.reclaim {
+        NativePreparationSource::new_windowed(
+            &admission.lease,
+            &storage,
+            crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+        )?
+    } else {
+        NativePreparationSource::new(
+            &admission.lease,
+            &storage,
+            crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+        )?
+    };
     let mut resources =
         crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
             &storage,
@@ -2399,6 +2410,9 @@ pub(super) fn commit_with_limits(
     }
     let _ = protect_and_commit(store, writer, transition, control, false, budget)?;
     *sweep_progress = next_sweep;
+    if !limits.reclaim {
+        store.reset_native_graph_maintenance_due();
+    }
     Ok(NativeMaintenanceReport {
         relocated_bytes: consolidated.relocated_bytes(),
         drained_packs,

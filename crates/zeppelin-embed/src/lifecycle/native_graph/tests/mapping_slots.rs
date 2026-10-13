@@ -872,6 +872,218 @@ fn ze276_single_node_preparation_work_bound() {
     store.close().expect("close");
 }
 
+#[test]
+fn ze446_plain_writes_remain_recoverable_at_mapping_limit() {
+    use crate::property_graph::storage::mapping_slot_capture::Capture;
+    let parent = super::tempfile::tempdir().unwrap();
+    let store =
+        Store::create_native_graph(parent.path().join("recover"), durable_options(), None).unwrap();
+    // Existing seam reduces preparation's 8192 mapping slots to 64.
+    let _capture = Capture::start();
+    let mut written = 0;
+    for index in 0..96 {
+        match try_commit_probe_node(&store, index) {
+            Ok(_) => written += 1,
+            Err(error) => {
+                assert!(
+                    matches!(
+                        error,
+                        super::super::NativeGraphError::Read(
+                            crate::property_graph::storage::tree::directory::TreeError::Memory
+                                | crate::property_graph::storage::tree::directory::TreeError::Work
+                        )
+                    ),
+                    "unexpected refusal: {error:?}"
+                );
+                println!("ZE446_REFUSAL written={written} error={error:?}");
+                break;
+            }
+        }
+    }
+    let lease = store.admit_native_read().unwrap();
+    let sequence = lease.bundle().sequence();
+    drop(lease);
+    let artifacts = std::fs::read_dir(parent.path().join("recover"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".zgraph"))
+        .count();
+    println!("ZE446_PLAIN written={written} commits={sequence} artifacts={artifacts}");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut complete = false;
+    for _ in 0..16 {
+        complete = store
+            .maintain_native_graph_step(&control)
+            .expect("maintenance must recover")
+            .cycle_complete;
+        if complete {
+            break;
+        }
+    }
+    assert!(complete, "maintenance must complete");
+    try_commit_probe_node(&store, written).expect("write after maintenance");
+    store.close().unwrap();
+}
+
+#[test]
+fn ze446_empty_automatic_fold_publishes_nothing() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let store =
+        Store::create_native_graph(parent.path().join("empty-fold"), durable_options(), None)
+            .unwrap();
+    for index in 0..32 {
+        commit_probe_node(&store, index);
+    }
+    let control = QueryControl::Cancel(CancelToken::new());
+    store
+        .auto_maintain_native_graph(&control, 64 * 1024 * 1024)
+        .unwrap();
+    // Model a recovered base with no deferred prepared inventories. Its
+    // graph and inventory roots still name the authenticated live objects.
+    {
+        let mut state = store.native_graph.state.lock().unwrap();
+        std::sync::Arc::get_mut(state.current.as_mut().unwrap())
+            .unwrap()
+            .prepared_inventories
+            .clear();
+    }
+    store
+        .native_graph
+        .commits_since_reclaim
+        .store(32, std::sync::atomic::Ordering::Relaxed);
+    let before = store.admit_native_read().unwrap().bundle().sequence();
+    let generation = store
+        .admit_native_read()
+        .unwrap()
+        .bundle()
+        .base()
+        .generation;
+    let files = std::fs::read_dir(parent.path().join("empty-fold"))
+        .unwrap()
+        .count();
+    store
+        .auto_maintain_native_graph(&control, 64 * 1024 * 1024)
+        .unwrap();
+    assert_eq!(
+        store.admit_native_read().unwrap().bundle().sequence(),
+        before,
+        "empty automatic fold must not publish"
+    );
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation,
+        generation
+    );
+    assert_eq!(
+        std::fs::read_dir(parent.path().join("empty-fold"))
+            .unwrap()
+            .count(),
+        files
+    );
+    store.close().unwrap();
+}
+
+#[test]
+fn ze446_artifact_refusal_leaves_maintenance_headroom() {
+    run_ze446_artifact_refusal_leaves_maintenance_headroom();
+}
+
+pub(super) fn run_ze446_artifact_refusal_leaves_maintenance_headroom() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("headroom"), durable_options(), None)
+        .unwrap();
+    let first = commit_probe_node(&store, 0);
+    let logical_before = logical_state(&store, &[first]);
+    // Force the conservative writer estimate to the admission ceiling.
+    store
+        .native_graph
+        .writer
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .retained_artifacts = crate::property_graph::storage::MAX_NATIVE_ARTIFACTS / 2;
+    let before = store.admit_native_read().unwrap().bundle().sequence();
+    assert!(matches!(
+        try_commit_probe_node(&store, 1),
+        Err(super::super::NativeGraphError::Read(
+            crate::property_graph::storage::tree::directory::TreeError::Memory
+        ))
+    ));
+    assert_eq!(
+        store.admit_native_read().unwrap().bundle().sequence(),
+        before
+    );
+    let control = QueryControl::Cancel(CancelToken::new());
+    for _ in 0..16 {
+        if store
+            .maintain_native_graph_step(&control)
+            .unwrap()
+            .cycle_complete
+        {
+            break;
+        }
+    }
+    try_commit_probe_node(&store, 1).unwrap();
+    assert_eq!(logical_state(&store, &[first]), logical_before);
+    store.close().unwrap();
+}
+
+#[test]
+#[ignore = "ZE-446 release reproduction of the 2023-write reviewer workload"]
+fn ze446_default_plain_writes_recover_after_refusal() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let store =
+        Store::create_native_graph(parent.path().join("default"), durable_options(), None).unwrap();
+    let mut written = 0;
+    for index in 0..2023 {
+        match try_commit_probe_node(&store, index) {
+            Ok(_) => written += 1,
+            Err(error) => {
+                println!("ZE446_DEFAULT_REFUSAL written={written} error={error:?}");
+                assert!(
+                    matches!(
+                        error,
+                        super::super::NativeGraphError::Read(
+                            crate::property_graph::storage::tree::directory::TreeError::Memory
+                                | crate::property_graph::storage::tree::directory::TreeError::Work
+                        )
+                    ),
+                    "unexpected refusal at write {written}: {error:?}"
+                );
+                break;
+            }
+        }
+    }
+    println!(
+        "ZE446_DEFAULT written={written} commits={} artifacts={}",
+        store.admit_native_read().unwrap().bundle().sequence(),
+        std::fs::read_dir(parent.path().join("default"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".zgraph"))
+            .count()
+    );
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut complete = false;
+    for _ in 0..16 {
+        complete = store
+            .maintain_native_graph_step(&control)
+            .expect("maintenance must recover")
+            .cycle_complete;
+        if complete {
+            break;
+        }
+    }
+    assert!(complete);
+    try_commit_probe_node(&store, written).expect("write after maintenance");
+    store.close().unwrap();
+}
+
 /// Owner-requested deterministic history curve; timing is supporting evidence.
 #[test]
 #[ignore = "ZE-290 release history qualification"]
@@ -914,22 +1126,8 @@ fn emit_preparation_report(
         .map(|(bytes, opens)| bytes * *opens as u64)
         .sum();
     let opens: usize = report.artifacts.values().map(|(_, opens)| opens).sum();
-    let mut before = 0;
-    let deltas: Vec<_> = report
-        .phases
-        .iter()
-        .map(|(phase, work)| {
-            if *phase == "staging-end"
-                || *phase == "maintenance-census-end"
-                || (phase.starts_with("maintenance-") && phase.ends_with("start"))
-            {
-                before = 0;
-            }
-            let delta = work - before;
-            before = *work;
-            (*phase, delta)
-        })
-        .collect();
+    // Phases can belong to different work ledgers. Report their raw values;
+    // subtracting across a capture/checkpoint boundary invents a delta.
     let mut repeated: Vec<_> = report
         .artifacts
         .values()
@@ -939,11 +1137,24 @@ fn emit_preparation_report(
     repeated.sort_unstable_by_key(|(bytes, opens)| std::cmp::Reverse(bytes * (*opens as u64 - 1)));
     let mut output = std::io::stdout().lock();
     writeln!(output,
-        "ZE290 commits={commits} seconds={:.6} cpm={:.3} phases={:?} deltas={deltas:?} auth_bytes={auth_bytes} auth_opens={opens} unique={} leaf_entries={} child_pages={} rejected={:?} repeated={:?} origins={:?} protected_mark={:?} census_rows={} buffer_refusals={:?}",
+        "ZE290 commits={commits} seconds={:.6} cpm={:.3} phases={:?} auth_bytes={auth_bytes} auth_opens={opens} unique={} leaf_entries={} child_pages={} rejected={:?} repeated={:?} origins={:?} protected_mark={:?} census_rows={} buffer_refusals={:?}",
         elapsed.as_secs_f64(), commits as f64 * 60.0 / elapsed.as_secs_f64(),
         report.phases, report.artifacts.len(), report.leaf_entries, report.child_pages,
         report.rejected, repeated.get(..repeated.len().min(8)), report.origins, report.protected_mark, report.census_rows, report.buffer_refusals
     ).expect("write qualification counters");
+}
+
+#[test]
+fn ze446_counter_report_keeps_independent_work_ledgers() {
+    let report = crate::property_graph::storage::preparation_work_capture::Report {
+        phases: vec![
+            ("maintenance-fold-end", 1000),
+            ("captured-changes-start", 100),
+            ("captured-changes-end", 200),
+        ],
+        ..Default::default()
+    };
+    emit_preparation_report(1, std::time::Duration::ZERO, &report);
 }
 
 /// Two block reads and a semantic window need a full 2L-8 proof only on a
@@ -1166,18 +1377,18 @@ fn ze316_count_trigger_lifecycle() {
             .any(|(phase, _)| *phase == "maintenance-start"),
         "count debt must make maintenance due: {report:?}"
     );
-    // Automatic folding keeps reclamation debt; only explicit maintenance
+    // Automatic folding advances its due counters. Only explicit maintenance
     // may mark, reclaim and retire the protected history.
     assert!(!report.phases.iter().any(|(phase, _)| matches!(
         *phase,
         "maintenance-census-end" | "maintenance-proof-end" | "maintenance-retired"
     )));
-    assert!(
+    assert_eq!(
         store
             .native_graph
             .commits_since_reclaim
-            .load(Ordering::Relaxed)
-            >= 32
+            .load(Ordering::Relaxed),
+        1
     );
     capture::start();
     for _ in 0..16 {

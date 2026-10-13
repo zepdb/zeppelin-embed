@@ -1220,7 +1220,13 @@ allowance. Full-store marking and reclamation run only through explicit
 maintenance (`maintain`, `maintain_cycle`), because a full mark grows with the
 store (1.59 G work units at 176k nodes) and failed large LDBC writes. A store
 that only receives writes keeps its garbage until the application runs
-maintenance. Incremental marking may restore automatic full reclamation later.
+maintenance. Successful automatic folds advance their due counters; empty
+folds publish nothing. The writer counts retained artifacts without scanning
+the store and refuses new writes at half the descriptor ceiling, reserving
+the other half for explicit maintenance. Checkpoints and reopen restore this
+conservative count. Explicit reclaim uses scoped mapping windows so retained
+garbage cannot exhaust its preparation mapping table.
+Incremental marking may restore automatic full reclamation later.
 
 ## ZE-64 composed search statements
 

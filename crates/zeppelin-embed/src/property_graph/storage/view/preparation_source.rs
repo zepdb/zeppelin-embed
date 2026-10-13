@@ -202,6 +202,17 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         Ok(source)
     }
 
+    /// Retain page proofs up to the table reserve, then use scoped windows.
+    pub(crate) fn new_windowed(
+        lease: &'lease NativeReadLease,
+        memory: &'m StorageMemory<'m>,
+        capacity: usize,
+    ) -> Result<Self, TreeError> {
+        let source = Self::new_scoped(lease, memory, capacity)?;
+        source.scoped.set(false);
+        Ok(source)
+    }
+
     pub(crate) fn resources(&self, work_limit: u64) -> Result<TreeResources<'m>, TreeError> {
         TreeResources::for_prepare(self.memory, work_limit)
     }

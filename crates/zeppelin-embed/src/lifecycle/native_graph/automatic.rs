@@ -10,6 +10,16 @@ pub(super) const RECLAIM_AFTER_COMMITS: u64 = 32;
 const CYCLE_STEP_LIMIT: &str = "graph maintenance cycle exceeded four steps";
 
 impl Store {
+    // Caller holds the native writer lock after successful fold or retirement.
+    pub(super) fn reset_native_graph_maintenance_due(&self) {
+        self.native_graph
+            .commits_since_reclaim
+            .store(0, Ordering::Relaxed);
+        self.native_graph
+            .pack_bytes_since_reclaim
+            .store(0, Ordering::Relaxed);
+    }
+
     pub(crate) fn set_native_graph_maintenance_policy(
         &self,
         policy: GraphMaintenancePolicy,

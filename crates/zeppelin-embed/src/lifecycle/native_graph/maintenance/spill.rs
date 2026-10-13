@@ -149,6 +149,7 @@ impl SpillIo for NativeSpillReader<'_, '_> {
 /// Opaque handoff for one fully flushed and locally validated durable proof.
 /// The registration remains live until the sole commit path adopts its roots.
 pub(in crate::lifecycle::native_graph) struct PreparedDurableSpill {
+    created_objects: u64,
     admitted: NativeReadLease,
     capture: NativeProtectedRoots,
     binding: SpillBinding,
@@ -163,6 +164,9 @@ pub(in crate::lifecycle::native_graph) struct PreparedDurableSpill {
 }
 
 impl PreparedDurableSpill {
+    pub(in crate::lifecycle::native_graph) fn created_objects(&self) -> u64 {
+        self.created_objects
+    }
     pub(in crate::lifecycle::native_graph) const fn binding(&self) -> SpillBinding {
         self.binding
     }
@@ -425,6 +429,7 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
             ));
         }
         Ok(PreparedDurableSpill {
+            created_objects: self.created_objects,
             admitted: self.lease.clone(),
             capture,
             binding: self.binding,

@@ -6174,6 +6174,11 @@ fn install_unified_inner(
             count,
             &validator.protected,
         )?;
+        writer.retained_artifacts = graph
+            .objects
+            .len()
+            .checked_add(validator.protected.len())
+            .ok_or(TreeError::Memory)?;
         writer.envelope_bytes = commits
             .iter()
             .try_fold(0_usize, |sum, commit| sum.checked_add(commit.bytes.len()))

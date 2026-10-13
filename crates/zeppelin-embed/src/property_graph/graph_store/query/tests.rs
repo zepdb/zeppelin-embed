@@ -561,13 +561,12 @@ fn ze316_query_mutations_trigger_count_reclaim() {
         .native_graph
         .commits_since_reclaim
         .load(Ordering::Relaxed);
-    if report
-        .phases
-        .iter()
-        .any(|(phase, _)| *phase == "maintenance-retired")
-    {
-        assert_eq!(debt, 1);
-    } else {
-        assert!(debt >= 32, "fold-only query maintenance preserves debt");
-    }
+    assert_eq!(
+        debt, 1,
+        "a successful query-triggered fold advances due debt"
+    );
+    assert_eq!(
+        report.mark_entries, 0,
+        "query writes must not mark the store"
+    );
 }

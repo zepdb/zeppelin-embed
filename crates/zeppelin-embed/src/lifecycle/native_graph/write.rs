@@ -89,6 +89,8 @@ pub(crate) struct NativeWriter {
     pub(super) complete_envelopes: u64,
     pub(super) stopped: bool,
     pub(super) checkpoint_failed: bool,
+    // Conservative inventory size: checkpoint descriptors plus publications.
+    pub(super) retained_artifacts: usize,
     pub(super) protected: Vec<crate::property_graph::wal::ArtifactDescriptor>,
     pub(super) durable_protected: Vec<NativeDurableProtection>,
     _protected_charge: GraphReservation,
@@ -618,6 +620,7 @@ impl NativeWriter {
             complete_envelopes: 0,
             stopped: false,
             checkpoint_failed: false,
+            retained_artifacts: 0,
             protected,
             durable_protected,
             _protected_charge: charge,
@@ -717,6 +720,7 @@ fn checkpoint_current_inner(
     let checkpoint_memory = WriteMemory::new(resources, WriteLimits::default())?;
     let storage = StorageMemory::new(&checkpoint_memory, control, 32 * 1024 * 1024)?;
     let objects = super::recovery::manifest_inventory(store, admitted, &storage)?;
+    let retained_artifacts = objects.len();
     #[cfg(test)]
     {
         let gate = store
@@ -764,6 +768,7 @@ fn checkpoint_current_inner(
     writer.complete_envelopes = 0;
     writer.envelope_bytes = 0;
     writer.checkpoint_failed = false;
+    writer.retained_artifacts = retained_artifacts;
     writer.protected.clear();
     if admitted.reclaim().is_some() {
         writer
@@ -2095,6 +2100,20 @@ fn protect_and_commit_with_documents(
             sum.checked_add(artifact.bytes.len() as u64)
                 .ok_or(NativeGraphError::IdentityExhausted)
         })?;
+    let retained_artifacts = writer
+        .retained_artifacts
+        .checked_add(transition.artifacts.len())
+        .and_then(|count| {
+            usize::try_from(
+                transition
+                    .durable
+                    .as_ref()
+                    .map_or(0, |proof| proof.created_objects()),
+            )
+            .ok()
+            .and_then(|spills| count.checked_add(spills))
+        })
+        .ok_or(TreeError::Memory)?;
     writer.can_protect(transition.artifacts.len())?;
     if transition.durable.is_some() {
         writer.can_protect_durable()?;
@@ -2357,6 +2376,7 @@ fn protect_and_commit_with_documents(
             |commits| Some(commits.saturating_add(1)),
         );
         writer.complete_envelopes = next_complete_envelopes;
+        writer.retained_artifacts = retained_artifacts;
         Ok(())
     };
     #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
@@ -2721,6 +2741,15 @@ pub(super) fn commit_staged_batch_with_documents<'m>(
         resources.work(),
     );
     let tail_bytes = writer.envelope_bytes;
+    // Leave half the fixed descriptor ceiling for explicit reclamation's
+    // proof, replacement and retirement publications. Refuse before I/O.
+    if writer
+        .retained_artifacts
+        .checked_add(transition.artifacts.len())
+        .is_none_or(|count| count > crate::property_graph::storage::MAX_NATIVE_ARTIFACTS / 2)
+    {
+        return Err(TreeError::Memory.into());
+    }
     let pending_tail_bytes = tail_bytes
         .checked_add(transition.wal_bytes().len())
         .ok_or(NativeGraphError::IdentityExhausted)?;
