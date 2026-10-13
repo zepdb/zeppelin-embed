@@ -329,7 +329,37 @@ impl Builder<'_, '_, '_> {
                 )?);
                 continue;
             }
-            let first = child(part, 0)?;
+            let last_index = part
+                .children()
+                .len()
+                .checked_sub(1)
+                .ok_or_else(|| invariant(part.span, "empty pattern"))?;
+            // Keep first-bound plans intact. A bound final node anchors a
+            // fixed-length read without scanning fresh nodes for each row.
+            let reverse = !self.scoped(slot(bound, child(part, 0)?)?)
+                && self.scoped(slot(bound, child(part, last_index)?)?)
+                && !part.children().iter().any(|id| {
+                    bound.syntax().node(*id).is_some_and(|node| {
+                        matches!(
+                            node.kind,
+                            NodeKind::RelationshipPattern {
+                                bounds: Some(_),
+                                ..
+                            }
+                        )
+                    })
+                });
+            let pattern_child = |index| {
+                let index = if reverse {
+                    last_index
+                        .checked_sub(index)
+                        .ok_or_else(|| invariant(part.span, "reversed pattern child"))?
+                } else {
+                    index
+                };
+                child(part, index)
+            };
+            let first = pattern_child(0)?;
             let mut anchor = slot(bound, first)?;
             let first_node = syntax(bound, first)?;
             // A simple label on a fresh fixed-length relationship anchor is
@@ -389,13 +419,13 @@ impl Builder<'_, '_, '_> {
                 current = self.operator(op, &[current], first_node.span)?;
                 self.add_scope(anchor, first_node.span)?;
             }
-            if scan_label.is_none() {
+            if !reverse && scan_label.is_none() {
                 current = self.filter_constraints(bound, first_node, anchor, current)?;
             }
             let mut index = 1;
             while index < part.children().len() {
-                let relationship_id = child(part, index)?;
-                let target_id = child(part, index + 1)?;
+                let relationship_id = pattern_child(index)?;
+                let target_id = pattern_child(index + 1)?;
                 let relationship_node = syntax(bound, relationship_id)?;
                 let target_node = syntax(bound, target_id)?;
                 let wanted_rel = slot(bound, relationship_id)?;
@@ -418,11 +448,14 @@ impl Builder<'_, '_, '_> {
                 else {
                     return Err(invariant(relationship_node.span, "relationship pattern"));
                 };
-                let direction = match direction {
-                    crate::Direction::Incoming => NativeDirection::Incoming,
-                    crate::Direction::Outgoing => NativeDirection::Outgoing,
-                    crate::Direction::Both => NativeDirection::Either,
-                };
+                let direction =
+                    match (direction, reverse) {
+                        (crate::Direction::Incoming, false)
+                        | (crate::Direction::Outgoing, true) => NativeDirection::Incoming,
+                        (crate::Direction::Outgoing, false)
+                        | (crate::Direction::Incoming, true) => NativeDirection::Outgoing,
+                        (crate::Direction::Both, _) => NativeDirection::Either,
+                    };
                 let start = self.names.len();
                 for id in relationship_node.children() {
                     let detail = syntax(bound, *id)?;
@@ -502,7 +535,7 @@ impl Builder<'_, '_, '_> {
                     }
                 };
                 current = self.operator(op, &[current], relationship_node.span)?;
-                if bounds.is_none() {
+                if !reverse && bounds.is_none() {
                     current =
                         self.filter_constraints(bound, relationship_node, relationship, current)?;
                 }
@@ -547,9 +580,24 @@ impl Builder<'_, '_, '_> {
                         relationship_node.span,
                     )?;
                 }
-                current = self.filter_constraints(bound, target_node, wanted_node, current)?;
+                if !reverse {
+                    current = self.filter_constraints(bound, target_node, wanted_node, current)?;
+                }
                 anchor = wanted_node;
                 index += 2;
+            }
+            if reverse {
+                // Inline properties may read earlier textual bindings. Check
+                // them in source order once the reversed traversal has bound
+                // every member, including any reused relationship slots.
+                for id in part.children() {
+                    current = self.filter_constraints(
+                        bound,
+                        syntax(bound, *id)?,
+                        slot(bound, *id)?,
+                        current,
+                    )?;
+                }
             }
         }
         if optional {

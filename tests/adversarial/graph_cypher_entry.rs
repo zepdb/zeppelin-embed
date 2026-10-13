@@ -17,7 +17,7 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 36] = [
+pub const REQUIRED_COVERAGE: [&str; 39] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
@@ -54,6 +54,9 @@ pub const REQUIRED_COVERAGE: [&str; 36] = [
     "property-graph.cypher-entry.incident-undirected.read",
     "property-graph.cypher-entry.incident-labelled.read",
     "property-graph.cypher-entry.id-expand.read",
+    "property-graph.cypher-entry.reversed-pattern.read",
+    "property-graph.cypher-entry.reversed-pattern.limit.fire",
+    "property-graph.cypher-entry.pattern-scope.fire",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -201,6 +204,7 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         probe_expansion_rebind(&store, base)?;
         probe_relationship_control(&store)?;
         probe_other_anchor_shapes(&store)?;
+        probe_reversed_pattern(&store)?;
         generations.push(read(&store)?.1);
         probe_id_lookup(&store)?;
 
@@ -322,6 +326,71 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
     })();
     let _ = std::fs::remove_dir_all(&root);
     outcome
+}
+
+fn probe_reversed_pattern(store: &Store) -> Result<(), String> {
+    use zeppelin_embed::property_graph::query::runtime::{RuntimeLimits, WorkKind};
+    let query = "MATCH (g:Guard) WHERE ()-[:R]->(g) RETURN count(*)";
+    let generation = read(store)?.1;
+    for (text, count) in [
+        (query, 1),
+        ("MATCH (g:Guard) WHERE (g)<-[:R]-() RETURN count(*)", 1),
+        ("MATCH (g:Guard) MATCH ()-[:R]->(g) RETURN count(*)", 1),
+        (
+            "MATCH (g:Guard) MATCH (p:P)-[:R]->(g {v:p.v}) RETURN count(*)",
+            0,
+        ),
+    ] {
+        let result = run(store, text, &[]).map_err(|error| error.to_string())?;
+        if values(&result)? != [count]
+            || result.metadata().counters.get(WorkKind::AdjacencyEntries) != 4
+            || result.metadata().generation.get() != generation
+        {
+            return Err(format!("reversed pattern rows/work/generation: {text}"));
+        }
+    }
+    let null = run(store, "WITH null AS g RETURN exists(()-[:R]->(g))", &[])
+        .map_err(|error| error.to_string())?;
+    if null.cell(0, 0) != Some(&Value::Bool(false))
+        || null.metadata().counters.get(WorkKind::AdjacencyEntries) != 0
+    {
+        return Err(String::from("null reversed pattern read adjacency"));
+    }
+    let options = GraphQueryOptions::default()
+        .with_limits(
+            24 * 1024 * 1024,
+            RuntimeLimits::default()
+                .with_limit(WorkKind::AdjacencyEntries, 0)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+    match execute(
+        store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &options,
+        query,
+        &[],
+        CompileLimits::default(),
+    ) {
+        Err(StatementError::Query(error))
+            if error.kind() == GraphQueryErrorKind::Limit && error.nothing_committed() => {}
+        _ => return Err(String::from("reversed pattern work limit did not fire")),
+    }
+    match run(
+        store,
+        "MATCH (p:P), (g:Guard) WITH p WHERE (p)-[:R]->(g) RETURN p",
+        &[],
+    ) {
+        Err(StatementError::Compile(error)) if error.kind == ErrorKind::UnknownVariable => {}
+        _ => return Err(String::from("predicate scope refusal did not fire")),
+    }
+    let clean = run(store, query, &[]).map_err(|error| error.to_string())?;
+    if values(&clean)? != [1] || clean.metadata().generation.get() != generation {
+        return Err(String::from(
+            "reversed pattern paired clean control changed",
+        ));
+    }
+    Ok(())
 }
 
 fn probe_page_validation(store: &Store) -> Result<(), String> {

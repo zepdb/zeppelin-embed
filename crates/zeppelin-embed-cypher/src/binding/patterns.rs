@@ -29,13 +29,7 @@ impl<'a> Binder<'a, '_> {
                     .ast
                     .text(variable)
                     .ok_or_else(|| error(part.span, "missing predicate variable"))?;
-                if self.lookup_optional(name, part.span)?.is_none() {
-                    return Err(ParseError::new(
-                        ErrorKind::Unsupported,
-                        part.span,
-                        "named new variable inside pattern predicate",
-                    ));
-                }
+                self.lookup(name, part.span)?;
             }
         }
         let singleton = self.singleton;

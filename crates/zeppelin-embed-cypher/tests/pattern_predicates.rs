@@ -98,17 +98,109 @@ fn ze443_null_bound_endpoints_never_become_scans() {
 }
 
 #[test]
-fn ze443_named_new_predicate_variables_are_typed_unsupported() {
+fn ze447_unresolved_predicate_variables_are_scope_errors() {
     let graph = Graph::new("ze443-scope");
     for query in [
         "MATCH (a) WHERE (a)-[:T]->(new) RETURN a",
         "MATCH (a) WHERE exists((a)-[new:T]->()) RETURN a",
         "MATCH (a) RETURN (new)-[:T]->(a)",
+        "MATCH (a), (b) WITH a WHERE (a)-[:T]->(b) RETURN a",
+        "MATCH (a)-[r:T]->(b) WITH a RETURN exists((a)-[r]->())",
     ] {
         let error = graph.run(query, &[]).err().unwrap();
         assert!(
-            matches!(error, StatementError::Compile(ref error) if error.kind == ErrorKind::Unsupported),
+            matches!(error, StatementError::Compile(ref error) if error.kind == ErrorKind::UnknownVariable),
             "{query}: {error}"
+        );
+    }
+}
+
+#[test]
+fn ze447_reversed_bound_endpoint_has_linear_adjacency_work() {
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    let mut work = Vec::new();
+    for edges in [50, 100] {
+        let graph = Graph::new("ze447-reversed-work");
+        for _ in 0..edges / 25 {
+            graph.setup(&format!(
+                "CREATE {}",
+                vec!["(:Source)-[:U {ok:1}]->(:X {ok:1})"; 25].join(", ")
+            ));
+        }
+        for query in [
+            "MATCH (x:X) WHERE ()-[:U]->(x) RETURN count(*)",
+            "MATCH (x:X) WHERE (x)<-[:U]-() RETURN count(*)",
+            "MATCH (x:X) MATCH ()-[:U]->(x) RETURN count(*)",
+        ] {
+            let result = graph.run(query, &[]).unwrap();
+            assert_eq!(tck::actual_table(&result).1, vec![vec![V::Int(edges)]]);
+            work.push(result.metadata().counters.get(WorkKind::AdjacencyEntries));
+        }
+    }
+    assert_eq!(work, [200, 200, 200, 400, 400, 400]);
+}
+
+#[test]
+fn ze447_reversed_pattern_preserves_directions_constraints_and_reuse() {
+    let graph = Graph::new("ze447-reversed-semantics");
+    graph.setup("CREATE (a:A {ok:1})-[r:U {ok:1}]->(b:B {ok:1}), (b)-[:V]->(x:X), (a)-[:U]->(b)");
+    for predicate in [
+        "(:A {ok:1})-[:U {ok:1}]->(:B {ok:1})-[:V]->(x)",
+        "(:A)-[:U]-(:B)-[:V]-(x)",
+        "(:A)<-[:U]-(:B)-[:V]->(x)",
+        "(:A {ok:2})-[:U]->(:B)-[:V]->(x)",
+    ] {
+        let expected = !predicate.contains("<-") && !predicate.contains("ok:2");
+        assert_eq!(
+            rows(&graph, &format!("MATCH (x:X) RETURN exists({predicate})")),
+            vec![vec![V::Bool(expected)]],
+            "{predicate}"
+        );
+    }
+    assert_eq!(
+        rows(
+            &graph,
+            "MATCH (a:A)-[r:U]->(b:B) MATCH (x:X) RETURN exists(()-[r]->(b)-[:V]->(x))"
+        ),
+        vec![vec![V::Bool(true)], vec![V::Bool(true)]]
+    );
+    assert_eq!(
+        rows(
+            &graph,
+            "MATCH (a:A) RETURN exists(()<-[:U]-(a)), exists(()-[:U]-(a))"
+        ),
+        vec![vec![V::Bool(true), V::Bool(true)]]
+    );
+}
+
+#[test]
+fn ze447_reversed_match_keeps_property_dependencies_in_scope() {
+    let graph = Graph::new("ze447-property-scope");
+    graph.setup("CREATE (:A {id:1})-[:U {id:1}]->(:X {id:1})");
+    assert_eq!(
+        rows(
+            &graph,
+            "MATCH (x:X) MATCH (a:A)-[:U {id:a.id}]->(x {id:a.id}) RETURN a.id"
+        ),
+        vec![vec![V::Int(1)]]
+    );
+}
+
+#[test]
+fn ze447_null_last_endpoint_reads_no_adjacency() {
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    let graph = Graph::new("ze447-null-last");
+    graph.setup("CREATE (:Source)-[:U]->(:X)");
+    for query in [
+        "WITH null AS x RETURN exists(()-[:U]->(x))",
+        "OPTIONAL MATCH (x:Missing) RETURN exists(()-[:U]->(x))",
+    ] {
+        let result = graph.run(query, &[]).unwrap();
+        assert_eq!(tck::actual_table(&result).1, vec![vec![V::Bool(false)]]);
+        assert_eq!(
+            result.metadata().counters.get(WorkKind::AdjacencyEntries),
+            0,
+            "{query}"
         );
     }
 }
