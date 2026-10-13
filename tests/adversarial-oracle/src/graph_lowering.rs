@@ -14,8 +14,15 @@ fn lines(items: &[&str]) -> Vec<String> {
 pub fn expected(case: usize, alias: &str, value: i64) -> Observation {
     match case {
         0 => Observation {
-            operators: lines(&["[] unit", "[0] project 0=$0,1=[1,\"λ\"]"]),
-            columns: vec![(alias.into(), 0, 4), ("list".into(), 1, 128)],
+            operators: lines(&[
+                "[] unit",
+                "[0] project 0=$0,1=[1,\"λ\"],2=case($0;0,coalesce(null,1),1,2;case(none;true,coalesce(null,$0);3))",
+            ]),
+            columns: vec![
+                (alias.into(), 0, 4),
+                ("list".into(), 1, 128),
+                ("choice".into(), 2, 5),
+            ],
             parameters: vec![("value".into(), value)],
             root: 1,
             ordered: false,
@@ -23,13 +30,12 @@ pub fn expected(case: usize, alias: &str, value: i64) -> Observation {
         1 => Observation {
             operators: lines(&[
                 "[] unit",
-                "[0] scan 0",
-                "[1] filter label(s0,\"A\")",
-                "[2] expand 0->2 rel1 Outgoing types[\"R\", \"S\"] pattern0",
-                "[3] filter IsNotNull(s2)",
-                "[4] path 2->4 rels3 Outgoing types[\"P\", \"Q\"] pattern1 0..2 edge10=Comparison(Equal)(prop(s10,\"weight\"),$0)",
-                "[3, 5] optional Comparison(Equal)(prop(s4,\"ok\"),true)",
-                "[6] project 5=s0,6=s1,7=s2,8=s3,9=s4",
+                "[0] scan 0 label\"A\"",
+                "[1] expand 0->2 rel1 Outgoing types[\"R\", \"S\"] pattern0",
+                "[2] filter IsNotNull(s2)",
+                "[3] path 2->4 rels3 Outgoing types[\"P\", \"Q\"] pattern1 0..2 edge10=Comparison(Equal)(prop(s10,\"weight\"),$0)",
+                "[2, 4] optional Comparison(Equal)(prop(s4,\"ok\"),true)",
+                "[5] project 5=s0,6=s1,7=s2,8=s3,9=s4",
             ]),
             columns: vec![
                 ("a".into(), 5, 32),
@@ -39,7 +45,7 @@ pub fn expected(case: usize, alias: &str, value: i64) -> Observation {
                 ("c".into(), 9, 33),
             ],
             parameters: vec![("v".into(), value)],
-            root: 7,
+            root: 6,
             ordered: false,
         },
         2 => Observation {

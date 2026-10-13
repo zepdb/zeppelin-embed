@@ -237,6 +237,82 @@ fn ze432_to_float_converts_numbers_and_strings() {
 }
 
 #[test]
+fn ze438_numeric_conversions_trim_whitespace() {
+    // Pinned TCK TypeConversion2.feature / TypeConversion3.feature cover numeric
+    // strings and invalid text, but not whitespace. Match existing toFloat trim.
+    // https://github.com/opencypher/openCypher/blob/007895aff5f33097d67b2e48a0a2babd6bd18590/tck/features/expressions/typeConversion/TypeConversion2.feature
+    // https://github.com/opencypher/openCypher/blob/007895aff5f33097d67b2e48a0a2babd6bd18590/tck/features/expressions/typeConversion/TypeConversion3.feature
+    let graph = Graph::new("ze438-whitespace");
+    assert_eq!(
+        rows(
+            &graph,
+            "RETURN toInteger(' 42'), toFloat(' 42'), toInteger(' -2.9 '), toFloat(' -2.9 '), toInteger(' 9007199254740993.9 '), toInteger('   '), toFloat('   '), toInteger('4 2'), toFloat('4 2')"
+        ),
+        vec![vec![
+            V::Int(42),
+            V::Float(42.0),
+            V::Int(-2),
+            V::Float(-2.9),
+            V::Int(9007199254740993),
+            V::Null,
+            V::Null,
+            V::Null,
+            V::Null
+        ]]
+    );
+}
+
+#[test]
+fn ze438_to_float_rejects_nonfinite_strings() {
+    // TCK TypeConversion3.feature has no NaN/infinity/overflow-string scenario.
+    // Keep the engine's fail-loudly ArithmeticDomain rule for parsed nonfinite.
+    // https://github.com/opencypher/openCypher/blob/007895aff5f33097d67b2e48a0a2babd6bd18590/tck/features/expressions/typeConversion/TypeConversion3.feature
+    let graph = Graph::new("ze438-nonfinite");
+    for text in ["NaN", "inf", "-inf", "Infinity", "1e999", " NaN "] {
+        let error = graph
+            .run(&format!("RETURN toFloat('{text}')"), &[])
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(error, StatementError::Query(ref error) if error.kind() == zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind::Expression),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("nonfinite graph arithmetic operand"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn ze438_to_integer_boolean_remains_type_error() {
+    // TCK TypeConversion2.feature [8] omits booleans (unlike float [6]).
+    // The pinned profile is silent: retain Type, rather than Neo4j 5 coercion.
+    // https://github.com/opencypher/openCypher/blob/007895aff5f33097d67b2e48a0a2babd6bd18590/tck/features/expressions/typeConversion/TypeConversion2.feature
+    let graph = Graph::new("ze438-boolean");
+    for value in ["true", "false"] {
+        assert!(
+            matches!(graph.run(&format!("RETURN toInteger({value})"), &[]), Err(StatementError::Compile(error)) if error.kind == ErrorKind::Type)
+        );
+        graph.setup(&format!("CREATE (:Boolean {{v: {value}}})"));
+        let error = graph
+            .run(
+                &format!("MATCH (n:Boolean) WHERE n.v = {value} RETURN toInteger(n.v)"),
+                &[],
+            )
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(error, StatementError::Query(ref error) if error.kind() == zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind::Expression),
+            "{error}"
+        );
+        assert!(error.to_string().contains("wrong type"), "{error}");
+    }
+}
+
+#[test]
 fn ze432_floor_returns_float_and_propagates_null() {
     scalar_rows(
         "RETURN floor(2), floor(2.9), floor(-2.1), floor(null)",

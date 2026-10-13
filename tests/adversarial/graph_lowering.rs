@@ -38,6 +38,7 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.lowering.comparator.fire",
     "property-graph.lowering.release",
     "property-graph.lowering.completed-path",
+    "property-graph.lowering.case-coalesce",
 ];
 #[derive(Default, Debug)]
 pub struct ProbeReport {
@@ -45,6 +46,10 @@ pub struct ProbeReport {
     pub fault_fires: usize,
     pub clean_controls: usize,
     pub comparator_fires: usize,
+}
+#[test]
+fn ze438_graph_lowering_case_coalesce_plan() {
+    trial(0, 0, "value", 42, None, None, false).unwrap();
 }
 struct CountClock {
     inner: ScheduledQueryClock<StdVfs>,
@@ -131,8 +136,10 @@ fn observe(read: &LoweredRead<'_, '_>) -> Observation {
             let body = match op.kind {
                 OperatorKind::Unit => "unit".into(),
                 OperatorKind::ScanNodes { output, label } => {
-                    assert!(label.is_none());
-                    format!("scan {}", output.0)
+                    let label = label
+                        .map(|label| format!(" label{:?}", label.as_str()))
+                        .unwrap_or_default();
+                    format!("scan {}{label}", output.0)
                 }
                 OperatorKind::Expand {
                     source,
@@ -273,7 +280,7 @@ fn observe(read: &LoweredRead<'_, '_>) -> Observation {
 }
 fn recipe(case: usize, alias: &str) -> String {
     match case {
-        0=>format!("RETURN $value AS {alias}, [1,'λ'] AS list"),
+        0=>format!("RETURN $value AS {alias}, [1,'λ'] AS list, CASE $value WHEN 0 THEN coalesce(null,1) WHEN 1 THEN 2 ELSE CASE WHEN true THEN coalesce(null,$value) ELSE 3 END END AS choice"),
         1=>"MATCH (a:A)-[r:R|S]->(b) OPTIONAL MATCH (b)-[p:P|Q*0..2 {weight:$v}]->(c) WHERE c.ok=true RETURN a,r,b,p,c".into(),
         2=>"MATCH (n) RETURN n.p AS x ORDER BY n.q DESC SKIP 1 LIMIT $limit".into(),
         3=>"MATCH (n) WITH count(*) AS c, n.p AS p ORDER BY p RETURN c,p".into(),
@@ -490,6 +497,15 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
         }
         report.comparisons += 1;
         coverage.hit(coverage_key);
+        if case == 0 {
+            let mut changed = observed.clone();
+            changed.operators[1] = changed.operators[1].replace(",1,2;case", ";case");
+            if oracle::check(case, &alias, value, &changed).is_ok() {
+                return Err("PG17 CASE alternative omission escaped".into());
+            }
+            report.comparator_fires += 1;
+            coverage.hit(REQUIRED_COVERAGE[12]);
+        }
     }
     let compiler = trial(seed, 1, &alias, value, None, None, true)?;
     let clean = trial(seed, 1, &alias, value, None, None, false)?;
@@ -521,7 +537,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
     report.fault_fires += 1;
     trial(seed, 1, &alias, value, None, None, false)?;
     report.clean_controls += 1;
-    for key in &REQUIRED_COVERAGE[7..] {
+    for key in &REQUIRED_COVERAGE[7..12] {
         coverage.hit(*key);
     }
     Ok(report)

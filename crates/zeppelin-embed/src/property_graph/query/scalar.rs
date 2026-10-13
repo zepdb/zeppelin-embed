@@ -22,6 +22,7 @@ fn truncated_integer(value: f64) -> Option<i64> {
 
 // Parse decimal strings without rounding their integer part through binary64.
 fn decimal_integer(text: &str) -> Result<Option<i64>, QueryError> {
+    let text = text.trim();
     let (negative, text) = if let Some(text) = text.strip_prefix('-') {
         (true, text)
     } else {
@@ -106,6 +107,7 @@ impl QueryValue<'_> {
         })
     }
     /// Float conversion accepts numbers and numeric strings; unparseable text yields null.
+    /// Parsed nonfinite strings retain the typed arithmetic-domain refusal.
     pub fn to_float(self, context: &mut ValueContext<'_>) -> Result<Self, QueryError> {
         context.step()?;
         self.validate(context)?;
@@ -114,7 +116,10 @@ impl QueryValue<'_> {
             Self::I64(value) => Self::F64(value as f64),
             Self::String(text) => {
                 charge_numeric_text(text, context)?;
-                text.trim().parse::<f64>().map_or(Self::Null, Self::F64)
+                match text.trim().parse::<f64>() {
+                    Ok(value) => Self::F64(value).positive()?,
+                    Err(_) => Self::Null,
+                }
             }
             _ => return Err(QueryError::Type),
         })

@@ -40,6 +40,7 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.search-lowering.same-seed-control",
     "property-graph.search-lowering.comparator.fire",
     "property-graph.search-lowering.release",
+    "property-graph.search-lowering.case-coalesce",
 ];
 
 #[derive(Default, Debug)]
@@ -109,10 +110,14 @@ fn output_masks(facts: &NodeFacts, outputs: SearchOutputs) -> Result<[Option<u16
     ])
 }
 
-fn request_slots(description: PlanDescription<'_>, roots: &[ExprId]) -> Result<usize, String> {
+fn request_slots(
+    description: PlanDescription<'_>,
+    roots: &[ExprId],
+) -> Result<(usize, [usize; 3]), String> {
     let mut stack = roots.to_vec();
     let mut seen = vec![false; description.expressions.len()];
     let mut slots = 0;
+    let mut branches = [0; 3];
     while let Some(id) = stack.pop() {
         let index = usize::try_from(id.0).map_err(|_| "PG20 expression index overflow")?;
         let visited = seen
@@ -128,7 +133,11 @@ fn request_slots(description: PlanDescription<'_>, roots: &[ExprId]) -> Result<u
             | Expression::HasLabel { .. } => {
                 return Err("PG20 independent request reached row/entity expression".into());
             }
-            Expression::List(children) | Expression::Coalesce(children) => {
+            Expression::List(children) => {
+                stack.extend_from_slice(children);
+            }
+            Expression::Coalesce(children) => {
+                branches[0] += 1;
                 stack.extend_from_slice(children);
             }
             Expression::Case {
@@ -136,6 +145,7 @@ fn request_slots(description: PlanDescription<'_>, roots: &[ExprId]) -> Result<u
                 alternatives,
                 otherwise,
             } => {
+                branches[if operand.is_some() { 1 } else { 2 }] += 1;
                 stack.extend(operand);
                 stack.extend_from_slice(alternatives);
                 stack.push(otherwise);
@@ -149,7 +159,7 @@ fn request_slots(description: PlanDescription<'_>, roots: &[ExprId]) -> Result<u
             Expression::Literal(_) | Expression::Parameter(_) => {}
         }
     }
-    Ok(slots)
+    Ok((slots, branches))
 }
 
 fn observe(read: &LoweredRead<'_, '_>) -> Result<Observation, String> {
@@ -217,12 +227,14 @@ fn observe(read: &LoweredRead<'_, '_>) -> Result<Observation, String> {
             .plan()
             .facts(PlanNodeId(index as u32))
             .ok_or_else(|| format!("PG20 missing facts for operator {index}"))?;
+        let (request_slots, request_branches) = request_slots(description, &roots)?;
         searches.push(SearchObservation {
             mode: search_mode,
             eligibility,
             output_masks: output_masks(facts, outputs)?,
             unit_input,
-            request_slots: request_slots(description, &roots)?,
+            request_slots,
+            request_branches,
         });
     }
     let eager = description
@@ -256,11 +268,19 @@ fn observe(read: &LoweredRead<'_, '_>) -> Result<Observation, String> {
         limit_zero,
     })
 }
+#[test]
+fn ze438_search_lowering_case_coalesce_requests() {
+    let observed = trial(0, &pair_query(0, "k"), None, None, false)
+        .unwrap()
+        .observation
+        .unwrap();
+    oracle::check_pair(0, &observed).unwrap();
+}
 
 fn pair_query(mode: u8, alias: &str) -> String {
     let spelling = ["default", "auto", "exact", "scan"][mode as usize];
     format!(
-        "MATCH (prior) WITH prior,1+1 AS {alias} CALL ze.vector_search([{alias},2],{alias},'{spelling}',[]) YIELD node,distance CALL ze.hybrid_search([{alias},2],'x',{alias},'auto') YIELD node AS other,score,vector_distance,lexical_score RETURN prior,node,distance,other,score,vector_distance,lexical_score LIMIT 0"
+        "MATCH (prior) WITH prior,1+1 AS {alias} CALL ze.vector_search([coalesce(null,{alias}),CASE {alias} WHEN 2 THEN {alias} ELSE 2 END],CASE WHEN true THEN coalesce(2,{alias}) ELSE 1 END,'{spelling}',[]) YIELD node,distance CALL ze.hybrid_search([CASE WHEN false THEN 0 ELSE {alias} END,2],coalesce('x','y'),CASE {alias} WHEN 2 THEN {alias} ELSE 1 END,'auto') YIELD node AS other,score,vector_distance,lexical_score RETURN prior,node,distance,other,score,vector_distance,lexical_score LIMIT 0"
     )
 }
 
@@ -426,6 +446,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
         report.observations += 1;
     }
     coverage.hit(REQUIRED_COVERAGE[0]);
+    coverage.hit(REQUIRED_COVERAGE[11]);
     let global = trial(seed, global_query(), None, None, false)?
         .observation
         .ok_or_else(|| "PG20 global observation absent".to_owned())?;
@@ -436,7 +457,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
     }
 
     let (query, observed) = selected.ok_or_else(|| "PG20 selected mode absent".to_owned())?;
-    for mutation in 0..6 {
+    for mutation in 0..7 {
         let mut changed = observed.clone();
         match mutation {
             0 => changed.searches[0].mode = (selected_mode + 1) % 4,
@@ -446,7 +467,8 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
                 changed.eager.pop();
             }
             4 => changed.cartesian_joins -= 1,
-            _ => changed.searches[0].request_slots = 1,
+            5 => changed.searches[0].request_slots = 1,
+            _ => changed.searches[0].request_branches[1] = 0,
         }
         if oracle::check_pair(selected_mode, &changed).is_ok() {
             return Err(format!("PG20 planted mutation {mutation} escaped"));

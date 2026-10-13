@@ -15,6 +15,8 @@ pub struct SearchObservation {
     pub output_masks: [Option<u16>; 5],
     pub unit_input: bool,
     pub request_slots: usize,
+    /// Coalesce, simple CASE and searched CASE nodes in the request tree.
+    pub request_branches: [usize; 3],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,6 +36,7 @@ pub fn expected_pair(mode: u8) -> Observation {
                 output_masks: [Some(32), Some(8), None, None, None],
                 unit_input: true,
                 request_slots: 0,
+                request_branches: [2, 1, 1],
             },
             SearchObservation {
                 mode: 1,
@@ -41,6 +44,7 @@ pub fn expected_pair(mode: u8) -> Observation {
                 output_masks: [Some(32), None, Some(8), Some(9), Some(9)],
                 unit_input: true,
                 request_slots: 0,
+                request_branches: [1, 1, 1],
             },
         ],
         eager: vec![0, 1],
@@ -57,6 +61,7 @@ pub fn expected_global() -> Observation {
             output_masks: [Some(32), None, Some(8), None, None],
             unit_input: false,
             request_slots: 0,
+            request_branches: [0, 0, 0],
         }],
         eager: vec![0],
         cartesian_joins: 0,
