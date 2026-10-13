@@ -429,6 +429,22 @@ napi_value GValue(napi_env env, const ZeGraphValuePool &p, uint32_t index,
     return GNumber(env, v.floating);
   case ZE_GRAPH_VALUE_STRING:
     return GString(env, GPoolText(p, v.range));
+  case ZE_GRAPH_VALUE_MAP: {
+    if (v.range.count % 2 != 0)
+      throw std::runtime_error("invalid graph map entries");
+    auto obj = GObject(env);
+    for (uint32_t i = 0; i < v.range.count; i += 2) {
+      const auto keyIndex = GEntry(p.children, p.child_count, size_t(v.range.start) + i);
+      const auto &key = GEntry(p.values, p.value_count, keyIndex);
+      if (key.tag != ZE_GRAPH_VALUE_STRING)
+        throw std::runtime_error("invalid graph map key");
+      napi_value name = GString(env, GPoolText(p, key.range));
+      napi_value value = GValue(env, p, GEntry(p.children, p.child_count, size_t(v.range.start) + i + 1), depth + 1);
+      napi_property_descriptor property = {nullptr, name, nullptr, nullptr, nullptr, value, napi_default_jsproperty, nullptr};
+      GCheck(env, napi_define_properties(env, obj, 1, &property));
+    }
+    return obj;
+  }
   case ZE_GRAPH_VALUE_LIST: {
     auto arr = GArray(env, v.range.count);
     for (uint32_t i = 0; i < v.range.count; ++i)

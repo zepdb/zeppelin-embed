@@ -83,6 +83,7 @@ enum ScratchCell {
     Node(NodeId),
     Relationship(RelId),
     List {
+        map: bool,
         start: usize,
         len: usize,
         elements: usize,
@@ -90,6 +91,32 @@ enum ScratchCell {
         bytes: usize,
         entities: bool,
     },
+}
+
+impl ScratchCell {
+    fn as_map(self) -> Result<Self, ExpressionFailure> {
+        let Self::List {
+            start,
+            len,
+            elements,
+            depth,
+            bytes,
+            entities,
+            ..
+        } = self
+        else {
+            return Err(RuntimeError::Batch.into());
+        };
+        Ok(Self::List {
+            map: true,
+            start,
+            len,
+            elements,
+            depth,
+            bytes,
+            entities,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -248,21 +275,29 @@ impl<'v, 'm, 'g> ScratchArenas<'v, 'm, 'g> {
                 QueryValue::String(unsafe { std::str::from_utf8_unchecked(bytes) })
             }
             ScratchCell::List {
+                map,
                 start,
                 len,
                 elements,
                 depth,
                 bytes,
                 entities,
-            } => QueryValue::List(QueryList::arena(
-                self,
-                start,
-                len,
-                elements,
-                depth,
-                bytes,
-                entities.then_some(self.view),
-            )),
+            } => {
+                let list = QueryList::arena(
+                    self,
+                    start,
+                    len,
+                    elements,
+                    depth,
+                    bytes,
+                    entities.then_some(self.view),
+                );
+                if map {
+                    QueryValue::Map(super::QueryMap { entries: list })
+                } else {
+                    QueryValue::List(list)
+                }
+            }
         })
     }
 
@@ -303,7 +338,7 @@ impl<'v, 'm, 'g> ScratchArenas<'v, 'm, 'g> {
                 ScratchCell::Relationship(value.id())
             }
             QueryValue::String(value) => self.copy_bytes(value.as_bytes(), context, test_poll)?,
-            QueryValue::List(list) => {
+            QueryValue::Map(super::QueryMap { entries: list }) | QueryValue::List(list) => {
                 if depth >= MAX_LIST_DEPTH {
                     return Err(super::QueryError::ListLimit.into());
                 }
@@ -325,11 +360,16 @@ impl<'v, 'm, 'g> ScratchArenas<'v, 'm, 'g> {
                         .get_mut(start + index)
                         .ok_or(RuntimeError::Batch)? = child;
                 }
-                self.finish_list(start, list.len(), || {
+                let result = self.finish_list(start, list.len(), || {
                     test_poll.poll();
                     context.values().step()?;
                     Ok(())
-                })?
+                })?;
+                if matches!(value, QueryValue::Map(_)) {
+                    result.as_map()?
+                } else {
+                    result
+                }
             }
         })
     }
@@ -511,6 +551,7 @@ impl<'v, 'm, 'g> ScratchArenas<'v, 'm, 'g> {
             return Err(super::QueryError::ListLimit.into());
         }
         Ok(ScratchCell::List {
+            map: false,
             start,
             len,
             elements,
@@ -543,10 +584,11 @@ impl<'v, 'm, 'g> ScratchArenas<'v, 'm, 'g> {
                     len: value.len(),
                 }
             }
-            QueryValue::List(list) => {
+            QueryValue::Map(super::QueryMap { entries: list }) | QueryValue::List(list) => {
                 let (start, len, elements, depth, bytes, entities) =
                     list.arena_descriptor(self).ok_or(RuntimeError::Batch)?;
                 ScratchCell::List {
+                    map: matches!(value, QueryValue::Map(_)),
                     start,
                     len,
                     elements,
@@ -567,6 +609,7 @@ pub(crate) struct NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
     parameter_cells: usize,
     parameter_bytes: usize,
     output: Option<ScratchCell>,
+    locals: QueryArena<'m, 'g, Option<(super::plan::SlotId, ScratchCell)>>,
     test_poll: TestPollControl,
     _runtime_plan: PhantomData<&'r ()>,
 }
@@ -595,9 +638,24 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             parameter_cells: 0,
             parameter_bytes: 0,
             output: None,
+            locals: QueryArena::new(
+                context.memory(),
+                if description
+                    .expressions
+                    .iter()
+                    .any(|e| matches!(e, Expression::Comprehension { .. }))
+                {
+                    MAX_PLAN_DEPTH
+                } else {
+                    0
+                },
+            )?,
             test_poll: TestPollControl::default(),
             _runtime_plan: PhantomData,
         };
+        for _ in 0..result.locals.capacity() {
+            result.locals.push(None)?;
+        }
         for declaration in description.parameters {
             let binding = bindings
                 .iter()
@@ -734,6 +792,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
 
     fn reset(&mut self) {
         self.output = None;
+        self.locals.as_mut_slice().fill(None);
         self.scratch
             .truncate(self.parameter_cells, self.parameter_bytes);
     }
@@ -764,6 +823,118 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             .ok_or(PlanError::Reference)?;
         Ok(match expression {
             Expression::Aggregate { .. } => return Err(PlanError::Aggregate.into()),
+            Expression::Local(variable) => self
+                .locals
+                .as_slice()
+                .iter()
+                .rev()
+                .flatten()
+                .find(|(id, _)| *id == variable)
+                .map(|(_, value)| *value)
+                .ok_or(PlanError::Scope)?,
+            Expression::Comprehension {
+                variable,
+                source,
+                predicate,
+                projection,
+            } => {
+                let source = self.evaluate_inner(
+                    source,
+                    schema,
+                    input,
+                    row,
+                    view,
+                    overlay.as_deref_mut(),
+                    context,
+                    depth + 1,
+                )?;
+                if matches!(source, ScratchCell::Null) {
+                    return Ok(ScratchCell::Null);
+                }
+                let ScratchCell::List {
+                    start: input_start,
+                    len: input_len,
+                    map: false,
+                    ..
+                } = source
+                else {
+                    return Err(super::QueryError::Type.into());
+                };
+                let start = self.scratch.reserve_list(input_len, || {
+                    self.test_poll.poll();
+                    context.values().step()?;
+                    Ok(())
+                })?;
+                let mut len = 0;
+                for index in 0..input_len {
+                    self.test_poll.poll();
+                    context.charge(WorkKind::Expressions, 1)?;
+                    context.values().step()?;
+                    let value = *self
+                        .scratch
+                        .cells
+                        .as_slice()
+                        .get(input_start + index)
+                        .ok_or(RuntimeError::Batch)?;
+                    *self
+                        .locals
+                        .as_mut_slice()
+                        .get_mut(depth)
+                        .ok_or(PlanError::Limit)? = Some((variable, value));
+                    let keep = if let Some(id) = predicate {
+                        let pred = self.evaluate_inner(
+                            id,
+                            schema,
+                            input,
+                            row,
+                            view,
+                            overlay.as_deref_mut(),
+                            context,
+                            depth + 1,
+                        )?;
+                        self.scratch
+                            .value(pred)
+                            .ok_or(RuntimeError::Batch)?
+                            .truth()?
+                            == Truth::True
+                    } else {
+                        true
+                    };
+                    if keep {
+                        let result = if let Some(id) = projection {
+                            self.evaluate_inner(
+                                id,
+                                schema,
+                                input,
+                                row,
+                                view,
+                                overlay.as_deref_mut(),
+                                context,
+                                depth + 1,
+                            )?
+                        } else {
+                            value
+                        };
+                        *self
+                            .scratch
+                            .cells
+                            .as_mut_slice()
+                            .get_mut(start + len)
+                            .ok_or(RuntimeError::Batch)? = result;
+                        len += 1;
+                    }
+                }
+                *self
+                    .locals
+                    .as_mut_slice()
+                    .get_mut(depth)
+                    .ok_or(PlanError::Limit)? = None;
+                self.scratch.finish_list(start, len, || {
+                    self.test_poll.poll();
+                    context.values().step()?;
+                    Ok(())
+                })?
+            }
             Expression::Literal(Literal::Null) => ScratchCell::Null,
             Expression::Literal(Literal::Bool(value)) => ScratchCell::Bool(value),
             Expression::Literal(Literal::I64(value)) => ScratchCell::I64(value),
@@ -870,7 +1041,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
                 }
                 result
             }
-            Expression::List(items) => {
+            Expression::Map(items) | Expression::List(items) => {
                 let start = self.scratch.reserve_list(items.len(), || {
                     self.test_poll.poll();
                     context.values().step()?;
@@ -894,11 +1065,21 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
                         .get_mut(start + index)
                         .ok_or(RuntimeError::Batch)? = value;
                 }
-                self.scratch.finish_list(start, items.len(), || {
+                let len = if matches!(expression, Expression::Map(_)) {
+                    self.canonical_map(start, items.len(), context)?
+                } else {
+                    items.len()
+                };
+                let result = self.scratch.finish_list(start, len, || {
                     self.test_poll.poll();
                     context.values().step()?;
                     Ok(())
-                })?
+                })?;
+                if matches!(expression, Expression::Map(_)) {
+                    result.as_map()?
+                } else {
+                    result
+                }
             }
             Expression::Property { entity, name } => {
                 let receiver = self.evaluate_inner(
@@ -1043,6 +1224,71 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         })
     }
 
+    fn canonical_map(
+        &mut self,
+        start: usize,
+        len: usize,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<usize, ExpressionFailure> {
+        if !len.is_multiple_of(2) {
+            return Err(PlanError::Arity.into());
+        }
+        let mut kept = 0;
+        for offset in (0..len).step_by(2) {
+            let key = *self
+                .scratch
+                .cells
+                .as_slice()
+                .get(start + offset)
+                .ok_or(RuntimeError::Batch)?;
+            let value = *self
+                .scratch
+                .cells
+                .as_slice()
+                .get(start + offset + 1)
+                .ok_or(RuntimeError::Batch)?;
+            let mut position = 0;
+            let mut duplicate = false;
+            while position < kept {
+                context.charge(WorkKind::Expressions, 1)?;
+                let other = *self
+                    .scratch
+                    .cells
+                    .as_slice()
+                    .get(start + position)
+                    .ok_or(RuntimeError::Batch)?;
+                let a = self.scratch.value(key).ok_or(RuntimeError::Batch)?;
+                let b = self.scratch.value(other).ok_or(RuntimeError::Batch)?;
+                match a.order(b, context.values())? {
+                    std::cmp::Ordering::Less => break,
+                    std::cmp::Ordering::Equal => {
+                        duplicate = true;
+                        break;
+                    }
+                    std::cmp::Ordering::Greater => position += 2,
+                }
+            }
+            if !duplicate {
+                let cells = self.scratch.cells.as_mut_slice();
+                for i in (position..kept).rev() {
+                    context.charge(WorkKind::Expressions, 1)?;
+                    context.values().step()?;
+                    let previous = *cells.get(start + i).ok_or(RuntimeError::Batch)?;
+                    *cells.get_mut(start + i + 2).ok_or(RuntimeError::Batch)? = previous;
+                }
+                *cells.get_mut(start + position).ok_or(RuntimeError::Batch)? = key;
+                kept += 2;
+            }
+            *self
+                .scratch
+                .cells
+                .as_mut_slice()
+                .get_mut(start + position + 1)
+                .ok_or(RuntimeError::Batch)? = value;
+        }
+        Ok(kept)
+    }
+
     fn property(
         &mut self,
         receiver: ScratchCell,
@@ -1055,6 +1301,10 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         receiver.validate(context.values())?;
         let entity = match receiver {
             QueryValue::Null => return Ok(ScratchCell::Null),
+            QueryValue::Map(map) => {
+                let value = map.get(name.as_str(), context.values())?;
+                return self.scratch.adopt(value);
+            }
             QueryValue::NodeRef(node) => (Some(node.id()), None),
             QueryValue::RelRef(relationship) => (None, Some(relationship.id())),
             _ => return Err(super::QueryError::Type.into()),
@@ -1607,7 +1857,8 @@ fn scalar_cell(value: QueryValue<'_>) -> Result<ScratchCell, ExpressionFailure> 
         QueryValue::String(_)
         | QueryValue::List(_)
         | QueryValue::NodeRef(_)
-        | QueryValue::RelRef(_) => return Err(super::QueryError::Type.into()),
+        | QueryValue::RelRef(_)
+        | QueryValue::Map(_) => return Err(super::QueryError::Type.into()),
     })
 }
 

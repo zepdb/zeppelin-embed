@@ -50,6 +50,7 @@ fn kind(value: Value) -> ValueKinds {
         Value::Node(_) => ValueKinds::NODE,
         Value::Relationship(_) => ValueKinds::REL,
         Value::List { .. } => ValueKinds::LIST,
+        Value::Map { .. } => ValueKinds::MAP,
     }
 }
 fn list_accepts(element: ListKind, value: Value) -> bool {
@@ -319,10 +320,39 @@ pub(super) fn validate(
                     .get(index as usize)
                     .ok_or(CompletedError::Shape)?;
             }
-            Value::List { children, element } => {
+            Value::Map { entries: children }
+            | Value::List {
+                children,
+                element: _,
+            } => {
+                let element = if let Value::List { element, .. } = value {
+                    element
+                } else {
+                    ListKind::Query
+                };
                 let children = span(pools.children, children)?;
                 if element == ListKind::Empty && !children.is_empty() {
                     return Err(CompletedError::Shape);
+                }
+                if matches!(value, Value::Map { .. }) {
+                    if children.len() % 2 != 0 {
+                        return Err(CompletedError::Shape);
+                    }
+                    let mut previous: Option<&[u8]> = None;
+                    for pair in children.chunks_exact(2) {
+                        let key = pair.first().ok_or(CompletedError::Shape)?;
+                        let Some(Value::String(range)) = pools.values.get(key.0 as usize) else {
+                            return Err(CompletedError::Shape);
+                        };
+                        let key = span(pools.bytes, *range)?;
+                        if let Some(old) = previous
+                            && super::super::value::compare_bytes(old, key, context.values())?
+                                != std::cmp::Ordering::Less
+                        {
+                            return Err(CompletedError::Shape);
+                        }
+                        previous = Some(key);
+                    }
                 }
                 geometry.depth = 1;
                 geometry.descendants = children.len();

@@ -6,6 +6,13 @@ use crate::property_graph::query::{
 /// Accepted aggregation over already evaluated input cells.
 #[derive(Clone, Copy)]
 pub enum Aggregate {
+    /// Numeric mean, skipping nulls; empty input yields null.
+    Avg {
+        /// Evaluated operand.
+        slot: SlotId,
+        /// Deduplicate non-null inputs.
+        distinct: bool,
+    },
     /// Checked numeric sum; nulls are skipped and empty input is zero.
     Sum {
         /// Already evaluated operand.
@@ -131,7 +138,8 @@ pub(super) fn collect<'v, 'm, 'g>(
         entities |= value.view().is_some();
         nodes &= matches!(value, QueryValue::NodeRef(_));
         match value {
-            QueryValue::List(list) => {
+            QueryValue::Map(crate::property_graph::query::QueryMap { entries: list })
+            | QueryValue::List(list) => {
                 elements = elements
                     .checked_add(list.elements())
                     .ok_or(QueryError::ListLimit)?;

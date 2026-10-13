@@ -382,6 +382,7 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezePrimitiveValues 
         for (row, destination) in output.iter_mut().enumerate().take(rows.rows()) {
             for (column, cell) in destination.iter_mut().enumerate().take(rows.columns()) {
                 *cell = match rows.value(row, column).ok_or(RuntimeError::Batch)? {
+                    QueryValue::Map(_) => return Err(RuntimeError::Batch.into()),
                     QueryValue::Null => PrimitiveCell::Null,
                     QueryValue::Bool(value) => PrimitiveCell::Bool(value),
                     QueryValue::I64(value) => PrimitiveCell::I64(value),

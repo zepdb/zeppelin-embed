@@ -106,23 +106,91 @@ fn expression_inner(
             }
             kinds
         }
-        Expression::List(items) => {
+        Expression::Local(variable) => {
+            let mut bound = false;
+            for (position, ancestor) in active
+                .get(..depth)
+                .ok_or(PlanError::Limit)?
+                .iter()
+                .enumerate()
+            {
+                if let Some(Expression::Comprehension {
+                    variable: v,
+                    source,
+                    ..
+                }) = description.expressions.get(ancestor.0 as usize)
+                    && *v == variable
+                    && active.get(position + 1) != Some(source)
+                {
+                    bound = true;
+                }
+            }
+            if !bound {
+                return Err(PlanError::Scope);
+            }
+            ValueKinds::ANY
+        }
+        Expression::Comprehension {
+            variable: _,
+            source,
+            predicate,
+            projection,
+        } => {
+            require(
+                expression_inner(description, source, scope, seen, context, active, depth + 1)?,
+                ValueKinds::LIST,
+            )?;
+            if let Some(id) = predicate {
+                require(
+                    expression_inner(description, id, scope, seen, context, active, depth + 1)?,
+                    ValueKinds::BOOL,
+                )?;
+            }
+            if let Some(id) = projection {
+                expression_inner(description, id, scope, seen, context, active, depth + 1)?;
+            }
+            ValueKinds::LIST.union(ValueKinds::NULL)
+        }
+        Expression::Map(items) | Expression::List(items) => {
             for item in items {
                 expression_inner(description, *item, scope, seen, context, active, depth + 1)?;
             }
-            ValueKinds::LIST
+            if matches!(expression, Expression::Map(_)) {
+                if items.len() % 2 != 0 {
+                    return Err(PlanError::Arity);
+                }
+                for key in items.iter().step_by(2) {
+                    if !matches!(
+                        description.expressions.get(key.0 as usize),
+                        Some(Expression::Literal(Literal::String(_)))
+                    ) {
+                        return Err(PlanError::Type);
+                    }
+                }
+                ValueKinds::MAP
+            } else {
+                ValueKinds::LIST
+            }
         }
         Expression::Property { entity, .. } => {
+            let receiver =
+                expression_inner(description, entity, scope, seen, context, active, depth + 1)?;
             require(
-                expression_inner(description, entity, scope, seen, context, active, depth + 1)?,
-                ValueKinds::NODE.union(ValueKinds::REL),
+                receiver,
+                ValueKinds::NODE
+                    .union(ValueKinds::REL)
+                    .union(ValueKinds::MAP),
             )?;
-            ValueKinds::NULL
-                .union(ValueKinds::BOOL)
-                .union(ValueKinds::I64)
-                .union(ValueKinds::F64)
-                .union(ValueKinds::STRING)
-                .union(ValueKinds::LIST)
+            if receiver.overlaps(ValueKinds::MAP) {
+                ValueKinds::ANY
+            } else {
+                ValueKinds::NULL
+                    .union(ValueKinds::BOOL)
+                    .union(ValueKinds::I64)
+                    .union(ValueKinds::F64)
+                    .union(ValueKinds::STRING)
+                    .union(ValueKinds::LIST)
+            }
         }
         Expression::HasLabel { entity, .. } => {
             let receiver =
@@ -283,6 +351,9 @@ pub(super) fn aggregate(
         AggregateExpression::Count { distinct: false } => ValueKinds::I64,
         AggregateExpression::Count { distinct: true } if operand.is_some() => ValueKinds::I64,
         AggregateExpression::Collect { .. } if operand.is_some() => ValueKinds::LIST,
+        AggregateExpression::Avg { .. } if operand.is_some() => {
+            ValueKinds::F64.union(ValueKinds::NULL)
+        }
         AggregateExpression::Sum { .. } if operand.is_some() => {
             ValueKinds::I64.union(ValueKinds::F64)
         }

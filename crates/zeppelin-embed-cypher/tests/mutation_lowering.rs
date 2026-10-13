@@ -96,6 +96,9 @@ fn expression(description: PlanDescription<'_>, id: ExprId) -> ObservedExpressio
         Expression::Literal(Literal::I64(value)) => ObservedExpression::I64(value),
         Expression::Literal(Literal::F64(value)) => ObservedExpression::F64(value.to_bits()),
         Expression::Literal(Literal::String(value)) => ObservedExpression::String(value.to_owned()),
+        Expression::Map(_) | Expression::Local(_) | Expression::Comprehension { .. } => {
+            panic!("new form outside this fixed mutation-plan oracle corpus")
+        }
         Expression::Slot(slot) => ObservedExpression::Slot(slot.0),
         Expression::Parameter(parameter) => ObservedExpression::Parameter(parameter.0),
         Expression::List(values) => ObservedExpression::List(

@@ -199,11 +199,21 @@ fn expression_contains_slot(description: PlanDescription<'_>, root: ExprId) -> b
                     .any(|id| expression_contains_slot(description, *id))
                 || expression_contains_slot(description, *otherwise)
         }
-        Expression::List(items) | Expression::Coalesce(items) => items
+        Expression::Map(items) | Expression::List(items) | Expression::Coalesce(items) => items
             .iter()
             .any(|item| expression_contains_slot(description, *item)),
         Expression::Aggregate { .. } => true,
-        Expression::Literal(_) | Expression::Parameter(_) => false,
+        Expression::Comprehension {
+            source,
+            predicate,
+            projection,
+            ..
+        } => {
+            expression_contains_slot(description, *source)
+                || predicate.is_some_and(|id| expression_contains_slot(description, id))
+                || projection.is_some_and(|id| expression_contains_slot(description, id))
+        }
+        Expression::Local(_) | Expression::Literal(_) | Expression::Parameter(_) => false,
     }
 }
 

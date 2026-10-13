@@ -21,6 +21,23 @@ fn rust_cell(
 ) -> String {
     use zeppelin_embed::property_graph::query::completed::Value;
     match v {
+        Value::Map { entries } => {
+            let pairs = r.pools().children
+                [entries.start as usize..(entries.start + entries.len) as usize]
+                .chunks_exact(2)
+                .map(|p| {
+                    let Value::String(key) = r.pools().values[p[0].0 as usize] else {
+                        panic!("map key");
+                    };
+                    format!(
+                        "{}={}",
+                        r.string(key).unwrap(),
+                        rust_cell(r, r.pools().values[p[1].0 as usize])
+                    )
+                })
+                .collect::<Vec<_>>();
+            format!("M[{}]", pairs.join(","))
+        }
         Value::Null => "N".into(),
         Value::Bool(b) => format!("B{}", u32::from(b)),
         Value::I64(i) => format!("I{i}"),
@@ -485,4 +502,39 @@ fn ze72_rust_stored_list_kinds_match_shared_fixture() {
         };
         bindings::compare(name, expected, &format!("L{kind}[]")).unwrap();
     }
+}
+
+#[test]
+fn ze452_c_map_results_are_append_only_owned_and_freed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("maps");
+    let path = path.to_str().unwrap().as_bytes();
+    let mut open: ZeGraphOpenRequest = bindings::sized();
+    open.path = ZeGraphBytes {
+        data: path.as_ptr(),
+        count: path.len(),
+    };
+    open.max_resident_bytes = 256 << 20;
+    let mut handle = 0;
+    assert_eq!(bindings::store_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    let mut result = bindings::query(
+        handle,
+        "RETURN {value:[x IN [1,2,null] | {n:x}], empty:{}} AS m",
+    );
+    let values = unsafe { std::slice::from_raw_parts(result.pool.values, result.pool.value_count) };
+    let cells = unsafe { std::slice::from_raw_parts(result.cells, result.cell_count) };
+    assert_eq!(values[cells[0] as usize].tag, 8);
+    let columns = unsafe { std::slice::from_raw_parts(result.columns, result.column_count) };
+    assert_eq!(columns[0].kinds, 256);
+    for value in values {
+        assert_eq!(value.validate_shape(), Ok(()));
+    }
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(
+        bindings::c_observe(&result),
+        "M[empty=M[],value=L0[M[n=I1],M[n=I2],M[n=N]]]"
+    );
+    assert_eq!(ze_graph_response_free(&mut result), ZeErrorCode::ZeOk);
+    assert_eq!(ze_graph_response_free(&mut result), ZeErrorCode::ZeOk);
+    assert_eq!(result.pool.value_count, 0);
 }

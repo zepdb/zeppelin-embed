@@ -284,6 +284,14 @@ enum DraftExpr {
     Slot(SlotId),
     Parameter(ParameterId),
     List(Range),
+    Map(Range),
+    Local(SlotId),
+    Comprehension {
+        variable: SlotId,
+        source: ExprId,
+        predicate: Option<ExprId>,
+        projection: Option<ExprId>,
+    },
     Coalesce(Range),
     Case {
         operand: Option<ExprId>,
@@ -597,6 +605,19 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         self.control,
                     )?)),
                     DraftExpr::Slot(slot) => Expression::Slot(*slot),
+                    DraftExpr::Local(slot) => Expression::Local(*slot),
+                    DraftExpr::Comprehension {
+                        variable,
+                        source,
+                        predicate,
+                        projection,
+                    } => Expression::Comprehension {
+                        variable: *variable,
+                        source: *source,
+                        predicate: *predicate,
+                        projection: *projection,
+                    },
+                    DraftExpr::Map(range) => Expression::Map(range.get(self.children.slice())?),
                     DraftExpr::Parameter(id) => Expression::Parameter(*id),
                     DraftExpr::List(range) => Expression::List(range.get(self.children.slice())?),
                     DraftExpr::Coalesce(range) => {

@@ -23,6 +23,61 @@ impl<'a> Binder<'a, '_> {
                 continue;
             }
             if !finish {
+                if let NodeKind::Comprehension {
+                    variable,
+                    filter,
+                    map,
+                } = node.kind
+                {
+                    let source = child(node, 0)?;
+                    let source_info = self.expression(source)?;
+                    require(source_info.kinds, ValueKinds::LIST, node.span)?;
+                    let slot = self.new_slot(node.span)?;
+                    let name = self
+                        .ast
+                        .text(variable)
+                        .ok_or_else(|| error(node.span, "iterator name"))?;
+                    push(&mut self.locals, (name, slot), self.resources, node.span)?;
+                    let predicate = if filter { Some(child(node, 1)?) } else { None };
+                    let projection = if map {
+                        Some(child(node, 1 + usize::from(filter))?)
+                    } else {
+                        None
+                    };
+                    let bound = (|| {
+                        if let Some(id) = predicate {
+                            require(self.expression(id)?.kinds, ValueKinds::BOOL, node.span)?;
+                        }
+                        if let Some(id) = projection {
+                            self.expression(id)?;
+                        }
+                        Ok::<_, ParseError>(())
+                    })();
+                    self.locals.pop();
+                    bound?;
+                    *self
+                        .expressions
+                        .get_mut(id.0)
+                        .ok_or_else(|| error(node.span, "comprehension storage"))? =
+                        Expression::Comprehension {
+                            variable: slot,
+                            source: expr_id(source)?,
+                            predicate: predicate.map(expr_id).transpose()?,
+                            projection: projection.map(expr_id).transpose()?,
+                        };
+                    *self
+                        .facts
+                        .get_mut(id.0)
+                        .ok_or_else(|| error(node.span, "comprehension facts"))? = Some(Info {
+                        kinds: ValueKinds::LIST.union(ValueKinds::NULL),
+                        row: true,
+                        origin: None,
+                        eligible: false,
+                        constant: None,
+                        invariant: None,
+                    });
+                    continue;
+                }
                 if node.kind == NodeKind::PatternPredicate {
                     let expression = self.pattern_predicate(node)?;
                     *self
@@ -106,6 +161,31 @@ impl<'a> Binder<'a, '_> {
                     ValueKinds::STRING,
                 ),
                 NodeKind::Variable(name) => {
+                    let text = self
+                        .ast
+                        .text(name)
+                        .ok_or_else(|| error(node.span, "local name"))?;
+                    if let Some((_, slot)) =
+                        self.locals.iter().rev().find(|(name, _)| *name == text)
+                    {
+                        *self
+                            .expressions
+                            .get_mut(id.0)
+                            .ok_or_else(|| error(node.span, "local storage"))? =
+                            Expression::Local(*slot);
+                        *self
+                            .facts
+                            .get_mut(id.0)
+                            .ok_or_else(|| error(node.span, "local facts"))? = Some(Info {
+                            kinds: ValueKinds::ANY,
+                            row: true,
+                            origin: None,
+                            eligible: false,
+                            constant: None,
+                            invariant: None,
+                        });
+                        continue;
+                    }
                     let symbol = self.lookup(
                         self.ast
                             .text(name)
@@ -294,7 +374,9 @@ impl<'a> Binder<'a, '_> {
                     self.check_deleted(self.info(entity)?, node.span)?;
                     require(
                         self.info(entity)?.kinds,
-                        ValueKinds::NODE.union(ValueKinds::REL),
+                        ValueKinds::NODE
+                            .union(ValueKinds::REL)
+                            .union(ValueKinds::MAP),
                         node.span,
                     )?;
                     (
@@ -302,7 +384,11 @@ impl<'a> Binder<'a, '_> {
                             entity: expr_id(entity)?,
                             name: self.graph_name(name, node.span)?,
                         },
-                        super::patterns::property_kinds(),
+                        if self.info(entity)?.kinds.contains(ValueKinds::MAP) {
+                            ValueKinds::ANY
+                        } else {
+                            super::patterns::property_kinds()
+                        },
                     )
                 }
                 NodeKind::Index => {
@@ -389,6 +475,7 @@ impl<'a> Binder<'a, '_> {
                         Function::Count
                         | Function::Collect
                         | Function::Sum
+                        | Function::Avg
                         | Function::Min
                         | Function::Max => {
                             if function == Function::Collect {
@@ -401,6 +488,7 @@ impl<'a> Binder<'a, '_> {
                                 Function::Count => AggregateExpression::Count { distinct },
                                 Function::Collect => AggregateExpression::Collect { distinct },
                                 Function::Sum => AggregateExpression::Sum { distinct },
+                                Function::Avg => AggregateExpression::Avg { distinct },
                                 Function::Min => AggregateExpression::Min,
                                 Function::Max => AggregateExpression::Max,
                                 _ => return Err(error(node.span, "invalid aggregate")),
@@ -414,6 +502,8 @@ impl<'a> Binder<'a, '_> {
                                     ValueKinds::I64
                                 } else if function == Function::Collect {
                                     ValueKinds::LIST
+                                } else if function == Function::Avg {
+                                    ValueKinds::F64.union(ValueKinds::NULL)
                                 } else if function == Function::Sum {
                                     ValueKinds::I64.union(ValueKinds::F64)
                                 } else {
@@ -576,6 +666,14 @@ impl<'a> Binder<'a, '_> {
                         kinds,
                     )
                 }
+                NodeKind::Map => (
+                    Expression::Map(
+                        self.links
+                            .get(id.0)
+                            .ok_or_else(|| error(node.span, "map operands"))?,
+                    ),
+                    ValueKinds::MAP,
+                ),
                 NodeKind::List => (
                     Expression::List(
                         self.links
@@ -621,7 +719,10 @@ impl<'a> Binder<'a, '_> {
                             Ok::<_, ParseError>(all && self.info(*child)?.invariant.is_some())
                         })?
                         .then_some(id),
-                    Expression::Aggregate { .. }
+                    Expression::Map(_)
+                    | Expression::Local(_)
+                    | Expression::Comprehension { .. }
+                    | Expression::Aggregate { .. }
                     | Expression::Slot(_)
                     | Expression::Property { .. }
                     | Expression::HasLabel { .. } => None,
@@ -661,6 +762,7 @@ fn value_kind(value: QueryValue<'_>) -> ValueKinds {
         QueryValue::F64(_) => ValueKinds::F64,
         QueryValue::String(_) => ValueKinds::STRING,
         QueryValue::List(_) => ValueKinds::LIST,
+        QueryValue::Map(_) => ValueKinds::MAP,
         QueryValue::NodeRef(_) => ValueKinds::NODE,
         QueryValue::RelRef(_) => ValueKinds::REL,
     }

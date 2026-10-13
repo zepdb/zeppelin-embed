@@ -128,12 +128,14 @@ fn request_slots(
         }
         *visited = true;
         match description.expressions[index] {
-            Expression::Aggregate { .. }
+            Expression::Local(_)
+            | Expression::Comprehension { .. }
+            | Expression::Aggregate { .. }
             | Expression::Property { .. }
             | Expression::HasLabel { .. } => {
                 return Err("PG20 independent request reached row/entity expression".into());
             }
-            Expression::List(children) => {
+            Expression::Map(children) | Expression::List(children) => {
                 stack.extend_from_slice(children);
             }
             Expression::Coalesce(children) => {

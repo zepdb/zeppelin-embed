@@ -134,10 +134,26 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                             child(id)?;
                         }
                     }
-                    Expression::List(items) | Expression::Coalesce(items) => {
+                    Expression::Map(items)
+                    | Expression::List(items)
+                    | Expression::Coalesce(items) => {
                         for id in items.iter().rev() {
                             child(*id)?;
                         }
+                    }
+                    Expression::Comprehension {
+                        source,
+                        predicate,
+                        projection,
+                        ..
+                    } => {
+                        if let Some(id) = projection {
+                            child(id)?;
+                        }
+                        if let Some(id) = predicate {
+                            child(id)?;
+                        }
+                        child(source)?;
                     }
                     _ => {}
                 }
@@ -152,6 +168,22 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                 Expression::Literal(Literal::I64(v)) => DraftExpr::Literal(Literal::I64(v)),
                 Expression::Literal(Literal::F64(v)) => DraftExpr::Literal(Literal::F64(v)),
                 Expression::Slot(slot) => DraftExpr::Slot(slot),
+                Expression::Local(slot) => DraftExpr::Local(slot),
+                Expression::Comprehension {
+                    variable,
+                    source,
+                    predicate,
+                    projection,
+                } => DraftExpr::Comprehension {
+                    variable,
+                    source: self.mapped_mode(bound, source, span, invariant_mode)?,
+                    predicate: predicate
+                        .map(|id| self.mapped_mode(bound, id, span, invariant_mode))
+                        .transpose()?,
+                    projection: projection
+                        .map(|id| self.mapped_mode(bound, id, span, invariant_mode))
+                        .transpose()?,
+                },
                 Expression::Parameter(id) => DraftExpr::Parameter(id),
                 Expression::Aggregate { operation, operand } => DraftExpr::Aggregate {
                     operation,
@@ -201,7 +233,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         otherwise: self.mapped_mode(bound, otherwise, span, invariant_mode)?,
                     }
                 }
-                Expression::List(items) | Expression::Coalesce(items) => {
+                Expression::Map(items) | Expression::List(items) | Expression::Coalesce(items) => {
                     let range = Range {
                         start: self.children.len(),
                         len: items.len(),
@@ -210,7 +242,9 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         let item = self.mapped_mode(bound, *item, span, invariant_mode)?;
                         self.children.push(item, self.memory, self.control)?;
                     }
-                    if matches!(expression, Expression::Coalesce(_)) {
+                    if matches!(expression, Expression::Map(_)) {
+                        DraftExpr::Map(range)
+                    } else if matches!(expression, Expression::Coalesce(_)) {
                         DraftExpr::Coalesce(range)
                     } else {
                         DraftExpr::List(range)
@@ -261,6 +295,20 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                 DraftExpr::Property { entity, .. } | DraftExpr::HasLabel { entity, .. } => {
                     mark(entity)?
                 }
+                DraftExpr::Comprehension {
+                    source,
+                    predicate,
+                    projection,
+                    ..
+                } => {
+                    mark(source)?;
+                    if let Some(id) = predicate {
+                        mark(id)?;
+                    }
+                    if let Some(id) = projection {
+                        mark(id)?;
+                    }
+                }
                 DraftExpr::Unary { operand, .. } => mark(operand)?,
                 DraftExpr::Binary { left, right, .. } => {
                     mark(left)?;
@@ -279,7 +327,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     }
                     mark(otherwise)?;
                 }
-                DraftExpr::List(range) | DraftExpr::Coalesce(range) => {
+                DraftExpr::Map(range) | DraftExpr::List(range) | DraftExpr::Coalesce(range) => {
                     for id in range.get(self.children.slice())? {
                         mark(*id)?;
                     }

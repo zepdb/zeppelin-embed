@@ -28,8 +28,9 @@
 
 # Original openCypher TCK read coordinates for ZE-56 execution.
 # Source: https://github.com/opencypher/openCypher at 007895aff5f33097d67b2e48a0a2babd6bd18590.
-# 54 positive scenarios and 3 compile errors are executed through the public
-# compiler-to-GraphStore seam; 17 profile-rejected read scenarios stay refused.
+# 69 positive cases and 3 compile errors execute through the public
+# compiler-to-GraphStore seam; 12 unsupported cases remain refused.
+# The scalar Null1 outline observation is checked separately.
 # Setup, parameter, query and expectation text is copied verbatim.
 # Copyright (c) 2015-2023 "Neo Technology," Network Engine for Objects in Lund AB.
 # Licensed under the Apache License, Version 2.0. See OPENCYPHER-LICENSE-APACHE.
@@ -493,10 +494,16 @@ query
   WITH me.age AS age, me.age + count(you.age) AS agg
   RETURN *
 === clauses/return/Return5.feature [1]
-expect reject-profile
+setup
+      CREATE ({list: ['A', 'B']}), ({list: ['A', 'B']})
 query
-  MATCH (n)
-  RETURN count(DISTINCT {name: n.list}) AS count
+      MATCH (n)
+      RETURN count(DISTINCT {name: n.list}) AS count
+expect bag
+      | count |
+      | 1     |
+side-effects none
+
 === clauses/return/Return5.feature [2]
 setup
       CREATE ({name: 'Florescu'}), (), ()
@@ -510,15 +517,27 @@ expect bag
 side-effects none
 
 === clauses/return/Return5.feature [3]
-expect reject-profile
+setup
+      CREATE ({list: ['A', 'B']}), ({list: ['A', 'B']})
 query
-  MATCH (n)
-  RETURN count(DISTINCT {name: [[n.list, n.list], [n.list, n.list]]}) AS count
+      MATCH (n)
+      RETURN count(DISTINCT {name: [[n.list, n.list], [n.list, n.list]]}) AS count
+expect bag
+      | count |
+      | 1     |
+side-effects none
+
 === clauses/return/Return5.feature [4]
-expect reject-profile
+setup
+      CREATE ({list: ['A', 'B']}), ({list: ['A', 'B']})
 query
-  MATCH (n)
-  RETURN count(DISTINCT {name: [{name2: n.list}, {baz: {apa: n.list}}]}) AS count
+      MATCH (n)
+      RETURN count(DISTINCT {name: [{name2: n.list}, {baz: {apa: n.list}}]}) AS count
+expect bag
+      | count |
+      | 1     |
+side-effects none
+
 === expressions/aggregation/Aggregation1.feature [1]
 setup
       CREATE ({name: 'a', num: 33})
@@ -802,60 +821,104 @@ expect bag
 side-effects none
 
 === expressions/null/Null1.feature [5] example 1
-expect reject-profile
 query
   WITH {name: 'Mats', name2: 'Pontus'} AS map
   RETURN map.name IS NULL AS result
+expect bag
+      | result |
+      | false |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 2
-expect reject-profile
 query
   WITH {name: 'Mats', name2: 'Pontus'} AS map
   RETURN map.name2 IS NULL AS result
+expect bag
+      | result |
+      | false |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 3
-expect reject-profile
 query
   WITH {name: 'Mats', name2: null} AS map
   RETURN map.name IS NULL AS result
+expect bag
+      | result |
+      | false |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 4
-expect reject-profile
 query
   WITH {name: 'Mats', name2: null} AS map
   RETURN map.name2 IS NULL AS result
+expect bag
+      | result |
+      | true |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 5
-expect reject-profile
 query
   WITH {name: null} AS map
   RETURN map.name IS NULL AS result
+expect bag
+      | result |
+      | true |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 6
-expect reject-profile
 query
   WITH {name: null, name2: null} AS map
   RETURN map.name IS NULL AS result
+expect bag
+      | result |
+      | true |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 7
-expect reject-profile
 query
   WITH {name: null, name2: null} AS map
   RETURN map.name2 IS NULL AS result
+expect bag
+      | result |
+      | true |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 8
-expect reject-profile
 query
   WITH {notName: null, notName2: null} AS map
   RETURN map.name IS NULL AS result
+expect bag
+      | result |
+      | true |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 9
-expect reject-profile
 query
   WITH {notName: 0, notName2: null} AS map
   RETURN map.name IS NULL AS result
+expect bag
+      | result |
+      | true |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 10
-expect reject-profile
 query
   WITH {notName: 0} AS map
   RETURN map.name IS NULL AS result
+expect bag
+      | result |
+      | true |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 11
-expect reject-profile
 query
   WITH {} AS map
   RETURN map.name IS NULL AS result
+expect bag
+      | result |
+      | true |
+side-effects none
+
 === expressions/null/Null1.feature [5] example 12
 expect local-example
 query

@@ -29,7 +29,8 @@ fn measure_value(
         QueryValue::String(text) => checked_add(&mut sizes.bytes, text.len())?,
         QueryValue::NodeRef(_) => checked_add(&mut sizes.node_occurrences, 1)?,
         QueryValue::RelRef(_) => checked_add(&mut sizes.relationship_occurrences, 1)?,
-        QueryValue::List(list) => {
+        QueryValue::Map(super::super::super::QueryMap { entries: list })
+        | QueryValue::List(list) => {
             checked_add(&mut sizes.children, list.len())?;
             for index in 0..list.len() {
                 let child = list
@@ -84,7 +85,8 @@ fn collect_value_ids(
             .push(value.id())
             .map_err(CompletedError::from)
             .map_err(NativeResultError::Completed)?,
-        QueryValue::List(list) => {
+        QueryValue::Map(super::super::super::QueryMap { entries: list })
+        | QueryValue::List(list) => {
             for index in 0..list.len() {
                 collect_value_ids(
                     list.get(index)
@@ -206,8 +208,17 @@ fn push_query_value(
                 )),
             )?)
         }
-        QueryValue::List(list) => {
-            push_query_list(list, node_ids, relationship_ids, staging, context)?
+        QueryValue::Map(super::super::super::QueryMap { entries: list })
+        | QueryValue::List(list) => {
+            let result = push_query_list(list, node_ids, relationship_ids, staging, context)?;
+            if matches!(value, QueryValue::Map(_)) {
+                let Value::List { children, .. } = result else {
+                    return Err(NativeResultError::Completed(CompletedError::Shape));
+                };
+                Value::Map { entries: children }
+            } else {
+                result
+            }
         }
     };
     let index = ValueIndex(u32::try_from(staging.values.len()).map_err(|_| limit())?);

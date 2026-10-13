@@ -59,6 +59,25 @@ pub fn c_cell(r: &ZeGraphResponse, v: ZeGraphValue) -> String {
             let n = unsafe { span(p.relationships, p.relationship_count) }[v.entity_index as usize];
             format!("R{:016x}{:016x}", n.id.high, n.id.low)
         }
+        8 => {
+            let children = unsafe { span(p.children, p.child_count) };
+            let values = unsafe { span(p.values, p.value_count) };
+            let bytes = unsafe { span(p.bytes, p.byte_count) };
+            let pairs = children[v.range.start as usize..(v.range.start + v.range.count) as usize]
+                .chunks_exact(2)
+                .map(|pair| {
+                    let key = values[pair[0] as usize];
+                    assert_eq!(key.tag, 4);
+                    let name = std::str::from_utf8(
+                        &bytes[key.range.start as usize
+                            ..(key.range.start + key.range.count) as usize],
+                    )
+                    .unwrap();
+                    format!("{name}={}", c_cell(r, values[pair[1] as usize]))
+                })
+                .collect::<Vec<_>>();
+            format!("M[{}]", pairs.join(","))
+        }
         7 => {
             let children = unsafe { span(p.children, p.child_count) };
             let values = unsafe { span(p.values, p.value_count) };

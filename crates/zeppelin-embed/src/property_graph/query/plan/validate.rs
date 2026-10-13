@@ -176,7 +176,7 @@ pub(super) fn preflight(
                 }
                 accounting.span(alternatives, context)?;
             }
-            Expression::List(items) | Expression::Coalesce(items) => {
+            Expression::Map(items) | Expression::List(items) | Expression::Coalesce(items) => {
                 if items.len() > super::super::MAX_LIST_ELEMENTS {
                     return Err(PlanError::Limit);
                 }

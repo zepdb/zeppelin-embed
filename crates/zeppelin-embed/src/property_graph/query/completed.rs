@@ -68,6 +68,11 @@ pub enum Value {
         /// Query-list or exact stored scalar-list interpretation.
         element: ListKind,
     },
+    /// Map entry range in the child pool: alternating string keys and values.
+    Map {
+        /// Canonical unique keys in ascending UTF-8 order.
+        entries: Span,
+    },
 }
 /// One output column's copied name and validated possible value kinds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

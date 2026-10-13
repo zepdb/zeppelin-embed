@@ -42,6 +42,9 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.lowering.pattern-predicate",
     "property-graph.lowering.pattern-predicate.clock.fire",
     "property-graph.lowering.pattern-predicate.budget.fire",
+    "property-graph.lowering.comprehension-map",
+    "property-graph.lowering.comprehension-forms",
+    "property-graph.lowering.avg",
 ];
 #[derive(Default, Debug)]
 pub struct ProbeReport {
@@ -74,6 +77,26 @@ fn expr(plan: PlanDescription<'_>, id: ExprId) -> String {
             Literal::String(v) => format!("{v:?}"),
         },
         Expression::Slot(v) => format!("s{}", v.0),
+        Expression::Local(v) => format!("local{}", v.0),
+        Expression::Map(ids) => format!(
+            "map({})",
+            ids.iter()
+                .map(|id| expr(plan, *id))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Expression::Comprehension {
+            variable,
+            source,
+            predicate,
+            projection,
+        } => format!(
+            "comprehension({};{};{};{})",
+            variable.0,
+            expr(plan, source),
+            predicate.map(|id| expr(plan, id)).unwrap_or("none".into()),
+            projection.map(|id| expr(plan, id)).unwrap_or("none".into())
+        ),
         Expression::Parameter(v) => format!("${}", v.0),
         Expression::Property { entity, name } => {
             format!("prop({},{:?})", expr(plan, entity), name.as_str())
@@ -254,6 +277,7 @@ fn observe(read: &LoweredRead<'_, '_>) -> Observation {
                 ValueKinds::NODE,
                 ValueKinds::REL,
                 ValueKinds::LIST,
+                ValueKinds::MAP,
             ]
             .iter()
             .enumerate()
@@ -289,6 +313,9 @@ fn recipe(case: usize, alias: &str) -> String {
         3=>"MATCH (n) WITH count(*) AS c, n.p AS p ORDER BY p RETURN c,p".into(),
         4=>"MATCH (a)-[r:R*0..2 {x:size(r),y:7}]->(b) RETURN r".into(),
         5=>"MATCH (a), (b) WHERE NOT (a)-[:T]->(b) RETURN a,b".into(),
+        6=>"RETURN [x IN [1,2,null] WHERE x > 1 | {value:x}] AS values".into(),
+        7=>"RETURN [x IN [1,2] WHERE x > 1] AS filtered, [x IN [1,2] | x*2] AS mapped".into(),
+        8=>"MATCH (n) RETURN avg(n.v) AS mean".into(),
         _=>unreachable!(),
     }
 }
@@ -461,6 +488,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
         REQUIRED_COVERAGE[3],
         "property-graph.lowering.completed-path",
         "property-graph.lowering.pattern-predicate",
+        "property-graph.lowering.comprehension-map",
+        "property-graph.lowering.comprehension-forms",
+        "property-graph.lowering.avg",
     ]
     .into_iter()
     .enumerate()

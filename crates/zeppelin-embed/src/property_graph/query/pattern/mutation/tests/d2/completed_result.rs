@@ -144,6 +144,7 @@ fn text(result: &CompletedGraphResult, span: Span) -> String {
 
 fn render(result: &CompletedGraphResult, value: Value) -> String {
     match value {
+        Value::Map { .. } => panic!("map outside this fixed mutation oracle corpus"),
         Value::Null => "null".into(),
         Value::Bool(value) => format!("bool:{value}"),
         Value::I64(value) => format!("i64:{value}"),

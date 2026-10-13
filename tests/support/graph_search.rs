@@ -388,6 +388,7 @@ impl Drop for Corpus {
 }
 fn cell(r: &CompletedGraphResult, v: Value) -> oracle::Cell {
     match v {
+        Value::Map { .. } => panic!("map outside this fixed search oracle corpus"),
         Value::Null => oracle::Cell::Null,
         Value::Bool(v) => oracle::Cell::Bool(v),
         Value::I64(v) => oracle::Cell::I64(v),

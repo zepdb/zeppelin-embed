@@ -58,8 +58,10 @@ impl crate::ZeGraphValue {
         let is_list = self.tag == V::ZeGraphValueList as u32;
         let is_entity = self.tag == V::ZeGraphValueNode as u32
             || self.tag == V::ZeGraphValueRelationship as u32;
-        let is_range = is_list || self.tag == V::ZeGraphValueString as u32;
-        if self.tag > V::ZeGraphValueList as u32
+        let is_map = self.tag == V::ZeGraphValueMap as u32;
+        let is_range = is_list || is_map || self.tag == V::ZeGraphValueString as u32;
+        if self.tag > V::ZeGraphValueMap as u32
+            || (is_map && (!self.range.count.is_multiple_of(2) || self.range.count > 524_288))
             || (!is_list && self.list_kind != 0)
             || (!is_entity && self.entity_index != 0)
             || (self.tag != V::ZeGraphValueBool as u32 && self.boolean != 0)
@@ -82,7 +84,8 @@ impl crate::ZeGraphValue {
     pub fn validate_stored_shape(&self) -> Result<(), ZeErrorCode> {
         use crate::{ZeGraphListKind as L, ZeGraphValueTag as V};
         self.validate_shape()?;
-        if self.tag == V::ZeGraphValueNull as u32
+        if self.tag == V::ZeGraphValueMap as u32
+            || self.tag == V::ZeGraphValueNull as u32
             || self.tag == V::ZeGraphValueNode as u32
             || self.tag == V::ZeGraphValueRelationship as u32
             || (self.tag == V::ZeGraphValueList as u32

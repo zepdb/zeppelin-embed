@@ -239,9 +239,64 @@ pub(crate) fn own_row<'v, 'm, 'g>(
     Ok(row)
 }
 
+enum AverageSum {
+    Integer(i128),
+    Float(f64),
+    Mean(f64),
+}
+impl AverageSum {
+    fn push(&mut self, value: QueryValue<'_>, previous_count: i64) -> Result<(), RuntimeError> {
+        let number = match value {
+            QueryValue::I64(value) => value as f64,
+            QueryValue::F64(value) if value.is_finite() => value,
+            QueryValue::F64(_) => return Err(super::super::QueryError::ArithmeticDomain.into()),
+            _ => return Err(super::super::QueryError::Type.into()),
+        };
+        if let (Self::Integer(sum), QueryValue::I64(value)) = (&mut *self, value) {
+            // At most i64::MAX counted i64 operands fit exactly in i128.
+            *sum += i128::from(value);
+            return Ok(());
+        }
+        let previous = match *self {
+            Self::Integer(sum) => sum as f64,
+            Self::Float(sum) => sum,
+            Self::Mean(mean) => mean,
+        };
+        if !matches!(self, Self::Mean(_)) {
+            let sum = previous + number;
+            if sum.is_finite() {
+                *self = Self::Float(sum);
+                return Ok(());
+            }
+        }
+        let count = previous_count as f64 + 1.0;
+        let mean = if matches!(self, Self::Mean(_)) {
+            previous * ((count - 1.0) / count) + number / count
+        } else {
+            previous / count + number / count
+        };
+        if !mean.is_finite() {
+            return Err(super::super::QueryError::ArithmeticOverflow.into());
+        }
+        *self = Self::Mean(mean);
+        Ok(())
+    }
+    fn finish(&self, count: i64) -> QueryValue<'static> {
+        if count == 0 {
+            return QueryValue::Null;
+        }
+        QueryValue::F64(match *self {
+            Self::Integer(sum) => sum as f64 / count as f64,
+            Self::Float(sum) => sum / count as f64,
+            Self::Mean(mean) => mean,
+        })
+    }
+}
+
 struct Accumulator<'v, 'm, 'g> {
     count: i64,
     sum: QueryValue<'static>,
+    average: AverageSum,
     extreme: Option<RowBatch<'v, 'm, 'g>>,
     values: Option<Rows<'v, 'm, 'g>>,
     distinct: Option<StreamIndex<'m, 'g>>,
@@ -274,6 +329,7 @@ impl<'v, 'm, 'g> StreamAggregate<'v, 'm, 'g> {
                 Aggregate::Count { slot, .. }
                 | Aggregate::Collect { slot, .. }
                 | Aggregate::Sum { slot, .. }
+                | Aggregate::Avg { slot, .. }
                 | Aggregate::Min { slot }
                 | Aggregate::Max { slot } => Some(input.schema().column(slot)?),
             })?;
@@ -303,11 +359,13 @@ impl<'v, 'm, 'g> StreamAggregate<'v, 'm, 'g> {
                 Aggregate::Count { distinct: true, .. }
                     | Aggregate::Collect { distinct: true, .. }
                     | Aggregate::Sum { distinct: true, .. }
+                    | Aggregate::Avg { distinct: true, .. }
             );
             let retain = distinct || matches!(aggregate.operation, Aggregate::Collect { .. });
             group.push(Accumulator {
                 count: 0,
                 sum: QueryValue::I64(0),
+                average: AverageSum::Integer(0),
                 extreme: None,
                 values: if retain {
                     let mut capacity = self.representatives.capacity;
@@ -390,6 +448,11 @@ impl<'v, 'm, 'g> StreamAggregate<'v, 'm, 'g> {
                 rows.push(&[value], context)?;
             }
             match aggregate.operation {
+                Aggregate::Avg { .. } => {
+                    accumulator
+                        .average
+                        .push(operand.ok_or(RuntimeError::Batch)?, accumulator.count)?;
+                }
                 Aggregate::Sum { .. } => {
                     let value = accumulator.sum.arithmetic(
                         operand.ok_or(RuntimeError::Batch)?,
@@ -424,7 +487,7 @@ impl<'v, 'm, 'g> StreamAggregate<'v, 'm, 'g> {
             }
             if matches!(
                 aggregate.operation,
-                Aggregate::CountAll | Aggregate::Count { .. }
+                Aggregate::CountAll | Aggregate::Count { .. } | Aggregate::Avg { .. }
             ) {
                 accumulator.count = accumulator
                     .count
@@ -494,6 +557,7 @@ impl<'v, 'm, 'g> StreamAggregate<'v, 'm, 'g> {
                     .ok_or(RuntimeError::Batch)?
                     .operation
                 {
+                    Aggregate::Avg { .. } => accumulator.average.finish(accumulator.count),
                     Aggregate::Sum { .. } => accumulator.sum,
                     Aggregate::Min { .. } | Aggregate::Max { .. } => accumulator
                         .extreme

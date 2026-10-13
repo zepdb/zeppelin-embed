@@ -6,6 +6,8 @@ pub(crate) mod expression;
 mod grouping;
 mod id_text;
 mod list;
+mod map;
+pub use map::QueryMap;
 #[cfg(feature = "graph-cypher")]
 mod pattern;
 

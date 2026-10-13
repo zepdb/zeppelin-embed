@@ -109,6 +109,38 @@ pub fn expected(case: usize, alias: &str, value: i64) -> Observation {
             root: 11,
             ordered: false,
         },
+        6 => Observation {
+            operators: lines(&[
+                "[] unit",
+                "[0] project 1=comprehension(0;[1,2,null];Comparison(Greater)(local0,1);map(\"value\",local0))",
+            ]),
+            columns: vec![("values".into(), 1, 129)],
+            parameters: vec![],
+            root: 1,
+            ordered: false,
+        },
+        7 => Observation {
+            operators: lines(&[
+                "[] unit",
+                "[0] project 1=comprehension(0;[1,2];Comparison(Greater)(local0,1);none),3=comprehension(2;[1,2];none;Arithmetic(Multiply)(local2,2))",
+            ]),
+            columns: vec![("filtered".into(), 1, 129), ("mapped".into(), 3, 129)],
+            parameters: vec![],
+            root: 1,
+            ordered: false,
+        },
+        8 => Observation {
+            operators: lines(&[
+                "[] unit",
+                "[0] scan 0",
+                "[1] aggregate keys values1=Avg { distinct: false }(prop(s0,\"v\"))",
+                "[2] project 1=s1",
+            ]),
+            columns: vec![("mean".into(), 1, 9)],
+            parameters: vec![],
+            root: 3,
+            ordered: false,
+        },
         _ => unreachable!("PG17 fixed primitive query recipe"),
     }
 }

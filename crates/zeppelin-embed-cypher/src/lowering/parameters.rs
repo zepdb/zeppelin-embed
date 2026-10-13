@@ -167,6 +167,7 @@ pub(super) fn kind(value: QueryValue<'_>) -> ValueKinds {
         QueryValue::F64(_) => ValueKinds::F64,
         QueryValue::String(_) => ValueKinds::STRING,
         QueryValue::List(_) => ValueKinds::LIST,
+        QueryValue::Map(_) => ValueKinds::MAP,
         QueryValue::NodeRef(_) => ValueKinds::NODE,
         QueryValue::RelRef(_) => ValueKinds::REL,
     }

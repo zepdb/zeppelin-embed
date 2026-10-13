@@ -133,6 +133,7 @@ struct Binder<'a, 'r> {
     expressions: Vec<Expression<'a>>,
     facts: Vec<Option<Info>>,
     scope: Vec<Symbol<'a>>,
+    locals: Vec<(&'a str, SlotId)>,
     projections: Vec<BoundProjection<'a>>,
     deleted: Vec<SlotId>,
     has_deletions: bool,
@@ -176,6 +177,7 @@ pub fn compile_with<T>(
         expressions: Vec::new(),
         facts: Vec::new(),
         scope: Vec::new(),
+        locals: Vec::new(),
         projections: Vec::new(),
         deleted: Vec::new(),
         has_deletions: false,
@@ -306,6 +308,7 @@ fn require(kinds: ValueKinds, allowed: ValueKinds, span: Span) -> Result<(), Par
         ValueKinds::NODE,
         ValueKinds::REL,
         ValueKinds::LIST,
+        ValueKinds::MAP,
     ] {
         if kinds.contains(kind) && allowed.union(ValueKinds::NULL).contains(kind) {
             return Ok(());

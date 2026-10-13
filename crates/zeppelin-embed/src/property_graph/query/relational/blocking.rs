@@ -94,6 +94,7 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E> BlockingRows<'v, 'm, 'g, O, E
                 Aggregate::Count { slot, .. }
                 | Aggregate::Collect { slot, .. }
                 | Aggregate::Sum { slot, .. }
+                | Aggregate::Avg { slot, .. }
                 | Aggregate::Min { slot }
                 | Aggregate::Max { slot } => {
                     child.schema().column(slot)?;

@@ -186,6 +186,7 @@ impl Parser<'_> {
                 function: Function::Count
                     | Function::Collect
                     | Function::Sum
+                    | Function::Avg
                     | Function::Min
                     | Function::Max,
                 ..
@@ -788,6 +789,7 @@ impl Parser<'_> {
                     function: Function::Count
                         | Function::Collect
                         | Function::Sum
+                        | Function::Avg
                         | Function::Min
                         | Function::Max,
                     ..
@@ -980,6 +982,39 @@ impl Parser<'_> {
                 );
             }
             self.list_depth += 1;
+            if matches!(self.kind(), Some(Kind::Ident | Kind::QuotedName))
+                && self.peek_kind(1) == Some(Kind::Ident)
+                && self
+                    .ast
+                    .text(TextId(self.position + 1))
+                    .is_some_and(|s| s.eq_ignore_ascii_case("IN"))
+            {
+                let variable = self.variable_name()?;
+                self.expect_word("IN")?;
+                let source = self.expression(0)?;
+                let mut items = self.children(&[source])?;
+                let filter = self.eat_word("WHERE")?;
+                if filter {
+                    let pred = self.expression(0)?;
+                    self.append(&mut items, pred)?;
+                }
+                let map = self.eat(Kind::Pipe)?;
+                if map {
+                    let expr = self.expression(0)?;
+                    self.append(&mut items, expr)?;
+                }
+                self.expect(Kind::RBracket, "expected comprehension end")?;
+                self.list_depth -= 1;
+                return self.add(
+                    NodeKind::Comprehension {
+                        variable,
+                        filter,
+                        map,
+                    },
+                    start,
+                    items,
+                );
+            }
             let items = self.arguments(Kind::RBracket)?;
             self.list_depth -= 1;
             return self.add(NodeKind::List, start, items);
@@ -1013,7 +1048,24 @@ impl Parser<'_> {
         }
         match self.kind() {
             Some(Kind::LBrace) => {
-                Err(self.error(ErrorKind::Unsupported, "map expression outside profile"))
+                self.advance()?;
+                let mut items = Vec::new();
+                if !self.eat(Kind::RBrace)? {
+                    loop {
+                        let key_start = self.span().start;
+                        let key = self.name()?;
+                        let key = self.leaf(NodeKind::String(key), key_start)?;
+                        self.append(&mut items, key)?;
+                        self.expect(Kind::Colon, "expected map colon")?;
+                        let value = self.expression(0)?;
+                        self.append(&mut items, value)?;
+                        if self.eat(Kind::RBrace)? {
+                            break;
+                        }
+                        self.expect(Kind::Comma, "expected map comma")?;
+                    }
+                }
+                self.add(NodeKind::Map, start, items)
             }
             Some(Kind::Integer) => {
                 let id = self.advance()?;
@@ -1191,6 +1243,8 @@ impl Parser<'_> {
             Function::Count
         } else if text.eq_ignore_ascii_case("collect") {
             Function::Collect
+        } else if text.eq_ignore_ascii_case("avg") {
+            Function::Avg
         } else if text.eq_ignore_ascii_case("sum") {
             Function::Sum
         } else if text.eq_ignore_ascii_case("min") {
@@ -1240,7 +1294,12 @@ impl Parser<'_> {
         if distinct
             && !matches!(
                 function,
-                Function::Count | Function::Collect | Function::Sum | Function::Min | Function::Max
+                Function::Count
+                    | Function::Collect
+                    | Function::Sum
+                    | Function::Avg
+                    | Function::Min
+                    | Function::Max
             )
         {
             return Err(self.error(

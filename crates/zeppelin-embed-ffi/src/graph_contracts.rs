@@ -53,6 +53,8 @@ pub enum ZeGraphValueTag {
     ZeGraphValueRelationship = 6,
     /// Ordered range of value indices in the child-index arena.
     ZeGraphValueList = 7,
+    /// Alternating string key/value indices, unique keys in UTF-8 order.
+    ZeGraphValueMap = 8,
 }
 
 /// Exact list representation tag, independent of query equality.
@@ -75,7 +77,7 @@ pub enum ZeGraphListKind {
 
 /// Version-one flat value descriptor. `abi_size` must equal sizeof this type.
 /// Reserved and inactive fields are zero (including the bits of inactive F64).
-/// Only List uses list_kind; String/List use range; Node/Relationship use
+/// Only List uses list_kind; String/List/Map use range; Node/Relationship use
 /// entity_index; each scalar uses its matching named field. Array bounds,
 /// UTF-8, graph ownership and descendant geometry require the later marshaller.
 #[derive(Clone, Copy, Debug)]
@@ -97,7 +99,7 @@ pub struct ZeGraphValue {
     pub integer: i64,
     /// Exact F64 bits; positive-zero bits otherwise.
     pub floating: f64,
-    /// String bytes or List child-index elements; zero range otherwise.
+    /// String bytes or List/Map child-index elements; zero range otherwise.
     pub range: ZeGraphRange,
 }
 
@@ -1094,7 +1096,7 @@ pub struct ZeGraphColumn {
     pub abi_reserved: u32,
     /// UTF-8 name bytes in response.pool.bytes.
     pub name: ZeGraphRange,
-    /// Nonzero bitmask Null1 Bool2 I644 F648 String16 Node32 Rel64 List128.
+    /// Nonzero bitmask Null1 Bool2 I644 F648 String16 Node32 Rel64 List128 Map256.
     pub kinds: u32,
     /// Must be zero.
     pub reserved: u32,

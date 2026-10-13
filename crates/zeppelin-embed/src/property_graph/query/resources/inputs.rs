@@ -414,28 +414,30 @@ fn verify_parameter_value(
     value.validate(context)?;
     match value {
         QueryValue::String(value) => inputs.verify_span(value.as_bytes(), context),
-        QueryValue::List(list) => match list.backing() {
-            Backing::Values(values) => {
-                inputs.verify_span(values, context)?;
-                for value in values {
-                    verify_parameter_value(inputs, *value, context)?;
+        QueryValue::Map(super::super::QueryMap { entries: list }) | QueryValue::List(list) => {
+            match list.backing() {
+                Backing::Values(values) => {
+                    inputs.verify_span(values, context)?;
+                    for value in values {
+                        verify_parameter_value(inputs, *value, context)?;
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            Backing::Strings(values) => {
-                inputs.verify_span(values, context)?;
-                for value in values {
-                    inputs.verify_span(value.as_bytes(), context)?;
+                Backing::Strings(values) => {
+                    inputs.verify_span(values, context)?;
+                    for value in values {
+                        inputs.verify_span(value.as_bytes(), context)?;
+                    }
+                    Ok(())
                 }
-                Ok(())
+                Backing::Bools(values) => inputs.verify_span(values, context),
+                Backing::Integers(values) => inputs.verify_span(values, context),
+                Backing::Floats(values) => inputs.verify_span(values, context),
+                Backing::Nodes(values) => inputs.verify_span(values, context),
+                Backing::Relationships(values) => inputs.verify_span(values, context),
+                Backing::Arena { .. } => Err(MemoryError::UnprovedInput),
             }
-            Backing::Bools(values) => inputs.verify_span(values, context),
-            Backing::Integers(values) => inputs.verify_span(values, context),
-            Backing::Floats(values) => inputs.verify_span(values, context),
-            Backing::Nodes(values) => inputs.verify_span(values, context),
-            Backing::Relationships(values) => inputs.verify_span(values, context),
-            Backing::Arena { .. } => Err(MemoryError::UnprovedInput),
-        },
+        }
         QueryValue::Null
         | QueryValue::Bool(_)
         | QueryValue::I64(_)

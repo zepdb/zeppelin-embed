@@ -427,7 +427,7 @@ fn graph_value_shapes_preserve_ieee_bits_and_reject_inactive_or_overflowing_fiel
         assert_eq!(value.validate_stored_shape(), Ok(()));
     }
     for invalid in [
-        ZeGraphValue { tag: 8, ..base },
+        ZeGraphValue { tag: 9, ..base },
         ZeGraphValue {
             abi_reserved: 1,
             ..base
@@ -481,7 +481,7 @@ fn graph_value_shapes_preserve_ieee_bits_and_reject_inactive_or_overflowing_fiel
             Err(ZeErrorCode::ZeErrInvalidArgument)
         );
     }
-    for tag in [0, 5, 6] {
+    for tag in [0, 5, 6, 8] {
         assert_eq!(
             ZeGraphValue { tag, ..base }.validate_stored_shape(),
             Err(ZeErrorCode::ZeErrInvalidArgument)

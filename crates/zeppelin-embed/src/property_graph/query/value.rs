@@ -104,6 +104,8 @@ pub enum QueryValue<'a> {
     String(&'a str),
     /// Bounded nullable heterogeneous query list, distinct from stored lists.
     List(QueryList<'a>),
+    /// Canonical bounded key/value map.
+    Map(super::QueryMap<'a>),
     /// Same-view full-width node identity.
     NodeRef(QueryNodeRef<'a>),
     /// Same-view full-width relationship identity.
@@ -192,6 +194,7 @@ impl QueryValue<'_> {
             Self::NodeRef(value) => Some(value.view),
             Self::RelRef(value) => Some(value.view),
             Self::List(list) => list.view(),
+            Self::Map(map) => map.entries.view(),
             _ => None,
         }
     }
@@ -247,6 +250,9 @@ impl QueryValue<'_> {
             }
             (Self::RelRef(left), Self::RelRef(right)) => {
                 ValueOrder::Ordered(left.id.cmp(&right.id))
+            }
+            (Self::Map(left), Self::Map(right)) => {
+                return list_predicate(left.entries, right.entries, operation, context);
             }
             (Self::List(left), Self::List(right)) => {
                 return list_predicate(left, right, operation, context);

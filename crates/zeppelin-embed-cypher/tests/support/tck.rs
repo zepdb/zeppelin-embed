@@ -20,6 +20,7 @@ pub(crate) enum V {
     Float(f64),
     Str(String),
     List(Vec<V>),
+    Map(BTreeMap<String, V>),
     Node(Vec<String>, BTreeMap<String, V>),
     Rel(String, BTreeMap<String, V>),
 }
@@ -34,7 +35,9 @@ impl V {
                 }
                 items.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
             }
-            V::Node(_, props) | V::Rel(_, props) => props.values_mut().for_each(V::sort_lists),
+            V::Map(props) | V::Node(_, props) | V::Rel(_, props) => {
+                props.values_mut().for_each(V::sort_lists)
+            }
             _ => {}
         }
     }
@@ -134,6 +137,7 @@ impl Parser {
     fn value(&mut self) -> V {
         self.skip();
         match self.peek() {
+            Some('{') => V::Map(self.properties()),
             Some('\'') => V::Str(self.string()),
             Some('(') => {
                 self.at += 1;
@@ -218,6 +222,21 @@ pub(crate) fn actual_value(result: &CompletedGraphResult, pools: Pools<'_>, valu
         Value::I64(value) => V::Int(value),
         Value::F64(bits) => V::Float(f64::from_bits(bits)),
         Value::String(span) => V::Str(text(result, span)),
+        Value::Map { entries } => {
+            let children =
+                &pools.children[entries.start as usize..(entries.start + entries.len) as usize];
+            let mut map = BTreeMap::new();
+            for pair in children.chunks_exact(2) {
+                let Value::String(key) = pools.values[pair[0].0 as usize] else {
+                    panic!("map key");
+                };
+                map.insert(
+                    text(result, key),
+                    actual_value(result, pools, pools.values[pair[1].0 as usize]),
+                );
+            }
+            V::Map(map)
+        }
         Value::List { children, element } => {
             if children.len == 0 {
                 return V::List(vec![]);

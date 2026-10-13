@@ -35,6 +35,9 @@ impl QueryValue<'_> {
                 Some(order) => order,
                 None => a.is_nan().cmp(&b.is_nan()),
             },
+            (Self::Map(a), Self::Map(b)) => {
+                Self::List(a.entries).order(Self::List(b.entries), context)?
+            }
             (Self::List(a), Self::List(b)) => {
                 for index in 0..a.len().min(b.len()) {
                     let order = a
@@ -67,13 +70,14 @@ impl QueryValue<'_> {
     }
     fn rank(self) -> u8 {
         match self {
-            Self::NodeRef(_) => 0,
-            Self::RelRef(_) => 1,
-            Self::List(_) => 2,
-            Self::String(_) => 3,
-            Self::Bool(_) => 4,
-            Self::I64(_) | Self::F64(_) => 5,
-            Self::Null => 6,
+            Self::Map(_) => 0,
+            Self::NodeRef(_) => 1,
+            Self::RelRef(_) => 2,
+            Self::List(_) => 3,
+            Self::String(_) => 4,
+            Self::Bool(_) => 5,
+            Self::I64(_) | Self::F64(_) => 6,
+            Self::Null => 7,
         }
     }
     fn hash_into(self, hash: &mut Xxh3, context: &mut ValueContext<'_>) -> Result<(), QueryError> {
@@ -111,6 +115,7 @@ impl QueryValue<'_> {
                     );
                 }
             }
+            Self::Map(value) => Self::List(value.entries).hash_into(hash, context)?,
             Self::List(value) => {
                 hash.update(&(value.len() as u64).to_le_bytes());
                 for index in 0..value.len() {

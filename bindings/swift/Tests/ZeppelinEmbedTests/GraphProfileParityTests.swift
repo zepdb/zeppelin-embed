@@ -256,6 +256,7 @@ final class GraphProfileParityTests: XCTestCase {
   }
   private func debugValue(_ v: GraphValue) -> String {
     switch v {
+    case .map(let v): return "Map(" + properties(v) + ")"
     case .null: return "Null"
     case .bool(let b): return "Bool(\(b))"
     case .integer(let i): return "Int(\(i))"

@@ -55,6 +55,7 @@ pub enum Function {
     Count,
     Collect,
     Sum,
+    Avg,
     Min,
     Max,
     Labels,
@@ -151,6 +152,12 @@ pub enum NodeKind {
     Boolean(bool),
     Null,
     List,
+    Map,
+    Comprehension {
+        variable: TextId,
+        filter: bool,
+        map: bool,
+    },
     Group,
     /// Optional selector, WHEN/THEN pairs, and an explicit ELSE (null if absent).
     Case {

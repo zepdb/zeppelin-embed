@@ -84,7 +84,7 @@ impl<'a> QueryValue<'a> {
                 bytes = 8;
                 Some(PropertyData::F64(value))
             }
-            Self::NodeRef(_) | Self::RelRef(_) => return Err(QueryError::Type),
+            Self::Map(_) | Self::NodeRef(_) | Self::RelRef(_) => return Err(QueryError::Type),
             Self::List(list) if list.is_empty() => Some(PropertyData::EmptyList { count: 0 }),
             Self::List(list) => {
                 let tag = scalar_tag(list.get(0).ok_or(QueryError::Type)?)?;

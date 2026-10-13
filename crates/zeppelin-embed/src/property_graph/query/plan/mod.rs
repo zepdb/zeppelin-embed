@@ -60,7 +60,9 @@ impl ValueKinds {
     /// Validated query list alone.
     pub const LIST: Self = Self(128);
     /// Any supported runtime kind.
-    pub const ANY: Self = Self(255);
+    pub const ANY: Self = Self(511);
+    /// Query map alone.
+    pub const MAP: Self = Self(256);
     /// Union, including null when either input permits it.
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -99,6 +101,21 @@ pub enum Expression<'a> {
     },
     /// Bounded list construction; value geometry is rechecked during execution.
     List(&'a [ExprId]),
+    /// Alternating static string keys and values; duplicate keys use the last value.
+    Map(&'a [ExprId]),
+    /// Read the nearest active comprehension binding with this identity.
+    Local(SlotId),
+    /// Filter and/or map a list with a lexical iterator binding.
+    Comprehension {
+        /// Unique lexical binding, separate from row slots.
+        variable: SlotId,
+        /// Source list expression, evaluated before binding the iterator.
+        source: ExprId,
+        /// Optional nullable boolean filter.
+        predicate: Option<ExprId>,
+        /// Optional mapping expression; None retains the input member.
+        projection: Option<ExprId>,
+    },
     /// First non-null operand, evaluated left to right until one is found.
     Coalesce(&'a [ExprId]),
     /// Lazy simple or searched CASE; only the chosen result is evaluated.
@@ -210,6 +227,11 @@ pub enum BinaryExpression {
 /// Supported aggregate forms, distinct from scalar functions.
 #[derive(Clone, Copy, Debug)]
 pub enum AggregateExpression {
+    /// Numeric mean, skipping nulls; empty input yields null.
+    Avg {
+        /// Deduplicate non-null inputs.
+        distinct: bool,
+    },
     /// Checked numeric sum of non-null operands.
     Sum {
         /// Group equivalence deduplication.

@@ -15,6 +15,9 @@ pub use aggregate::{Aggregate, AggregateColumn};
 mod blocking;
 pub use blocking::{BlockingOperation, BlockingRows};
 
+#[cfg(test)]
+mod avg_tests;
+
 /// Explicit ordered, distinct logical slots; IDs are never physical ordinals.
 pub struct Schema<'m, 'g> {
     slots: QueryArena<'m, 'g, SlotId>,

@@ -26,6 +26,7 @@ struct GraphWorkload {
     case .node(let v): return ["node": fullID(v.id.high, v.id.low)]
     case .relationship(let v): return ["relationship": fullID(v.id.high, v.id.low)]
     case .list(_, let v): return ["list": v.map(encode)]
+    case .map(let v): return ["map": v.mapValues(encode)]
     }
   }
   static let outputLock = NSLock()

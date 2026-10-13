@@ -513,3 +513,20 @@ extension GraphStoreTests {
 }
 
 #endif
+
+#if ZE_GRAPH
+extension GraphStoreTests {
+  func testZE452MapResultsRetainTypedValuesAfterClose() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: path) }
+    let store = try await openGraphTestStore(at: path, mode: .create)
+    let result = try await store.cypher("RETURN {values:[x IN [1,2,null] WHERE x IS NOT NULL | {n:x}], empty:{}} AS m")
+    try await store.close()
+    XCTAssertEqual(result.columns[0].kinds, 256)
+    XCTAssertEqual(result.rows, [[.map([
+      "values": .list(.query, [.map(["n": .integer(1)]), .map(["n": .integer(2)])]),
+      "empty": .map([:]),
+    ])]])
+  }
+}
+#endif

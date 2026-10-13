@@ -74,6 +74,7 @@ struct InstalledConsumer {
     case .double(let v): return ["type": 3, "value": v]
     case .string(let v): return ["type": 4, "value": v]
     case .list(_, let v): return ["type": 7, "value": v.map(primitive)]
+    case .map(let v): return ["type": 8, "value": v.mapValues(primitive)]
     case .node(let v): return ["type": 5, "value": ["labels": v.labels.sorted(), "properties": properties(v.properties)]]
     case .relationship(let v): return ["type": 6, "value": ["kind": v.type, "properties": properties(v.properties)]]
     }

@@ -32,6 +32,7 @@ pub(super) fn validate(
                 QueryValue::F64(_) => ValueKinds::F64,
                 QueryValue::String(_) => ValueKinds::STRING,
                 QueryValue::List(_) => ValueKinds::LIST,
+                QueryValue::Map(_) => ValueKinds::MAP,
                 QueryValue::NodeRef(_) | QueryValue::RelRef(_) => return Err(PlanError::Parameter),
             };
             if !parameter.kinds.contains(kind) {

@@ -28,6 +28,7 @@ enum Cell {
         len: usize,
     },
     List {
+        map: bool,
         start: usize,
         len: usize,
         elements: usize,
@@ -64,21 +65,29 @@ impl Cell {
                 QueryValue::String(unsafe { std::str::from_utf8_unchecked(bytes) })
             }
             Self::List {
+                map,
                 start,
                 len,
                 elements,
                 depth,
                 bytes,
                 entities,
-            } => QueryValue::List(QueryList::arena(
-                arena,
-                start,
-                len,
-                elements,
-                depth,
-                bytes,
-                if entities { Some(arena.view) } else { None },
-            )),
+            } => {
+                let list = QueryList::arena(
+                    arena,
+                    start,
+                    len,
+                    elements,
+                    depth,
+                    bytes,
+                    if entities { Some(arena.view) } else { None },
+                );
+                if map {
+                    QueryValue::Map(super::super::QueryMap { entries: list })
+                } else {
+                    QueryValue::List(list)
+                }
+            }
             Self::Nodes { start, len } => QueryValue::List(QueryList::copied_nodes(
                 arena.view,
                 arena.nodes.as_slice().get(start..start.checked_add(len)?)?,
@@ -173,7 +182,7 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                     len: text.len(),
                 })
             }
-            QueryValue::List(list) => {
+            QueryValue::Map(super::super::QueryMap { entries: list }) | QueryValue::List(list) => {
                 if depth >= super::super::MAX_LIST_DEPTH {
                     return Err(RuntimeError::Batch);
                 }
@@ -244,6 +253,7 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                     })
                     .ok_or(RuntimeError::Batch)?;
                 Ok(Cell::List {
+                    map: matches!(value, QueryValue::Map(_)),
                     start,
                     len: list.len(),
                     elements: list.elements(),

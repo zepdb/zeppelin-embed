@@ -138,7 +138,7 @@ impl<'a> QueryList<'a> {
                 view = Some(owner);
             }
             match value {
-                QueryValue::List(list) => {
+                QueryValue::Map(super::QueryMap { entries: list }) | QueryValue::List(list) => {
                     elements = elements
                         .checked_add(list.elements)
                         .ok_or(QueryError::ListLimit)?;

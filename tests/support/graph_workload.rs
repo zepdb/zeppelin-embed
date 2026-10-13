@@ -578,6 +578,7 @@ pub fn observe(result: &CompletedGraphResult) -> Result<Vec<oracle::Row>, String
     fn value(r: &CompletedGraphResult, v: &Cell) -> Result<oracle::Cell, String> {
         let p = r.pools();
         Ok(match v {
+            Cell::Map { .. } => return Err("map outside this fixed workload oracle corpus".into()),
             Cell::Null => oracle::Cell::Null,
             Cell::Bool(v) => oracle::Cell::Bool(*v),
             Cell::I64(v) => oracle::Cell::I64(*v),

@@ -1,7 +1,7 @@
 {
   "format": "graph-profile-parity-v1",
   "source_profile": "crates/zeppelin-embed-cypher/tests/fixtures/cypher-profile-v1.json",
-  "source_profile_sha256": "078d97487eb54df486ce8d5b4401bd52438dfb5bc6fad8e0d36710cf8df60b2e",
+  "source_profile_sha256": "62622cf5d570a29786c7f698b2f396288e41dc60ea44d6e2bf15d5ece6322e46",
   "source_commit": "007895aff5f33097d67b2e48a0a2babd6bd18590",
   "paths": [
     "rust-structured",
@@ -3120,18 +3120,18 @@
       "id": "clauses/return/Return5.feature [1]",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "3df1c3a8866825fdd28db5807ac1dd85dc4665e5ec7b00601ea8e21f9052e199",
+        "sha256": "3813011b89a59f6a724529691d0ccbe5694dae0573dbeb35149d173979e74b99",
         "hashes": {
-          "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "setup": "bb5948122f1def7a11fa8882ea25c1c1e570a21d8198c7852fe6b69b45bd030a",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "query": "5eea88e8e60880ce91965ab11b3e5850adce2b621fe30a7d8e267ec29b7f2abe",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "query": "0edd352a0193d9297e3b10b8520f0dc7bd9c0da9352fb5b94a707de09bae811e",
+          "expectation": "befdfdbfec1a193f3d88550d0b70b6e5b18bcd4edbd0cbd30ea730d38a2543ae",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "clauses/return/Return5.feature [1]\nexpect reject-profile\nquery\n  MATCH (n)\n  RETURN count(DISTINCT {name: n.list}) AS count",
+      "fixture_block": "clauses/return/Return5.feature [1]\nsetup\n      CREATE ({list: ['A', 'B']}), ({list: ['A', 'B']})\nquery\n      MATCH (n)\n      RETURN count(DISTINCT {name: n.list}) AS count\nexpect bag\n      | count |\n      | 1     |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -3218,18 +3218,18 @@
       "id": "clauses/return/Return5.feature [3]",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "11e46a942759ede60f3e60d2666852a9d4ad96b0126737f13a4a1f8afbbd36aa",
+        "sha256": "b5d1a63c7ffb3615391d4bc30f452aa11d67e2ab14abc8eb5280fa1cf04d45e4",
         "hashes": {
-          "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "setup": "bb5948122f1def7a11fa8882ea25c1c1e570a21d8198c7852fe6b69b45bd030a",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "query": "b56e0e4390f3127aec35a2a3ee16b70baca7dff818e1c3c509666c1477eb6e99",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "query": "0c3b2eb31da8c9f3789ba97a53a066f0a86c99e9c59da877f6d1181cfbc02488",
+          "expectation": "befdfdbfec1a193f3d88550d0b70b6e5b18bcd4edbd0cbd30ea730d38a2543ae",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "clauses/return/Return5.feature [3]\nexpect reject-profile\nquery\n  MATCH (n)\n  RETURN count(DISTINCT {name: [[n.list, n.list], [n.list, n.list]]}) AS count",
+      "fixture_block": "clauses/return/Return5.feature [3]\nsetup\n      CREATE ({list: ['A', 'B']}), ({list: ['A', 'B']})\nquery\n      MATCH (n)\n      RETURN count(DISTINCT {name: [[n.list, n.list], [n.list, n.list]]}) AS count\nexpect bag\n      | count |\n      | 1     |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -3243,18 +3243,18 @@
       "id": "clauses/return/Return5.feature [4]",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "16653f1f3d985396736c1895727d621f259e09d1d6d6bb2f55c4d629afd0c712",
+        "sha256": "97574d702fa0830e5d68d1ca9dba89306277d6796a18aac5fcb55485317dcb01",
         "hashes": {
-          "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "setup": "bb5948122f1def7a11fa8882ea25c1c1e570a21d8198c7852fe6b69b45bd030a",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "query": "32917b426711cd744727a66cc49a2855fa6dfa8416c18fa5a8418b8affd75cf2",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "query": "012381a58f765810ab80eb9321593a841bca9673f3a33ebe7d3a094b041f6f40",
+          "expectation": "befdfdbfec1a193f3d88550d0b70b6e5b18bcd4edbd0cbd30ea730d38a2543ae",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "clauses/return/Return5.feature [4]\nexpect reject-profile\nquery\n  MATCH (n)\n  RETURN count(DISTINCT {name: [{name2: n.list}, {baz: {apa: n.list}}]}) AS count",
+      "fixture_block": "clauses/return/Return5.feature [4]\nsetup\n      CREATE ({list: ['A', 'B']}), ({list: ['A', 'B']})\nquery\n      MATCH (n)\n      RETURN count(DISTINCT {name: [{name2: n.list}, {baz: {apa: n.list}}]}) AS count\nexpect bag\n      | count |\n      | 1     |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -5013,16 +5013,16 @@
       "id": "expressions/list/List1.feature [5]",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "773034517550f68778eb6c67d22e187d30aa777488cc168debecda93ec1075d8",
+        "sha256": "f95e995c5254094ff31b93525b3453c991c061aa4e8091d29a5d3e66b01e1657",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "query": "b1ec3231d0bc40fba78c416b0126fa575e70b778321021d508bd729676548ce6",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "query": "ae88cae4bccb49b7485fda62758a447d134608ddae26dbb3bf506ee728178349",
+          "expectation": "3db3d6871bc550ab13f98897cca466169a03d82f75d131e810286ca13ca90a71",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/list/List1.feature [5]\nexpect reject-profile\nquery\n  WITH $expr AS expr, $idx AS idx\n  RETURN expr[toInteger(idx)] AS value",
+      "fixture_block": "expressions/list/List1.feature [5]\nquery\n  WITH $expr AS expr, $idx AS idx\n  RETURN expr[toInteger(idx)] AS value\nparameter expr = ['Apa']\nparameter idx = 0\nexpect bag\n      | value |\n      | 'Apa' |\nside-effects none\n",
       "structured": null,
       "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
       "states": {
@@ -6094,18 +6094,18 @@
       "id": "expressions/null/Null1.feature [5] example 1",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "e2a3dc7930e33373a34088878b6b70e1cafb8ded165c3d27df7192bbc3ac67e3",
+        "sha256": "2cb077bc41f280b199355800224d630ed4d00556a94b3045228766d6a0a8071f",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "09a660fbcf8db0c6260ab7c3fc03189e357a0ffa6a1f71a552b716136bab10f5",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "58c0aec4173d067ca725c004053c038ea05a13e2b567191ecf69e6ef463d4047",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 1\nexpect reject-profile\nquery\n  WITH {name: 'Mats', name2: 'Pontus'} AS map\n  RETURN map.name IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 1\nquery\n  WITH {name: 'Mats', name2: 'Pontus'} AS map\n  RETURN map.name IS NULL AS result\nexpect bag\n      | result |\n      | false |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6119,18 +6119,18 @@
       "id": "expressions/null/Null1.feature [5] example 2",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "fd879e8c5a165a1371cc7cdb2def93bfad0d0a4f93d2623cddeec4e68f54de09",
+        "sha256": "bb6c4845755db431b94d4685dfd480ce4e8c419bedcfda46b7dac36813d936fa",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "1456ddcae0da75f2b771341a5855e6c9e69389d02d532571ea907420abed473c",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "58c0aec4173d067ca725c004053c038ea05a13e2b567191ecf69e6ef463d4047",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 2\nexpect reject-profile\nquery\n  WITH {name: 'Mats', name2: 'Pontus'} AS map\n  RETURN map.name2 IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 2\nquery\n  WITH {name: 'Mats', name2: 'Pontus'} AS map\n  RETURN map.name2 IS NULL AS result\nexpect bag\n      | result |\n      | false |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6144,18 +6144,18 @@
       "id": "expressions/null/Null1.feature [5] example 3",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "115613c998d28170f1d91535b4422a067527455b853b69331e08d0743b820060",
+        "sha256": "c8db5e01319279844d59b5393bbb58dae6ea7d5682a9152f2e94217559da969a",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "652a227f3206c0f5e04fa31d566ddf0d35c80eff7e8517960bcff0ec8a1facb7",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "58c0aec4173d067ca725c004053c038ea05a13e2b567191ecf69e6ef463d4047",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 3\nexpect reject-profile\nquery\n  WITH {name: 'Mats', name2: null} AS map\n  RETURN map.name IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 3\nquery\n  WITH {name: 'Mats', name2: null} AS map\n  RETURN map.name IS NULL AS result\nexpect bag\n      | result |\n      | false |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6169,18 +6169,18 @@
       "id": "expressions/null/Null1.feature [5] example 4",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "4af8676bad305242721efa7644bbe1ad9162fbb74b766673b1d5a910169b714f",
+        "sha256": "a3f9bbbcce2345c28c24c1f826cdd35611b3f85bb74db226699c22ac74d293f2",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "69cad857591d87c75fe5486e0eb8516c83a7668995ed6c80faacaa7a85d9872e",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "5fd67b57a4e35719386c401b4b0f13d81d9e74f208b12a1343ec68e0b7cf17a5",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 4\nexpect reject-profile\nquery\n  WITH {name: 'Mats', name2: null} AS map\n  RETURN map.name2 IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 4\nquery\n  WITH {name: 'Mats', name2: null} AS map\n  RETURN map.name2 IS NULL AS result\nexpect bag\n      | result |\n      | true |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6194,18 +6194,18 @@
       "id": "expressions/null/Null1.feature [5] example 5",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "8499b1d5b0ef2cbbae0aa9100485f937fad5d3157b4478d41d4e71e5462d41f6",
+        "sha256": "3db9b5f18d141745331ae7d5425b233b602f56fdac7ba90ee02cdd6149af3f50",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "df2bcbbaff4a96e1945a9e76adf0a4905fe9ec2b9fff91cda9440c99acdd8945",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "5fd67b57a4e35719386c401b4b0f13d81d9e74f208b12a1343ec68e0b7cf17a5",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 5\nexpect reject-profile\nquery\n  WITH {name: null} AS map\n  RETURN map.name IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 5\nquery\n  WITH {name: null} AS map\n  RETURN map.name IS NULL AS result\nexpect bag\n      | result |\n      | true |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6219,18 +6219,18 @@
       "id": "expressions/null/Null1.feature [5] example 6",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "d7f5460a898eb35b8b794c614161c1dd3d064384e160c986d2de1b877cc1222d",
+        "sha256": "056ff0371d96dc455bddb154ae0b6e572e768102e884635fb5d488e6d676d65a",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "917c930705310f3e98f002b34d530b7fe05f51ccec8a44b73592aa700f595867",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "5fd67b57a4e35719386c401b4b0f13d81d9e74f208b12a1343ec68e0b7cf17a5",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 6\nexpect reject-profile\nquery\n  WITH {name: null, name2: null} AS map\n  RETURN map.name IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 6\nquery\n  WITH {name: null, name2: null} AS map\n  RETURN map.name IS NULL AS result\nexpect bag\n      | result |\n      | true |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6244,18 +6244,18 @@
       "id": "expressions/null/Null1.feature [5] example 7",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "669bce668904ce1bba00c7b3dd4490141217772f0e9043e0209ea6cbbb165704",
+        "sha256": "52ac4bb6975bdff6469cc1fdb787b19202ebc2df2ede645015052f5789c42585",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "19c0be7fc4c8c776c41e82173632873bf2c171a1d05ac6b62602595b05815362",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "5fd67b57a4e35719386c401b4b0f13d81d9e74f208b12a1343ec68e0b7cf17a5",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 7\nexpect reject-profile\nquery\n  WITH {name: null, name2: null} AS map\n  RETURN map.name2 IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 7\nquery\n  WITH {name: null, name2: null} AS map\n  RETURN map.name2 IS NULL AS result\nexpect bag\n      | result |\n      | true |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6269,18 +6269,18 @@
       "id": "expressions/null/Null1.feature [5] example 8",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "8711074bb6bc2a66f88c54ec402bf7027f7966c593bb84798deba79fc33808d8",
+        "sha256": "4ccc991bf829cfe88b8801873879196c33e3f3c8092eb56161c0f2202ab8a3b5",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "b7639c8c822a7296fcb023a26899fdc6f2ed654cca59c08eadc18bbd30f1abf0",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "5fd67b57a4e35719386c401b4b0f13d81d9e74f208b12a1343ec68e0b7cf17a5",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 8\nexpect reject-profile\nquery\n  WITH {notName: null, notName2: null} AS map\n  RETURN map.name IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 8\nquery\n  WITH {notName: null, notName2: null} AS map\n  RETURN map.name IS NULL AS result\nexpect bag\n      | result |\n      | true |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6294,18 +6294,18 @@
       "id": "expressions/null/Null1.feature [5] example 9",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "9fd52cc8bb1e904ff20dbfee77f2ba053aef74d103d5b9d9ddfb58a963580841",
+        "sha256": "2c3c70a0f31ddddeee802a2be7bd3891ce3dd4af831aa0c0601b5a1519f2a3d9",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "3fd3765e6ea03c2c2dc67a54e7b0bc960e07273e05139880757061f36b5da139",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "5fd67b57a4e35719386c401b4b0f13d81d9e74f208b12a1343ec68e0b7cf17a5",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 9\nexpect reject-profile\nquery\n  WITH {notName: 0, notName2: null} AS map\n  RETURN map.name IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 9\nquery\n  WITH {notName: 0, notName2: null} AS map\n  RETURN map.name IS NULL AS result\nexpect bag\n      | result |\n      | true |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6319,18 +6319,18 @@
       "id": "expressions/null/Null1.feature [5] example 10",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "30a9cb36ffabd7f5a740807e2d0971fc3ac0f0821e339ae8dd9e5bfdbd5c2975",
+        "sha256": "f358ff5fece7dfc5befcc69eb4ea48f1f995788c8607589e8aef0595e93ad3cb",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "16e681e4275f841cf43c46ab8ee2504b94bfac08efeab34ab4059e8a6b6c9d46",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "5fd67b57a4e35719386c401b4b0f13d81d9e74f208b12a1343ec68e0b7cf17a5",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 10\nexpect reject-profile\nquery\n  WITH {notName: 0} AS map\n  RETURN map.name IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 10\nquery\n  WITH {notName: 0} AS map\n  RETURN map.name IS NULL AS result\nexpect bag\n      | result |\n      | true |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",
@@ -6344,18 +6344,18 @@
       "id": "expressions/null/Null1.feature [5] example 11",
       "source": {
         "fixture": "read-tck-execution.txt",
-        "sha256": "3a1e4becd7e8e9b8b1b90c116f6b04bee8d0ca0c310b42149dc477d5e57f3a0c",
+        "sha256": "844e45b13c7414ffbefa9f97ead33689ff1ec317db44c0afa2bb3c1f730d42fd",
         "hashes": {
           "setup": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "parameter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "query": "e2a35f3ce04bb2f59e748145c0d57ea8a3d86d5563c4d7772852e289f24fb295",
-          "expectation": "a39d5d877567230b2996a975d3de0f31b4cff34751131d9bbf200414cd0fc71f",
-          "side_effects": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          "expectation": "5fd67b57a4e35719386c401b4b0f13d81d9e74f208b12a1343ec68e0b7cf17a5",
+          "side_effects": "4c693990e4462a1227d4f73074208d0547d4e2609add5dea92ae2cb890337aee"
         }
       },
-      "fixture_block": "expressions/null/Null1.feature [5] example 11\nexpect reject-profile\nquery\n  WITH {} AS map\n  RETURN map.name IS NULL AS result",
+      "fixture_block": "expressions/null/Null1.feature [5] example 11\nquery\n  WITH {} AS map\n  RETURN map.name IS NULL AS result\nexpect bag\n      | result |\n      | true |\nside-effects none\n",
       "structured": null,
-      "structured_reason": "compiler-only source refusal has no equivalent valid typed query",
+      "structured_reason": "map expressions have no C or Swift structured-plan descriptors; Cypher execution is supported",
       "states": {
         "rust-cypher": "planned",
         "c-cypher": "planned",

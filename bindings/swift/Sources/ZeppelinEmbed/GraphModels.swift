@@ -47,6 +47,7 @@ public indirect enum GraphValue: Sendable, Equatable {
   case node(GraphNode)
   case relationship(GraphRelationship)
   case list(GraphListKind, [GraphValue])
+  case map([String: GraphValue])
 }
 public struct GraphNodeImage: Sendable {
   public var labels: [String]

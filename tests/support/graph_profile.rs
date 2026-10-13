@@ -1339,6 +1339,7 @@ fn tck_text(v: &V) -> String {
         )
     };
     match v {
+        V::Map(p) => props(p),
         V::Null => "null".into(),
         V::Bool(b) => b.to_string(),
         V::Int(i) => i.to_string(),
@@ -1708,6 +1709,9 @@ pub fn high_id_roundtrip() -> Result<(), String> {
 
 pub fn primitive(v: &V) -> Json {
     match v {
+        V::Map(v) => {
+            json!({"type":8,"value":v.iter().map(|(k,v)|(k.clone(),primitive(v))).collect::<BTreeMap<_,_>>()})
+        }
         V::Null => json!({"type":0,"value":null}),
         V::Bool(v) => json!({"type":1,"value":v}),
         V::Int(v) => json!({"type":2,"value":v}),
@@ -1726,6 +1730,7 @@ pub fn primitive(v: &V) -> Json {
 fn oracle_cell(v: &V) -> zeppelin_embed_adversarial_oracle::graph_profile::Cell {
     use zeppelin_embed_adversarial_oracle::graph_profile::Cell as C;
     match v {
+        V::Map(_) => panic!("map outside this fixed profile oracle corpus"),
         V::Null => C::Null,
         V::Bool(v) => C::Boolean(*v),
         V::Int(v) => C::Integer(*v),

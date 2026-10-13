@@ -215,7 +215,8 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
                     Aggregate::Collect { slot, distinct }
                 }
                 (
-                    operation @ (AggregateExpression::Sum { .. }
+                    operation @ (AggregateExpression::Avg { .. }
+                    | AggregateExpression::Sum { .. }
                     | AggregateExpression::Min
                     | AggregateExpression::Max),
                     Some(operand),
@@ -235,6 +236,7 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
                         .map_err(RuntimeError::Memory)?;
                     match operation {
                         AggregateExpression::Sum { distinct } => Aggregate::Sum { slot, distinct },
+                        AggregateExpression::Avg { distinct } => Aggregate::Avg { slot, distinct },
                         AggregateExpression::Min => Aggregate::Min { slot },
                         AggregateExpression::Max => Aggregate::Max { slot },
                         _ => return Err(PlanError::Aggregate.into()),

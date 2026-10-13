@@ -1006,7 +1006,8 @@ export interface GraphRelationship {
   readonly properties: GraphProperties;
 }
 /** Query lists can contain mixed scalar/entity values and nested lists. */
-export type GraphValue = GraphScalar | GraphNode | GraphRelationship | readonly GraphValue[];
+export interface GraphMap { readonly [key: string]: GraphValue; }
+export type GraphValue = GraphScalar | GraphNode | GraphRelationship | readonly GraphValue[] | GraphMap;
 export interface GraphReceipt {
   readonly item: number;
   readonly kind: 'node' | 'relationship';

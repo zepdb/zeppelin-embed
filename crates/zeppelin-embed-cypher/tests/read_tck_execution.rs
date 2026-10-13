@@ -29,8 +29,8 @@ const FIXTURE: &str = include_str!("fixtures/read-tck-execution.txt");
 
 fn scenarios() -> Vec<tck::Scenario> {
     let all = tck::scenarios(FIXTURE);
-    // 55 positive, 3 compile errors, 15 rejected scenarios and the 12
-    // example rows of the rejected Null1 [5] outline.
+    // 69 positive (including map examples), 3 compile errors, 12 profile
+    // rejections and the previously accepted scalar outline observation.
     assert_eq!(all.len(), 85);
     all
 }
@@ -57,8 +57,8 @@ fn ze56_original_read_tck_positive_scenarios_execute() {
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!(selected, 55);
-    assert_eq!(passed, 110);
+    assert_eq!(selected, 69);
+    assert_eq!(passed, 138);
 }
 
 /// The three original compile-time errors are refused by the compiler with
@@ -117,16 +117,14 @@ const NAMED_PATH: (ErrorKind, &str) = (
     ErrorKind::Unsupported,
     "only unnamed node/relationship patterns are supported",
 );
-const FUNCTION: (ErrorKind, &str) = (ErrorKind::Unsupported, "function outside profile");
 const COMPOUND_AGGREGATE: (ErrorKind, &str) = (
     ErrorKind::Unsupported,
     "aggregate must be a top-level projection",
 );
-const MAP: (ErrorKind, &str) = (ErrorKind::Unsupported, "map expression outside profile");
 const UNWIND: (ErrorKind, &str) = (ErrorKind::Unsupported, "statement form outside profile");
 
 /// Each rejected coordinate's exact profile category.
-const PROFILE_REJECTIONS: [(&str, ErrorKind, &str); 16] = [
+const PROFILE_REJECTIONS: [(&str, ErrorKind, &str); 12] = [
     ("clauses/match/Match4.feature [2]", UNBOUNDED.0, UNBOUNDED.1),
     ("clauses/match/Match4.feature [5]", UNBOUNDED.0, UNBOUNDED.1),
     (
@@ -146,7 +144,11 @@ const PROFILE_REJECTIONS: [(&str, ErrorKind, &str); 16] = [
         NAMED_PATH.1,
     ),
     ("clauses/with/With6.feature [4]", NAMED_PATH.0, NAMED_PATH.1),
-    ("clauses/with/With6.feature [5]", FUNCTION.0, FUNCTION.1),
+    (
+        "clauses/with/With6.feature [5]",
+        COMPOUND_AGGREGATE.0,
+        COMPOUND_AGGREGATE.1,
+    ),
     (
         "clauses/with/With6.feature [6]",
         COMPOUND_AGGREGATE.0,
@@ -157,9 +159,6 @@ const PROFILE_REJECTIONS: [(&str, ErrorKind, &str); 16] = [
         COMPOUND_AGGREGATE.0,
         COMPOUND_AGGREGATE.1,
     ),
-    ("clauses/return/Return5.feature [1]", MAP.0, MAP.1),
-    ("clauses/return/Return5.feature [3]", MAP.0, MAP.1),
-    ("clauses/return/Return5.feature [4]", MAP.0, MAP.1),
     (
         "expressions/aggregation/Aggregation8.feature [3]",
         UNWIND.0,
@@ -170,11 +169,9 @@ const PROFILE_REJECTIONS: [(&str, ErrorKind, &str); 16] = [
         UNWIND.0,
         UNWIND.1,
     ),
-    // Every map-valued example row: a map literal is not a profile expression.
-    ("expressions/null/Null1.feature [5] example", MAP.0, MAP.1),
 ];
 
-/// Unbounded, named-path, UNWIND, map and unsupported-function scenarios stay
+/// Unbounded, named-path, UNWIND and compound-aggregate scenarios stay
 /// outside the accepted profile: refused by the compiler, never executed.
 #[test]
 fn ze56_profile_rejected_read_scenarios_stay_refused() {
@@ -210,11 +207,7 @@ fn ze56_profile_rejected_read_scenarios_stay_refused() {
         assert_eq!(generation(&graph), before);
         seen += 1;
     }
-    assert_eq!(
-        seen,
-        15 + 11,
-        "15 scenarios plus 11 map-valued outline rows"
-    );
+    assert_eq!(seen, 12, "remaining unsupported profile scenarios");
 }
 
 /// Null1 [5]'s one scalar example row (`WITH null AS map`) is inside the

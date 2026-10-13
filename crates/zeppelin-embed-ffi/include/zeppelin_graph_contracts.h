@@ -44,6 +44,10 @@ enum ZeGraphValueTag
      Ordered range of value indices in the child-index arena.
      */
     ZE_GRAPH_VALUE_LIST = 7,
+    /*
+     Alternating string key/value indices, unique keys in UTF-8 order.
+     */
+    ZE_GRAPH_VALUE_MAP = 8,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1033,7 +1037,7 @@ typedef struct ZeGraphBatchItem {
 /*
  Version-one flat value descriptor. `abi_size` must equal sizeof this type.
  Reserved and inactive fields are zero (including the bits of inactive F64).
- Only List uses list_kind; String/List use range; Node/Relationship use
+ Only List uses list_kind; String/List/Map use range; Node/Relationship use
  entity_index; each scalar uses its matching named field. Array bounds,
  UTF-8, graph ownership and descendant geometry require the later marshaller.
  */
@@ -1071,7 +1075,7 @@ typedef struct ZeGraphValue {
      */
     double floating;
     /*
-     String bytes or List child-index elements; zero range otherwise.
+     String bytes or List/Map child-index elements; zero range otherwise.
      */
     struct ZeGraphRange range;
 } ZeGraphValue;
@@ -1373,7 +1377,7 @@ typedef struct ZeGraphColumn {
      */
     struct ZeGraphRange name;
     /*
-     Nonzero bitmask Null1 Bool2 I644 F648 String16 Node32 Rel64 List128.
+     Nonzero bitmask Null1 Bool2 I644 F648 String16 Node32 Rel64 List128 Map256.
      */
     uint32_t kinds;
     /*

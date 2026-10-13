@@ -399,6 +399,10 @@ fn map_value(value: &Value) -> ZeGraphValue {
             output.tag = ZeGraphValueTag::ZeGraphValueRelationship as u32;
             output.entity_index = *index;
         }
+        Value::Map { entries } => {
+            output.tag = ZeGraphValueTag::ZeGraphValueMap as u32;
+            output.range = range(*entries);
+        }
         Value::List { children, element } => {
             output.tag = ZeGraphValueTag::ZeGraphValueList as u32;
             output.range = range(*children);
@@ -488,6 +492,7 @@ fn kinds(value: ValueKinds) -> u32 {
         (ValueKinds::NODE, 32),
         (ValueKinds::REL, 64),
         (ValueKinds::LIST, 128),
+        (ValueKinds::MAP, 256),
     ] {
         if value.contains(native) {
             bits |= c;

@@ -12,6 +12,7 @@ final class GraphBindingsParityTests: XCTestCase {
   }
   private func cell(_ value: GraphValue) -> String {
     switch value {
+    case .map(let v): return "M[" + v.keys.sorted().map { "\($0)=\(cell(v[$0]!))" }.joined(separator: ",") + "]"
     case .null: return "N"
     case .bool(let b): return "B\(b ? 1 : 0)"
     case .integer(let i): return "I\(i)"

@@ -105,6 +105,16 @@ struct GraphDecoder {
         }
       }
       return .list(kind, elements)
+    case 8:
+      let entries = try graphSlice(children, v.range)
+      guard entries.count % 2 == 0 else { throw GraphError(.invalidResponse("map entries")) }
+      var map: [String: GraphValue] = [:]
+      for i in stride(from: 0, to: entries.count, by: 2) {
+        guard case .string(let key) = try value(entries[i], depth: depth + 1), map[key] == nil
+        else { throw GraphError(.invalidResponse("map key")) }
+        map[key] = try value(entries[i + 1], depth: depth + 1)
+      }
+      return .map(map)
     default: throw GraphError(.invalidResponse("value tag"))
     }
   }

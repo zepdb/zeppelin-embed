@@ -303,6 +303,20 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                 DraftExpr::Property { entity, .. } | DraftExpr::HasLabel { entity, .. } => {
                     mark(entity)?
                 }
+                DraftExpr::Comprehension {
+                    source,
+                    predicate,
+                    projection,
+                    ..
+                } => {
+                    mark(source)?;
+                    if let Some(id) = predicate {
+                        mark(id)?;
+                    }
+                    if let Some(id) = projection {
+                        mark(id)?;
+                    }
+                }
                 DraftExpr::Unary { operand, .. } => mark(operand)?,
                 DraftExpr::Binary { left, right, .. } => {
                     mark(left)?;
@@ -321,7 +335,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     }
                     mark(otherwise)?;
                 }
-                DraftExpr::List(range) | DraftExpr::Coalesce(range) => {
+                DraftExpr::Map(range) | DraftExpr::List(range) | DraftExpr::Coalesce(range) => {
                     for id in range.get(self.children.slice())? {
                         mark(*id)?;
                     }
