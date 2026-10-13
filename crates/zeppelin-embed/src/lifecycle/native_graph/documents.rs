@@ -329,10 +329,10 @@ impl crate::lifecycle::Store {
         Ok(Some(writer))
     }
 
-    pub(crate) fn delete_native_documents_locked<'store>(
-        &'store self,
+    pub(crate) fn delete_native_documents_locked(
+        &self,
         batch: &crate::ingest::DeleteBatch,
-        writer: &mut Option<std::sync::MutexGuard<'store, Option<super::write::NativeWriter>>>,
+        writer: &mut super::write::NativeWriter,
     ) -> Result<crate::ingest::IngestAck, crate::ingest::IngestError> {
         let (_, report) = self
             .with_native_document_mutation(batch.doc_ids().len(), DeleteDocuments(batch), writer)
@@ -430,5 +430,40 @@ fn document_mutation_error(
         error => crate::ingest::IngestError::Graph(Box::new(
             crate::property_graph::query::completed::GraphQueryError::from(error),
         )),
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+impl crate::ingest::IngestError {
+    pub(crate) fn is_native_reclaim_debt(&self) -> bool {
+        matches!(self, Self::Graph(error) if matches!(error.cause(),
+            crate::property_graph::query::completed::GraphQueryCause::Graph(
+                super::NativeGraphError::ReclaimDebt
+            )
+        ))
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+impl crate::lifecycle::Store {
+    /// Each attempt owns its guards and resolved state. A definite debt
+    /// refusal drops all of them before maintenance, then resolves anew once.
+    pub(crate) fn with_native_document_recovery<T, E>(
+        &self,
+        mut attempt: impl FnMut() -> Result<T, E>,
+        is_debt: impl FnOnce(&E) -> bool,
+        recovery_error: impl FnOnce(crate::ingest::IngestError) -> E,
+    ) -> Result<T, E> {
+        match attempt() {
+            Err(error) if is_debt(&error) => {}
+            result => return result,
+        }
+        self.maintain_native_graph_for_write(
+            &crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()),
+            super::automatic::WriteMaintenance::Reclaim,
+            &mut false,
+        )
+        .map_err(|error| recovery_error(document_mutation_error(error.into())))?;
+        attempt()
     }
 }

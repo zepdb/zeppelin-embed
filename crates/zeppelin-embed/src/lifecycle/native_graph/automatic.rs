@@ -40,6 +40,13 @@ impl Store {
         // Explicit maintenance supplies each step's own limits and locking.
         for _ in 0..WRITE_RECOVERY_STEPS {
             if self.maintain_native_graph_step(control)?.cycle_complete {
+                #[cfg(test)]
+                WRITE_RECOVERY_HOOK.with(|hook| {
+                    let callback = hook.borrow_mut().take();
+                    if let Some(hook) = callback {
+                        hook(self);
+                    }
+                });
                 return Ok(());
             }
         }
@@ -223,3 +230,9 @@ impl Store {
 // The existing incomplete-retirement fault requires a partially folded manifest.
 #[cfg(test)]
 thread_local! { pub(crate) static PARTIAL_FOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+thread_local! {
+    #[allow(clippy::type_complexity)]
+    pub(crate) static WRITE_RECOVERY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Store)>>> = const { std::cell::RefCell::new(None) };
+}

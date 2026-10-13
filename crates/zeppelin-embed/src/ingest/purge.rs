@@ -662,6 +662,24 @@ impl Store {
         available_bytes: u64,
         vfs: &dyn Vfs,
     ) -> Result<PurgeToken, PurgeError> {
+        #[cfg(feature = "graph-cypher")]
+        {
+            self.with_native_document_recovery(
+                || self.purge_attempt(ids, available_bytes, vfs),
+                |error| matches!(error, PurgeError::Delete(error) if error.is_native_reclaim_debt()),
+                PurgeError::Delete,
+            )
+        }
+        #[cfg(not(feature = "graph-cypher"))]
+        self.purge_attempt(ids, available_bytes, vfs)
+    }
+
+    fn purge_attempt(
+        &self,
+        ids: &[DocId],
+        available_bytes: u64,
+        vfs: &dyn Vfs,
+    ) -> Result<PurgeToken, PurgeError> {
         let _maintenance = self
             .maintenance
             .lock()
@@ -671,17 +689,15 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        if native_writer.is_some()
+        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
             && self
                 .documents_have_native_nodes(ids)
                 .map_err(PurgeError::Delete)?
         {
+            // Validate only; schedule_purge_locked writes the durable intent.
             self.prepare_purge_intent(ids, available_bytes, vfs)?;
-            self.delete_native_documents_locked(
-                &super::DeleteBatch::new(ids.to_vec()),
-                &mut native_writer,
-            )
-            .map_err(PurgeError::Delete)?;
+            self.delete_native_documents_locked(&super::DeleteBatch::new(ids.to_vec()), writer)
+                .map_err(PurgeError::Delete)?;
         }
         let state = self
             .state

@@ -75,8 +75,9 @@ impl Store {
     /// Deletes every live document whose current version matches
     /// `predicate`, atomically, and physically removes their bytes.
     ///
-    /// The whole call holds the maintenance, state, writer and WAL locks, so
+    /// Each attempt holds the maintenance, state, writer and WAL locks, so
     /// no other write lands between resolving the matches and deleting them.
+    /// Reclaim debt discards the attempt and restarts resolution after recovery.
     /// The order is: resolve the ids; durably record a purge intent for them;
     /// tombstone them all in one WAL record at one generation (readers see all
     /// of them or none of them); then run the physical purge, which rewrites
@@ -87,6 +88,22 @@ impl Store {
     /// A cascade (ZE-225) extends the id set between resolution and
     /// `delete_and_purge_locked`, inside the same held locks.
     pub fn delete_matching(
+        &self,
+        predicate: &Predicate,
+    ) -> Result<DeleteMatchingReport, DeleteMatchingError> {
+        #[cfg(feature = "graph-cypher")]
+        {
+            self.with_native_document_recovery(
+                || self.delete_matching_attempt(predicate),
+                |error| matches!(error, DeleteMatchingError::Delete(error) if error.is_native_reclaim_debt()),
+                DeleteMatchingError::Delete,
+            )
+        }
+        #[cfg(not(feature = "graph-cypher"))]
+        self.delete_matching_attempt(predicate)
+    }
+
+    fn delete_matching_attempt(
         &self,
         predicate: &Predicate,
     ) -> Result<DeleteMatchingReport, DeleteMatchingError> {
@@ -101,7 +118,9 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        let native_deleted = if native_writer.is_some() {
+        let native_deleted = if let Some(writer) =
+            native_writer.as_mut().and_then(|slot| slot.as_mut())
+        {
             let ids = {
                 let active = self
                     .active
@@ -126,6 +145,7 @@ impl Store {
                     .documents_have_native_nodes(&ids)
                     .map_err(DeleteMatchingError::Delete)?
             {
+                // Validate only; the durable intent follows the mixed commit.
                 self.prepare_purge_intent(
                     &ids,
                     self.available_purge_bytes()
@@ -133,11 +153,8 @@ impl Store {
                     self.vfs.as_ref(),
                 )
                 .map_err(DeleteMatchingError::Purge)?;
-                self.delete_native_documents_locked(
-                    &super::DeleteBatch::new(ids.clone()),
-                    &mut native_writer,
-                )
-                .map_err(DeleteMatchingError::Delete)?;
+                self.delete_native_documents_locked(&super::DeleteBatch::new(ids.clone()), writer)
+                    .map_err(DeleteMatchingError::Delete)?;
                 Some(ids)
             } else {
                 None

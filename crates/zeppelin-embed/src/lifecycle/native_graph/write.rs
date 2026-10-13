@@ -2813,10 +2813,10 @@ impl crate::lifecycle::Store {
         )
     }
 
-    pub(crate) fn apply_native_mixed_locked<'store>(
-        &'store self,
+    pub(crate) fn apply_native_mixed_locked(
+        &self,
         documents: &crate::ingest::IngestBatch,
-        writer: &mut Option<std::sync::MutexGuard<'store, Option<NativeWriter>>>,
+        writer: &mut NativeWriter,
     ) -> Result<NativePreparedResult<ReceiptRegistration>, NativeGraphError> {
         self.apply_native_graph_with_materializer_inner(
             &[],
@@ -2963,36 +2963,42 @@ impl crate::lifecycle::Store {
         clippy::too_many_arguments,
         reason = "one shared tail accepts an already held document writer"
     )]
-    fn apply_native_graph_with_materializer_inner<'store, M: ResultMaterializer>(
-        &'store self,
+    fn apply_native_graph_with_materializer_inner<M: ResultMaterializer>(
+        &self,
         requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
         control: &crate::lifecycle::QueryControl,
         materializer: &mut M,
         mut allow_pending_checkpoint: bool,
         documents: Option<&crate::ingest::IngestBatch>,
-        mut held_writer: Option<&mut Option<std::sync::MutexGuard<'store, Option<NativeWriter>>>>,
+        mut held_writer: Option<&mut NativeWriter>,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
         let request_resources = GraphResources::from_store(self)?;
         let _request_work = request_resources.begin_work();
         self.native_graph.require_writable()?;
-        let mut maintenance_checked = held_writer.is_some();
+        let caller_holds_writer = held_writer.is_some();
+        let mut maintenance_checked = caller_holds_writer;
         let mut recovered = false;
         let mut run_maintenance = None;
         loop {
             if let Some(action) = run_maintenance.take() {
                 self.maintain_native_graph_for_write(control, action, &mut recovered)?;
             }
-            let mut writer_slot = match held_writer.as_deref_mut().and_then(Option::take) {
-                Some(writer) => writer,
-                None => self.native_graph.writer.lock().map_err(|_| {
+            let mut writer_slot = if held_writer.is_none() {
+                Some(self.native_graph.writer.lock().map_err(|_| {
                     NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                         component: "native graph writer",
                     })
-                })?,
+                })?)
+            } else {
+                None
             };
-            let writer = writer_slot
-                .as_mut()
-                .ok_or_else(|| self.absent_native_graph_writer())?;
+            let writer = match held_writer.as_deref_mut() {
+                Some(writer) => writer,
+                None => writer_slot
+                    .as_mut()
+                    .and_then(|slot| slot.as_mut())
+                    .ok_or_else(|| self.absent_native_graph_writer())?,
+            };
             if writer.stopped {
                 return Err(NativeGraphError::WritesStopped);
             }
@@ -3159,13 +3165,13 @@ impl crate::lifecycle::Store {
                             seq.max(crate::wal::LogSeq::new(writer.last_graph_seq))
                         }),
                     );
-                    if let Some(slot) = held_writer.as_deref_mut() {
-                        *slot = Some(writer_slot);
-                    }
                     return Ok(result);
                 }
                 CommitStep::Checkpointed => continue,
                 CommitStep::ReclaimDebt => {
+                    if caller_holds_writer {
+                        return Err(NativeGraphError::ReclaimDebt);
+                    }
                     run_maintenance = Some(super::automatic::WriteMaintenance::Reclaim);
                     continue;
                 }
@@ -3192,9 +3198,6 @@ impl crate::lifecycle::Store {
                     commit_audit.denials + handoff_denied,
                     std::sync::atomic::Ordering::Release,
                 );
-                if let Some(slot) = held_writer.as_deref_mut() {
-                    *slot = Some(writer_slot);
-                }
                 return Ok(result);
             }
             #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-seams"))))]
@@ -3206,9 +3209,6 @@ impl crate::lifecycle::Store {
                     Some(changed),
                     crate::wal::LogSeq::new(writer.last_graph_seq),
                 );
-                if let Some(slot) = held_writer.as_deref_mut() {
-                    *slot = Some(writer_slot);
-                }
                 return Ok(result);
             }
         }

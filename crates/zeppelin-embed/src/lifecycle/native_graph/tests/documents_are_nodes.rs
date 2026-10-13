@@ -1022,3 +1022,166 @@ mod ze409_scan_tests {
         assert_eq!(store.count_documents(None, None).unwrap().count, 3);
     }
 }
+
+fn force_ze446_reclaim_debt(store: &Store) {
+    store
+        .native_graph
+        .writer
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .retained_artifacts = crate::property_graph::storage::MAX_NATIVE_ARTIFACTS / 2;
+}
+
+fn ze446_document_fixture() -> (tempfile::TempDir, Store) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store
+        .ingest(IngestBatch::new(vec![
+            document(91).with_timestamp(1),
+            document(92).with_timestamp(0),
+        ]))
+        .unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    link_documents(&store);
+    force_ze446_reclaim_debt(&store);
+    (directory, store)
+}
+
+#[test]
+fn ze446_delete_matching_reresolves_after_recovery() {
+    let (directory, store) = ze446_document_fixture();
+    super::super::automatic::WRITE_RECOVERY_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|store| {
+            assert!(
+                !store
+                    .directory
+                    .join(crate::ingest::PURGE_INTENT_FILE)
+                    .exists()
+            );
+            store
+                .ingest(IngestBatch::new(vec![
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(92), Revision::new(2)),
+                        vec![0.0, 1.0],
+                    )
+                    .with_timestamp(1),
+                ]))
+                .unwrap();
+        }));
+    });
+    let report = store
+        .delete_matching(&crate::meta::Predicate::Eq {
+            column: crate::meta::TIMESTAMP_COLUMN,
+            value: crate::meta::PredicateValue::I64(0),
+        })
+        .unwrap();
+    assert!(
+        report.deleted_ids().is_empty(),
+        "replacement no longer matches"
+    );
+    assert_eq!(
+        record_document_version(&store, NodeId::new(92).unwrap()),
+        Some(DocumentVersion::new(DocId::new(92), Revision::new(2)))
+    );
+    assert!(
+        !directory
+            .path()
+            .join(crate::ingest::PURGE_INTENT_FILE)
+            .exists()
+    );
+    drop(store);
+    let reopened = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(reopened.count_documents(None, None).unwrap().count, 2);
+}
+
+#[test]
+fn ze446_held_writer_ingest_recovers_and_commits_once() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let (_directory, store) = ze446_document_fixture();
+    let before_retry = Rc::new(Cell::new(None));
+    let captured = before_retry.clone();
+    super::super::automatic::WRITE_RECOVERY_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |store| {
+            assert_eq!(
+                record_document_version(store, NodeId::new(92).unwrap()),
+                Some(DocumentVersion::new(DocId::new(92), Revision::new(1)))
+            );
+            let writer = store.native_graph.writer.lock().unwrap();
+            captured.set(Some(writer.as_ref().unwrap().last_graph_seq));
+        }));
+    });
+    let batch = IngestBatch::new(vec![IngestDocument::new(
+        DocumentVersion::new(DocId::new(92), Revision::new(2)),
+        vec![0.0, 1.0],
+    )]);
+    let ack = store.ingest(batch.clone()).unwrap();
+    // One mixed commit emits one document record and one graph record.
+    assert_eq!(ack.seq().get(), before_retry.get().unwrap() + 2);
+    let wal = std::fs::read(store.directory.join("wal.ze")).unwrap();
+    let replay = store.ingest(batch).unwrap();
+    assert_eq!(replay.generation(), ack.generation());
+    assert_eq!(std::fs::read(store.directory.join("wal.ze")).unwrap(), wal);
+    assert_eq!(
+        record_document_version(&store, NodeId::new(92).unwrap()),
+        Some(DocumentVersion::new(DocId::new(92), Revision::new(2)))
+    );
+}
+
+#[test]
+fn ze446_document_second_debt_refusal_propagates() {
+    let (directory, store) = ze446_document_fixture();
+    super::super::automatic::WRITE_RECOVERY_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(force_ze446_reclaim_debt));
+    });
+    let error = store
+        .delete_matching(&crate::meta::Predicate::Eq {
+            column: crate::meta::TIMESTAMP_COLUMN,
+            value: crate::meta::PredicateValue::I64(0),
+        })
+        .unwrap_err();
+    assert!(
+        matches!(&error, crate::ingest::DeleteMatchingError::Delete(error) if error.is_native_reclaim_debt()),
+        "{error:?}"
+    );
+    assert_eq!(
+        record_document_version(&store, NodeId::new(92).unwrap()),
+        Some(DocumentVersion::new(DocId::new(92), Revision::new(1)))
+    );
+    assert!(
+        !directory
+            .path()
+            .join(crate::ingest::PURGE_INTENT_FILE)
+            .exists()
+    );
+    drop(store);
+    assert_eq!(
+        Store::open(directory.path(), native_options())
+            .unwrap()
+            .count_documents(None, None)
+            .unwrap()
+            .count,
+        2
+    );
+}
+
+#[test]
+fn ze446_held_writer_refusal_keeps_guard() {
+    let (_directory, store) = ze446_document_fixture();
+    let sequence = store.admit_native_read().unwrap().bundle().sequence();
+    let mut writer = store.native_document_writer().unwrap();
+    let result = store.delete_native_documents_locked(
+        &crate::ingest::DeleteBatch::new(vec![DocId::new(92)]),
+        writer.as_mut().unwrap().as_mut().unwrap(),
+    );
+    assert!(result.unwrap_err().is_native_reclaim_debt());
+    assert!(writer.is_some());
+    assert!(store.native_graph.writer.try_lock().is_err());
+    assert_eq!(
+        store.admit_native_read().unwrap().bundle().sequence(),
+        sequence
+    );
+}

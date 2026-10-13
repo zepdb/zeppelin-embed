@@ -87,6 +87,8 @@ pub(crate) enum NativeGraphError {
     PreparedBaseChanged,
     WriterAbsent,
     MaintenanceBudgetExhausted,
+    /// A held document writer must restart from resolution after recovery.
+    ReclaimDebt,
 }
 
 impl From<StoreError> for NativeGraphError {
@@ -106,6 +108,7 @@ impl std::fmt::Display for NativeGraphError {
             Self::PreparedBaseChanged => {
                 f.write_str("invalid native graph bundle: prepared native base changed")
             }
+            Self::ReclaimDebt => f.write_str("native graph reclamation debt refused the write"),
             Self::MaintenanceBudgetExhausted => {
                 f.write_str("native graph maintenance byte budget exhausted")
             }

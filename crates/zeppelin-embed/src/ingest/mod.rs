@@ -1254,6 +1254,19 @@ impl Store {
 
     /// Commits one active-segment upsert and returns its WAL/generation coordinates.
     pub fn ingest(&self, batch: IngestBatch) -> Result<IngestAck, IngestError> {
+        #[cfg(feature = "graph-cypher")]
+        {
+            self.with_native_document_recovery(
+                || self.ingest_attempt(&batch),
+                IngestError::is_native_reclaim_debt,
+                |error| error,
+            )
+        }
+        #[cfg(not(feature = "graph-cypher"))]
+        self.ingest_attempt(&batch)
+    }
+
+    fn ingest_attempt(&self, batch: &IngestBatch) -> Result<IngestAck, IngestError> {
         let state = self
             .state
             .lock()
@@ -1298,7 +1311,7 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        if native_writer.is_some()
+        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
             && self.documents_have_native_nodes(
                 &batch
                     .documents
@@ -1307,14 +1320,14 @@ impl Store {
                     .collect::<Vec<_>>(),
             )?
         {
-            let result = self
-                .apply_native_mixed_locked(&batch, &mut native_writer)
-                .map_err(|error| match error {
-                    crate::lifecycle::native_graph::NativeGraphError::Ingest(error) => error,
-                    error => IngestError::Graph(Box::new(
-                        crate::property_graph::query::completed::GraphQueryError::from(error),
-                    )),
-                })?;
+            let result =
+                self.apply_native_mixed_locked(batch, writer)
+                    .map_err(|error| match error {
+                        crate::lifecycle::native_graph::NativeGraphError::Ingest(error) => error,
+                        error => IngestError::Graph(Box::new(
+                            crate::property_graph::query::completed::GraphQueryError::from(error),
+                        )),
+                    })?;
             let generation = result
                 .changed_generation()
                 .unwrap_or(result.admitted_generation())
@@ -1415,7 +1428,7 @@ impl Store {
                 component: "nonempty ingest replay sequence",
             })?;
             #[cfg(any(test, feature = "test-seams"))]
-            self.record_post_ack_retry_receipt(&batch, replay_count, seq, current_generation)?;
+            self.record_post_ack_retry_receipt(batch, replay_count, seq, current_generation)?;
             return Ok(IngestAck {
                 seq,
                 generation: current_generation,
@@ -1479,7 +1492,7 @@ impl Store {
                     writer,
                     &error,
                     &partial_append_clean_wal,
-                    &batch,
+                    batch,
                     &records,
                 )?;
                 publication.on_wal_error(&error);
@@ -1531,14 +1544,29 @@ impl Store {
 
     /// Durably tombstones documents across active and sealed state before acknowledging.
     pub fn delete(&self, batch: DeleteBatch) -> Result<IngestAck, IngestError> {
+        #[cfg(feature = "graph-cypher")]
+        {
+            self.with_native_document_recovery(
+                || self.delete_attempt(&batch),
+                IngestError::is_native_reclaim_debt,
+                |error| error,
+            )
+        }
+        #[cfg(not(feature = "graph-cypher"))]
+        self.delete_attempt(&batch)
+    }
+
+    fn delete_attempt(&self, batch: &DeleteBatch) -> Result<IngestAck, IngestError> {
         if batch.doc_ids.is_empty() {
             return Err(IngestError::EmptyBatch);
         }
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        if native_writer.is_some() && self.documents_have_native_nodes(batch.doc_ids())? {
-            return self.delete_native_documents_locked(&batch, &mut native_writer);
+        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut())
+            && self.documents_have_native_nodes(batch.doc_ids())?
+        {
+            return self.delete_native_documents_locked(batch, writer);
         }
         let state = self
             .state

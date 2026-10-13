@@ -214,11 +214,11 @@ impl crate::lifecycle::Store {
         clippy::result_large_err,
         reason = "keep the existing typed mutation failure at the shared tail"
     )]
-    pub(super) fn with_native_document_mutation<'store, C: NativeMutationConsumer<()>>(
-        &'store self,
+    pub(super) fn with_native_document_mutation<C: NativeMutationConsumer<()>>(
+        &self,
         capacity: usize,
         consumer: C,
-        writer: &mut Option<std::sync::MutexGuard<'store, Option<super::write::NativeWriter>>>,
+        writer: &mut super::write::NativeWriter,
     ) -> Result<((), NativeMutationReport), NativeMutationError> {
         self.native_mutation_attempts(
             &crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()),
@@ -295,8 +295,8 @@ impl crate::lifecycle::Store {
         clippy::result_large_err,
         reason = "keep typed graph errors allocation-free on failure paths"
     )]
-    fn native_mutation_attempts<'store, S, T, E, C, F>(
-        &'store self,
+    fn native_mutation_attempts<S, T, E, C, F>(
+        &self,
         control: &crate::lifecycle::QueryControl,
         limits: RuntimeLimits,
         memory_limit: usize,
@@ -306,16 +306,15 @@ impl crate::lifecycle::Store {
         image_capacity: usize,
         mut consumer: C,
         settle: F,
-        mut held_writer: Option<
-            &mut Option<std::sync::MutexGuard<'store, Option<super::write::NativeWriter>>>,
-        >,
+        mut held_writer: Option<&mut super::write::NativeWriter>,
     ) -> Result<Result<(T, NativeMutationReport), E>, NativeMutationError>
     where
         C: NativeMutationConsumer<S, E>,
         F: FnOnce(S, &[ItemReceipt], Option<GraphGeneration>) -> T,
     {
         self.native_graph.require_writable()?;
-        let mut maintenance_checked = held_writer.is_some();
+        let caller_holds_writer = held_writer.is_some();
+        let mut maintenance_checked = caller_holds_writer;
         let mut recovered = false;
         let mut run_maintenance = None;
         let mut allow_pending_checkpoint = true;
@@ -323,17 +322,22 @@ impl crate::lifecycle::Store {
             if let Some(action) = run_maintenance.take() {
                 self.maintain_native_graph_for_write(control, action, &mut recovered)?;
             }
-            let mut writer_slot = match held_writer.as_deref_mut().and_then(Option::take) {
-                Some(writer) => writer,
-                None => self.native_graph.writer.lock().map_err(|_| {
+            let mut writer_slot = if held_writer.is_none() {
+                Some(self.native_graph.writer.lock().map_err(|_| {
                     NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                         component: "native graph writer",
                     })
-                })?,
+                })?)
+            } else {
+                None
             };
-            let writer = writer_slot
-                .as_mut()
-                .ok_or_else(|| self.absent_native_graph_writer())?;
+            let writer = match held_writer.as_deref_mut() {
+                Some(writer) => writer,
+                None => writer_slot
+                    .as_mut()
+                    .and_then(|slot| slot.as_mut())
+                    .ok_or_else(|| self.absent_native_graph_writer())?,
+            };
             if writer.stopped {
                 return Err(NativeGraphError::WritesStopped.into());
             }
@@ -512,6 +516,9 @@ impl crate::lifecycle::Store {
                 // the generation the checkpoint published.
                 CommitStep::Checkpointed => continue,
                 CommitStep::ReclaimDebt => {
+                    if caller_holds_writer {
+                        return Err(NativeGraphError::ReclaimDebt.into());
+                    }
                     run_maintenance = Some(super::automatic::WriteMaintenance::Reclaim);
                     continue;
                 }
@@ -526,9 +533,6 @@ impl crate::lifecycle::Store {
                     counters,
                 },
             );
-            if let Some(slot) = held_writer.as_deref_mut() {
-                *slot = Some(writer_slot);
-            }
             return Ok(Ok(result));
         }
     }

@@ -160,6 +160,23 @@ impl Store {
         key_range: Range<i64>,
         vfs: &dyn Vfs,
     ) -> Result<DropPartitionReport, StoreError> {
+        #[cfg(feature = "graph-cypher")]
+        {
+            self.with_native_document_recovery(
+                || self.drop_partition_attempt(key_range.clone(), vfs),
+                |error| matches!(error, StoreError::DocumentMutation(error) if error.is_native_reclaim_debt()),
+                |error| StoreError::DocumentMutation(Box::new(error)),
+            )
+        }
+        #[cfg(not(feature = "graph-cypher"))]
+        self.drop_partition_attempt(key_range, vfs)
+    }
+
+    fn drop_partition_attempt(
+        &self,
+        key_range: Range<i64>,
+        vfs: &dyn Vfs,
+    ) -> Result<DropPartitionReport, StoreError> {
         let _data_read_audit =
             crate::segment::reader::install_data_read_audit(vfs.segment_data_read_counter());
         let _maintenance = self
@@ -171,7 +188,7 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let mut native_writer = self.native_document_writer()?;
         #[cfg(feature = "graph-cypher")]
-        if native_writer.is_some() {
+        if let Some(writer) = native_writer.as_mut().and_then(|slot| slot.as_mut()) {
             let ids = {
                 let snapshot = self
                     .snapshot
@@ -205,11 +222,8 @@ impl Store {
                     .documents_have_native_nodes(&ids)
                     .map_err(|error| StoreError::DocumentMutation(Box::new(error)))?
             {
-                self.delete_native_documents_locked(
-                    &super::DeleteBatch::new(ids),
-                    &mut native_writer,
-                )
-                .map_err(|error| StoreError::DocumentMutation(Box::new(error)))?;
+                self.delete_native_documents_locked(&super::DeleteBatch::new(ids), writer)
+                    .map_err(|error| StoreError::DocumentMutation(Box::new(error)))?;
             }
         }
         let state = self

@@ -1220,6 +1220,9 @@ most one reclaim cycle (six steps: intent, completion and retirement,
 each with a possible checkpoint admission), stopping on completion or the
 first error, then rebuilds and retries the write once. Maintenance and retry errors surface
 unchanged; a second refusal never starts another recovery cycle.
+Caller-held document writers surface a typed debt refusal without releasing
+the guard; document paths drop the attempt and restart from resolution
+under a fresh writer guard after the same bounded recovery.
 
 Each recovery step has the explicit path's own preparation budget, outside
 the refused write's allowance: 32 MiB storage, work bounded by the greater of
