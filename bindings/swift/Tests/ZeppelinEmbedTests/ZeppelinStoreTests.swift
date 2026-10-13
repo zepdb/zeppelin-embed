@@ -1001,43 +1001,33 @@ final class ZeppelinStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testAsyncQueryDoesNotBlockTheMainActorPastOneMillisecond() async throws {
+    func testAsyncQueryRunsFFIOffTheMainThread() async throws {
         let path = try storePath(#function)
         defer { try? FileManager.default.removeItem(at: path) }
         let store = try await ZeppelinStore.open(at: path)
-        let vector = [Float](repeating: 0.25, count: 8_192)
-        _ = try await store.ingest((1...1_000).map { index in
+        let vector: [Float] = [0.25, 0.25, 0.25, 0.25]
+        let id = DocumentID(high: 0, low: 1)
+        _ = try await store.ingest([
             IngestDocument(
-                id: DocumentID(high: 0, low: UInt64(index)),
+                id: id,
                 revision: 1,
-                timestamp: Int64(index),
+                timestamp: 1,
                 vector: vector
             )
-        })
-        let (entered, continuation) = AsyncStream<Void>.makeStream()
-        let query = Task {
-            try await store.queryForCancellationTesting(
-                vector: vector,
-                options: QueryOptions(k: 1_000, threadBudget: 1),
-                onFFIEntry: {
-                    continuation.yield(())
-                    continuation.finish()
-                }
-            )
-        }
-        for await _ in entered {
-            break
-        }
-        let clock = ContinuousClock()
-        let start = clock.now
-        let delay = await withCheckedContinuation { callback in
-            DispatchQueue.main.async {
-                callback.resume(returning: clock.now - start)
+        ])
+        XCTAssertTrue(Thread.isMainThread)
+        let ffiEntered = expectation(description: "query entered FFI")
+        let result = try await store.queryForCancellationTesting(
+            vector: vector,
+            options: QueryOptions(k: 1, threadBudget: 1),
+            onFFIEntry: {
+                // This hook runs synchronously immediately before ze_query.
+                XCTAssertFalse(Thread.isMainThread, "query FFI ran on the main thread")
+                ffiEntered.fulfill()
             }
-        }
-        print("MAIN_ACTOR_WATCHDOG delay=\(delay)")
-        XCTAssertLessThan(delay, .milliseconds(1), "main-actor watchdog delay: \(delay)")
-        _ = try await query.value
+        )
+        await fulfillment(of: [ffiEntered], timeout: 10)
+        XCTAssertEqual(result.hits.map(\.documentID), [id])
         try await store.close()
     }
 
