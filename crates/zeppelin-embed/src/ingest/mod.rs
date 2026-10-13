@@ -1321,13 +1321,27 @@ impl Store {
                 .get();
             return Ok(IngestAck::mixed(result.seq, generation));
         }
+        #[cfg(test)]
+        active_publish_tests::after_ingest_admission();
         let mut wal = self
             .wal_writer
             .lock()
             .map_err(|_| StoreError::Synchronization {
                 component: "WAL writer",
             })?;
-        let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
+        let Some(writer) = wal.as_mut() else {
+            drop(wal);
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| StoreError::Synchronization { component: "state" })?;
+            return Err(match *state {
+                StoreState::Closing => StoreError::Closing,
+                StoreState::Closed => StoreError::Closed,
+                StoreState::Open => StoreError::ReadOnly,
+            }
+            .into());
+        };
         let mut publication = writer.manifest_publication()?;
         let (current_generation, current_segment) = {
             let active = self
@@ -1715,6 +1729,44 @@ mod vector_order_tests {
 #[cfg(test)]
 mod active_publish_tests {
     use super::*;
+
+    thread_local! {
+        static AFTER_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn after_ingest_admission() {
+        let action = AFTER_ADMISSION.with(|hook| hook.borrow_mut().take());
+        if let Some(action) = action {
+            action();
+        }
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn ze448_close_after_ingest_admission_returns_closed() {
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Arc::new(
+            Store::open(
+                directory.path().join("store"),
+                crate::lifecycle::OpenOptions::new(),
+            )
+            .expect("store"),
+        );
+        let closing = Arc::clone(&store);
+        AFTER_ADMISSION.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || closing.close().expect("close")));
+        });
+        let document = IngestDocument::new(
+            DocumentVersion::new(DocId::new(1), Revision::new(1)),
+            vec![1.0],
+        );
+        let result = store.ingest(IngestBatch::new(vec![document]));
+        assert!(
+            matches!(result, Err(IngestError::Store(StoreError::Closed))),
+            "{result:?}"
+        );
+    }
 
     #[test]
     fn mismatched_active_generation_on_republish_is_a_typed_error() {

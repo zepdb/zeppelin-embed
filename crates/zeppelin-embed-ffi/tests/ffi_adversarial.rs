@@ -1500,10 +1500,15 @@ fn concurrent_close_and_search_and_concurrent_close_and_ingest_are_typed_never_u
     });
     ready_rx.recv().expect("ingest ready");
     assert_eq!(ze_close(ingest_handle), ZeErrorCode::ZeOk);
-    assert!(matches!(
-        ingest.join().expect("ingest thread"),
-        ZeErrorCode::ZeOk | ZeErrorCode::ZeErrClosed | ZeErrorCode::ZeErrClosing
-    ));
+    let ingest_code = ingest.join().expect("ingest thread");
+    eprintln!("concurrent close ingest returned {ingest_code:?}");
+    assert!(
+        matches!(
+            ingest_code,
+            ZeErrorCode::ZeOk | ZeErrorCode::ZeErrClosed | ZeErrorCode::ZeErrClosing
+        ),
+        "ingest thread returned {ingest_code:?}"
+    );
 }
 
 #[test]
