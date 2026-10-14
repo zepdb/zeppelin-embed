@@ -47,9 +47,18 @@ private final class GraphBlockingWorkers: @unchecked Sendable {
     }
     let worker = Worker()
     let thread = Thread {
-      var next = job
+      var next: (@Sendable () -> Void)? = job
       while true {
-        next()
+        // Drop the finished job before idling so its captures are released;
+        // a reused thread never exits, so drain autoreleased objects per job.
+        if let run = next {
+          next = nil
+          #if canImport(ObjectiveC)
+            autoreleasepool { run() }
+          #else
+            run()
+          #endif
+        }
         worker.condition.lock()
         self.lock.lock()
         guard self.idle == nil else {
