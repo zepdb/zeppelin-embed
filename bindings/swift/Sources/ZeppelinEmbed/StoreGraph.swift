@@ -52,7 +52,9 @@ extension ZeppelinStore {
       var observation = ZeGraphResources()
       observation.abi_size = graphSize(ZeGraphResources.self)
       let status = ze_store_graph_resources(current, &observation)
-      guard status == 0 else { throw GraphError(.native(Int32(status))) }
+      guard status == 0 else {
+        throw GraphError(.native(Int32(status)), nativeMessage: graphLastError(current))
+      }
       return GraphResources(
         engineBytes: observation.engine_bytes, enginePeakBytes: observation.engine_peak_bytes,
         applicationBytes: observation.application_bytes,

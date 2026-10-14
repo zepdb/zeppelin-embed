@@ -195,7 +195,7 @@ func graphResponse(
     if status != 0 {
       throw GraphError(.native(Int32(status)), metadata: metadata, nativeMessage: message)
     }
-    guard response.row_count <= 65536, response.column_count <= 256,
+    guard response.row_count >= 0, response.row_count <= 65536, response.column_count <= 256,
       response.cell_count == response.row_count * response.column_count
     else { throw GraphError(.invalidResponse("row shape")) }
     let columns = try graphArray(response.columns, response.column_count).map {
