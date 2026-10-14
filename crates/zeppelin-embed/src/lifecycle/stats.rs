@@ -362,6 +362,34 @@ impl Accounting {
         })
     }
 
+    #[cfg(feature = "graph-cypher")]
+    /// Checks batch-derived temporary headroom without reserving or allocating.
+    pub(crate) fn check_temporary_capacity(
+        &self,
+        bytes: usize,
+        component: &'static str,
+    ) -> Result<(), StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "memory accounting",
+        })?;
+        let (resident, _) = self.budgets.check(
+            state.resident_owned_bytes,
+            state.temporary_bytes,
+            bytes as u64,
+            component,
+            true,
+        )?;
+        #[cfg(feature = "graph-cypher")]
+        if resident > self.resident_limit() {
+            return Err(StoreError::BudgetExceeded {
+                needed: resident,
+                budget: self.resident_limit(),
+                component,
+            });
+        }
+        Ok(())
+    }
+
     fn add(&self, bytes: u64, component: AllocationComponent) -> Result<(), StoreError> {
         let mut state = self.state.lock().map_err(|_| StoreError::Synchronization {
             component: "memory accounting",

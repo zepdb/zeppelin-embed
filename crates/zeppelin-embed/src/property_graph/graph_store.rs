@@ -176,7 +176,9 @@ impl Store {
     ///
     /// Before staging, a batch-derived bound checks preparation attributable
     /// to the submitted items against the 32 MiB storage allowance. An
-    /// oversized estimate returns a distinct typed `Limit` rejection.
+    /// oversized estimate returns a distinct typed `Limit` rejection. The
+    /// overlapping staged batch and receipts also check the remaining shared
+    /// resident and temporary headroom before staging.
     /// Existing records, catalogs and tree paths remain governed by the
     /// existing in-flight storage checks: a batch within the caps can still
     /// be refused by store-dependent limits.
@@ -496,7 +498,7 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
         }
         let mut writes = std::borrow::Cow::Borrowed(self.writes);
         if self.node_documents.is_empty() {
-            admit_preparation(&writes)?;
+            admit_preparation(store, &writes)?;
             return Ok(BoundGraphBatch {
                 writes,
                 documents: self.documents.map(std::borrow::Cow::Borrowed),
@@ -643,7 +645,7 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
             ));
         }
         drop(wal_slot);
-        admit_preparation(&writes)?;
+        admit_preparation(store, &writes)?;
         let mut batch = crate::ingest::IngestBatch::new(documents);
         if let Some(epoch) = store.epoch_identity() {
             batch = batch.with_epoch(epoch);
@@ -655,14 +657,21 @@ impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
     }
 }
 
-fn admit_preparation(writes: &[StructuredWrite<'_, '_>]) -> Result<(), GraphStoreError> {
-    let bytes = preparation::estimate_preparation_bytes(writes)
+fn admit_preparation(
+    store: &Store,
+    writes: &[StructuredWrite<'_, '_>],
+) -> Result<(), GraphStoreError> {
+    let (bytes, temporary) = preparation::estimate_write_bytes(writes)
         .map_err(|error| GraphStoreError::graph(NativeGraphError::Stage(error)))?;
     if bytes > crate::property_graph::storage::memory::MAX_STORAGE_PREPARE_BYTES {
         return Err(GraphStoreError::limit(
             "estimated graph preparation exceeds 32 MiB",
         ));
     }
+    store
+        .accounting
+        .check_temporary_capacity(temporary, "estimated graph preparation")
+        .map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))?;
     Ok(())
 }
 

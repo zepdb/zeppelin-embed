@@ -15,9 +15,35 @@ use std::mem::size_of;
 /// Upper-bound the submitted images' record/index, directory edit and private
 /// pack backing. Saturating arithmetic makes overflow an admission refusal.
 /// No ID, symbol, reservation, file or staged image is created here.
+#[cfg(test)]
 pub(super) fn estimate_preparation_bytes(
     writes: &[StructuredWrite<'_, '_>],
 ) -> Result<usize, StageError> {
+    Ok(estimate_batch_bytes(writes)?.0)
+}
+
+/// Storage preparation overlaps the retained normalized batch and receipts.
+/// The storage-only 32 MiB admission does not include these writer owners.
+pub(super) fn estimate_write_bytes(
+    writes: &[StructuredWrite<'_, '_>],
+) -> Result<(usize, usize), StageError> {
+    let (storage, input, symbols) = estimate_batch_bytes(writes)?;
+    let rows = writes.len().saturating_mul(
+        size_of::<crate::property_graph::staging::NormalizedDelta<'_>>()
+            + 2 * size_of::<crate::property_graph::staging::ItemReceipt>(),
+    );
+    let temporary = storage
+        .saturating_add(input)
+        .saturating_add(rows)
+        .saturating_add(
+            symbols.saturating_mul(size_of::<crate::property_graph::catalog::SymbolEntry<'_>>()),
+        );
+    Ok((storage, temporary))
+}
+
+fn estimate_batch_bytes(
+    writes: &[StructuredWrite<'_, '_>],
+) -> Result<(usize, usize, usize), StageError> {
     let edit = DirectoryBatch::admission_descriptor_bytes();
     let mut packs = Packs::default();
     let (mut nodes, mut rels, mut labels, mut key_bytes, mut cache_rows) =
@@ -27,6 +53,7 @@ pub(super) fn estimate_preparation_bytes(
     let mut input = 0usize;
     let mut record_scratch = 0usize;
     let mut caller_nodes = 0usize;
+    let mut symbols = 0usize;
     for write in writes {
         caller_nodes = caller_nodes.saturating_add(usize::from(matches!(
             write.operation,
@@ -111,6 +138,10 @@ pub(super) fn estimate_preparation_bytes(
             write.operation,
             StructuredOperation::Create
         )));
+        symbols = symbols
+            .saturating_add(label_count)
+            .saturating_add(properties)
+            .saturating_add(2);
         input = input.saturating_add(framing).saturating_add(image_bytes);
         if input > crate::property_graph::MAX_GRAPH_INPUT_BYTES {
             return Err(StageError::Limit);
@@ -323,7 +354,11 @@ pub(super) fn estimate_preparation_bytes(
     // Copied keys/overflow streams, symbol names and catalog framing can
     // retain another input-sized owner. Text/vector retrieval also duplicates
     // submitted payload; the input allowance remains a separate upper bound.
-    Ok(peak.max(common.saturating_add(packs.backing()).saturating_add(input)))
+    Ok((
+        peak.max(common.saturating_add(packs.backing()).saturating_add(input)),
+        input,
+        symbols,
+    ))
 }
 
 fn directory_pages(bytes: usize, max_cell: usize) -> usize {

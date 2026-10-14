@@ -189,3 +189,66 @@ fn ldbc_comments(count: usize, text: bool, refusal: Option<bool>) {
         documents[count - 1].document.version().doc_id().get()
     );
 }
+
+#[test]
+fn ze453_retained_wal_refuses_before_preparation() {
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = Store::create_graph(
+        &path,
+        options().with_max_resident_bytes(6 * 1024 * 1024),
+        None,
+    )
+    .unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let mut committed = 0;
+    for batch in 0..64 {
+        let keys: Vec<_> = (0..128)
+            .map(|item| format!("{batch:04}-{item:04}-{}", "k".repeat(500)))
+            .collect();
+        let writes: Vec<_> = keys
+            .iter()
+            .map(|key| StructuredWrite {
+                key: node_key(key),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        let before = store.stats().unwrap();
+        let estimate = super::super::preparation::estimate_preparation_bytes(&writes).unwrap();
+        capture::start();
+        let result = store.graph_apply(&writes, &control());
+        let report = capture::take();
+        match result {
+            Ok(_) => committed += 1,
+            Err(error) => {
+                println!(
+                    "ZE-453 committed={committed} resident={} wal={} temporary={} estimate={estimate} storage_peak={} error={error}",
+                    before.resident_owned_bytes,
+                    before.wal_bytes,
+                    before.temporary_bytes,
+                    report.storage_peak_bytes,
+                );
+                assert!(committed > 0, "the same batch size must fit initially");
+                assert!(before.wal_bytes > 128 * 1024, "retain real WAL history");
+                assert_eq!(error.kind(), GraphStoreErrorKind::Limit);
+                assert!(error.nothing_committed());
+                assert!(
+                    error.to_string().contains("estimated graph preparation"),
+                    "{error}"
+                );
+                assert_eq!(report.storage_peak_bytes, 0, "refuse before preparation");
+                let split = store.graph_apply(&writes[..32], &control()).unwrap();
+                assert_eq!(
+                    split.receipts().len(),
+                    32,
+                    "splitting must restore progress"
+                );
+                store.close().unwrap();
+                return;
+            }
+        }
+    }
+    panic!("fixture did not exhaust resident headroom");
+}

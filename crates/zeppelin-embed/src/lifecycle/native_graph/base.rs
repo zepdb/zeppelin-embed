@@ -493,11 +493,8 @@ fn cached_from_record<'source, 'resources, 'm>(
     first_error: &'resources Cell<Option<TreeError>>,
     resources: &mut TreeResources<'m>,
 ) -> Result<CachedEntity<'source, 'resources, 'm>, TreeError> {
-    let property_capacity = catalog
-        .symbol_entries()
-        .iter()
-        .filter(|entry| matches!(entry.symbol, Symbol::Property(_)))
-        .count();
+    let property_capacity =
+        usize::try_from(record.canonical().property_count()).map_err(|_| TreeError::Memory)?;
     let mut properties = StorageBuffer::new(memory, property_capacity)?;
     for entry in catalog.symbol_entries() {
         let Symbol::Property(key) = entry.symbol else {
@@ -1423,5 +1420,109 @@ impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
         catalog
             .lookup_symbol(kind, name, &mut resources)
             .map_err(StageError::from)
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
+mod temp_allocation_tests {
+    use super::*;
+    use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    use crate::property_graph::resources::GraphResources;
+    use crate::property_graph::staging::{AdmittedBase, WriteLimits, WriteMemory};
+    use crate::property_graph::{CanonicalContents, GraphProperty, PropertyData};
+
+    #[test]
+    fn ze453_cached_property_capacity_ignores_catalog_growth() {
+        for unrelated in [0, 64, 256] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::create_native_graph(
+                directory.path().join("graph"),
+                OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+                None,
+            )
+            .unwrap();
+            let control = QueryControl::Cancel(CancelToken::new());
+            let names: Vec<_> = (0..unrelated).map(|i| format!("unrelated-{i}")).collect();
+            let mut extra: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    GraphProperty::new(
+                        GraphName::new(name).unwrap(),
+                        PropertyValue::new(PropertyData::I64(1)).unwrap(),
+                    )
+                })
+                .collect();
+            let mut properties = [GraphProperty::new(
+                GraphName::new("weight").unwrap(),
+                PropertyValue::new(PropertyData::I64(7)).unwrap(),
+            )];
+            let endpoint = CanonicalContents::node(&mut [], &mut properties, None, None).unwrap();
+            let seed = CanonicalContents::node(&mut [], &mut extra, None, None).unwrap();
+            let writes = ["endpoint", "catalog"]
+                .into_iter()
+                .zip([&endpoint, &seed])
+                .map(|(key, image)| StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "app", key).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(image)),
+                });
+            let result = store
+                .apply_native_graph(&writes.collect::<Vec<_>>(), &control)
+                .unwrap();
+            let EntityId::Node(node) = result[0].entity else {
+                panic!("node receipt");
+            };
+            drop(result);
+            let request = [StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "app", "edge").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Existing(node),
+                    target: NodeRef::Existing(node),
+                    relationship_type: GraphName::new("R").unwrap(),
+                    properties: &[],
+                }),
+            }];
+            let lease = store.admit_native_read().unwrap();
+            let shared = GraphResources::from_store(&store).unwrap();
+            let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+            let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+            let source = NativePreparationSource::new(&lease, &memory, 32).unwrap();
+            let mut resources = source.resources(64 * 1024 * 1024).unwrap();
+            let cell = RefCell::new(&mut resources);
+            let error = Cell::new(None);
+            let base =
+                NativeAdmittedBase::new(&lease, &source, &memory, &request, &cell, &error).unwrap();
+            assert_eq!(base.cache.as_slice().len(), 1);
+            let cached = &base.cache.as_slice()[0].properties;
+            println!(
+                "ZE-453 unrelated={unrelated} properties={} capacity={} bytes={}",
+                cached.as_slice().len(),
+                cached.capacity(),
+                cached.capacity() * std::mem::size_of::<CachedProperty<'_>>()
+            );
+            assert_eq!(
+                cached.capacity(),
+                1,
+                "unrelated catalog symbols must not enlarge endpoint backing"
+            );
+            let value = base
+                .property(
+                    EntityId::Node(node),
+                    GraphName::new("weight").unwrap(),
+                    &mut |_| Ok(()),
+                )
+                .unwrap()
+                .unwrap();
+            assert!(matches!(value.data(), PropertyData::I64(7)));
+        }
     }
 }
