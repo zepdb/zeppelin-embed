@@ -1771,13 +1771,15 @@ mod ze404_counts {
             .unwrap();
             assert_count(&reopened, "MATCH (n) RETURN count(n)", expected);
             assert_count(&reopened, "MATCH (n:Document) RETURN count(n)", n as i64);
-            // Pin the existing staged-write visibility, independently checked
-            // with the baseline addon: this shape must not use the read count.
+            // The aggregate counts the graph before its own CREATE, and this
+            // shape must not use the read count.
             let work = assert_count(
                 &reopened,
                 "MATCH (n) WITH count(n) AS c CREATE (:After) RETURN c",
-                expected + 1,
+                expected,
             );
+            assert_count(&reopened, "MATCH (n) RETURN count(n)", expected + 1);
+            assert_count(&reopened, "MATCH (n:After) RETURN count(n)", 1);
             assert!(
                 work.get(WorkKind::RowsIn) >= n as u64,
                 "writes must keep the ordinary aggregate: {work:?}"
