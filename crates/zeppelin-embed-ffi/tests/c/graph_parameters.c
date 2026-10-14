@@ -63,7 +63,7 @@ static int query(ze_handle handle, unsigned shape, ZeGraphResponse *response) {
         .parameters = &binding, .parameter_count = 1, .parameter_pool = &parameter_pool};
     ze_error_code code = ze_store_graph_query(handle, &request, response);
     char diagnostic[2048] = {0}; size_t written = 0;
-    ze_last_error_message(handle.token, diagnostic, sizeof(diagnostic), &written);
+    ze_last_error_message(handle, diagnostic, sizeof(diagnostic), &written);
     printf("shape=%u status=%d diagnostic=%s\n", shape, (int)code, diagnostic);
     memset(bytes, 0xa5, sizeof(bytes));
     memset(values, 0xa5, sizeof(values));

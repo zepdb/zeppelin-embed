@@ -262,10 +262,19 @@ fn graph_runtime_header_matches_the_graph_export_allowlist() {
 #[cfg(feature = "graph-cypher")]
 #[test]
 fn ze399_external_c_applies_queries_and_reopens_a_document_node() {
+    compile_and_run_graph("graph_apply_v2");
+}
+
+#[test]
+fn ze318_c_parameter_shapes() {
+    compile_and_run_graph("graph_parameters");
+}
+
+fn compile_and_run_graph(name: &str) {
     let triple = format!("{}-apple-darwin", std::env::consts::ARCH);
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let directory = tempfile::tempdir().unwrap();
-    let executable = directory.path().join("graph_apply_v2");
+    let executable = directory.path().join(name);
     let deps = std::env::current_exe()
         .unwrap()
         .parent()
@@ -273,7 +282,7 @@ fn ze399_external_c_applies_queries_and_reopens_a_document_node() {
         .to_path_buf();
     // The default cdylib path can be overwritten by a graph-free Cargo build.
     // Build this C consumer's graph library in its own feature-specific target.
-    let target = deps.join("ze399-c-graph");
+    let target = deps.join("c-graph-consumers");
     let build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .current_dir(root.parent().unwrap().parent().unwrap())
         .args([
@@ -300,7 +309,7 @@ fn ze399_external_c_applies_queries_and_reopens_a_document_node() {
         .arg(format!("--target={triple}"))
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
         .arg(root.join("include"))
-        .arg(root.join("tests/c/graph_apply_v2.c"))
+        .arg(root.join("tests/c").join(format!("{name}.c")))
         .arg(library.join("libzeppelin_embed_ffi.dylib"))
         .arg(format!("-Wl,-rpath,{}", library.display()))
         .arg("-o")
@@ -318,7 +327,9 @@ fn ze399_external_c_applies_queries_and_reopens_a_document_node() {
         .unwrap();
     assert!(
         result.status.success(),
-        "{}",
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+    println!("{}", String::from_utf8_lossy(&result.stdout));
 }
