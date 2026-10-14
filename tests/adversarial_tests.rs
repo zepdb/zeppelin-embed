@@ -20514,3 +20514,52 @@ fn relationship_page_memo_has_statement_scoped_adversarial_receipts() {
     .unwrap();
     adversarial::graph_cypher_entry::page_memo_controls(&store).unwrap();
 }
+
+#[cfg(all(feature = "graph-cypher", unix))]
+#[test]
+fn ze279_mid_wal_group_preserves_the_full_native_append_before_sigkill() {
+    use std::os::unix::process::ExitStatusExt;
+    for vectored in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let wal = root.path().join("native").join("wal.ze");
+        std::fs::create_dir(wal.parent().unwrap()).unwrap();
+        std::fs::write(&wal, b"header").unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "ze279_native_append_crash_child", "--ignored"])
+            .env("ZE279_WAL", &wal)
+            .env("ZE279_VECTORED", if vectored { "1" } else { "0" })
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(9), "native append must SIGKILL");
+        assert_eq!(std::fs::read(&wal).unwrap(), b"headercomplete-envelope");
+        let receipt =
+            std::fs::read_to_string(wal.parent().unwrap().with_extension("kill-receipt")).unwrap();
+        assert_eq!(receipt, format!("append {}", wal.display()));
+    }
+}
+
+#[cfg(all(feature = "graph-cypher", unix))]
+#[test]
+#[ignore = "only invoked by the ZE-279 native append parent"]
+fn ze279_native_append_crash_child() {
+    use adversarial::fault_vfs::{FaultSchedule, ProcessCrashVfs, ScheduledVfs};
+    use adversarial::program::CrashBoundary;
+    use zeppelin_embed::vfs::{StdVfs, Vfs};
+    let wal = std::path::PathBuf::from(std::env::var("ZE279_WAL").unwrap());
+    let vfs = ProcessCrashVfs::new(
+        ScheduledVfs::new(StdVfs, FaultSchedule::default()),
+        CrashBoundary::MidWalGroup,
+    );
+    let mut file = vfs.open_append(&wal).unwrap();
+    vfs.arm();
+    if std::env::var("ZE279_VECTORED").unwrap() == "1" {
+        file.append_vectored(&mut [
+            std::io::IoSlice::new(b"complete-"),
+            std::io::IoSlice::new(b"envelope"),
+        ])
+        .unwrap();
+    } else {
+        file.append(b"complete-envelope").unwrap();
+    }
+    panic!("native append did not kill the child");
+}

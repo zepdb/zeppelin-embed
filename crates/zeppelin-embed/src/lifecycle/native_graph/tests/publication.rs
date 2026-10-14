@@ -296,6 +296,7 @@ type SyncGate = Arc<Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>>;
 pub(crate) struct RecordingVfs {
     events: Arc<Mutex<Vec<DurabilityEvent>>>,
     wal_sync_gate: SyncGate,
+    wal_append_gate: SyncGate,
     faults: Arc<Mutex<FaultSchedule>>,
     after_create: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     after_directory_create: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -310,6 +311,7 @@ struct RecordingFile {
     path: PathBuf,
     events: Arc<Mutex<Vec<DurabilityEvent>>>,
     wal_sync_gate: SyncGate,
+    wal_append_gate: SyncGate,
     faults: Arc<Mutex<FaultSchedule>>,
 }
 
@@ -357,6 +359,14 @@ impl RecordingVfs {
             .lock()
             .expect("recording VFS events")
             .push(event);
+    }
+
+    pub(crate) fn arm_wal_append(&self) -> (Arc<Barrier>, Arc<Barrier>) {
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        *self.wal_append_gate.lock().expect("WAL append gate") =
+            Some((Arc::clone(&entered), Arc::clone(&release)));
+        (entered, release)
     }
 
     pub(crate) fn arm_wal_full_sync(&self) -> (Arc<Barrier>, Arc<Barrier>) {
@@ -437,6 +447,17 @@ impl RecordingVfs {
     }
 }
 
+impl RecordingFile {
+    fn wait_inside_append(&self) {
+        if self.path.file_name().is_some_and(|name| name == "wal.ze")
+            && let Some((entered, release)) = self.wal_append_gate.lock().unwrap().take()
+        {
+            entered.wait();
+            release.wait();
+        }
+    }
+}
+
 impl VfsFile for RecordingFile {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         let mut faults = self.faults.lock().expect("fault schedule");
@@ -455,6 +476,7 @@ impl VfsFile for RecordingFile {
             ));
         }
         drop(faults);
+        self.wait_inside_append();
         self.inner.append(bytes)?;
         self.events
             .lock()
@@ -474,6 +496,7 @@ impl VfsFile for RecordingFile {
                 .collect();
             return self.append(&bytes);
         }
+        self.wait_inside_append();
         self.inner.append_vectored(buffers)?;
         self.events
             .lock()
@@ -629,6 +652,7 @@ impl Vfs for RecordingVfs {
             path: path.to_path_buf(),
             events: Arc::clone(&self.events),
             wal_sync_gate: Arc::clone(&self.wal_sync_gate),
+            wal_append_gate: Arc::clone(&self.wal_append_gate),
             faults: Arc::clone(&self.faults),
         });
         self.record(DurabilityEvent::OpenAppend(path.to_path_buf()));

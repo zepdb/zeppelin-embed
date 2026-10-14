@@ -507,8 +507,6 @@ fn graph(error: &NativeGraphError) -> Kind {
         NativeGraphError::CommitIndeterminate { .. } => Kind::WriteIndeterminate,
         NativeGraphError::Ingest(crate::ingest::IngestError::Store(error)) => store(error),
         NativeGraphError::Ingest(_) => Kind::InvalidPlan,
-        // A statement that only creates and deletes its own entities cannot
-        // publish yet: an unsupported plan, not a store fault.
     }
 }
 

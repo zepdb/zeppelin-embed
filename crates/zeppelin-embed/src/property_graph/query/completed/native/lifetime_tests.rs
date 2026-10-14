@@ -496,3 +496,66 @@ fn ze275_close_before_wal_append_refuses_the_write() {
 fn ze275_close_after_wal_append_reports_the_commit() {
     super::entry_probe::close_probe(0, super::entry_probe::CloseSchedule::AfterAppend).unwrap();
 }
+
+#[test]
+fn ze279_close_during_wal_append_never_claims_rollback() {
+    use crate::lifecycle::native_graph::tests::publication::FaultPoint;
+    for fail_sync in [false, true] {
+        let fixture = Fixture::create(
+            directory(if fail_sync {
+                "append-close-indeterminate"
+            } else {
+                "append-close-commit"
+            }),
+            0,
+        )
+        .unwrap();
+        let before = fixture.generation().unwrap();
+        let (entered, release) = fixture.vfs.arm_wal_append();
+        if fail_sync {
+            fixture.vfs.arm_fault(FaultPoint::WalSync);
+        }
+        let closed = AtomicBool::new(false);
+        let outcome = std::thread::scope(|scope| {
+            let writer = scope.spawn(|| fixture.write(&control(), 16, Assign::Increment));
+            entered.wait();
+            let closer = scope.spawn(|| {
+                fixture.store.close().unwrap();
+                closed.store(true, Ordering::SeqCst);
+            });
+            wait_until("close during append", || {
+                fixture.store.state().unwrap() == StoreState::Closing
+            });
+            assert!(
+                !closed.load(Ordering::SeqCst),
+                "close must drain the append writer"
+            );
+            release.wait();
+            let outcome = writer.join().unwrap();
+            closer.join().unwrap();
+            outcome
+        });
+        match outcome {
+            Ok(result) => {
+                assert!(!fail_sync);
+                assert_eq!(
+                    result.metadata().outcome,
+                    Outcome::Committed {
+                        changed: GraphGeneration::new(before + 1),
+                    }
+                );
+            }
+            Err(error) => {
+                assert!(fail_sync);
+                assert_eq!(error.kind(), GraphQueryErrorKind::WriteIndeterminate);
+                assert!(
+                    !error.nothing_committed(),
+                    "append-started write cannot claim rollback"
+                );
+            }
+        }
+        assert!(closed.load(Ordering::SeqCst));
+        let expected = rows(&fixture, 1);
+        assert_eq!(reopen_and_read(fixture), (before + 1, expected));
+    }
+}
