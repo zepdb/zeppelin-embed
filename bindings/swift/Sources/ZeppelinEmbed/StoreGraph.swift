@@ -22,19 +22,67 @@ struct GraphNativeCalls: Sendable {
   var free: @Sendable (inout ZeGraphResponse) -> Int32 = { ze_graph_response_free(&$0) }
 }
 
+// Retain one idle worker. Overlapping calls still get independent threads so
+// native writer admission and Busy behavior remain observable.
+private final class GraphBlockingWorkers: @unchecked Sendable {
+  static let shared = GraphBlockingWorkers()
+  private final class Worker: @unchecked Sendable {
+    let condition = NSCondition()
+    var job: (@Sendable () -> Void)?
+  }
+  private let lock = NSLock()
+  private var idle: Worker?
+
+  func submit(_ job: @escaping @Sendable () -> Void) {
+    lock.lock()
+    let cached = idle
+    idle = nil
+    lock.unlock()
+    if let cached {
+      cached.condition.lock()
+      cached.job = job
+      cached.condition.signal()
+      cached.condition.unlock()
+      return
+    }
+    let worker = Worker()
+    let thread = Thread {
+      var next = job
+      while true {
+        next()
+        worker.condition.lock()
+        self.lock.lock()
+        guard self.idle == nil else {
+          self.lock.unlock()
+          worker.condition.unlock()
+          return
+        }
+        self.idle = worker
+        self.lock.unlock()
+        while worker.job == nil { worker.condition.wait() }
+        if let pending = worker.job {
+          worker.job = nil
+          worker.condition.unlock()
+          next = pending
+        }
+      }
+    }
+    thread.stackSize = 8 * 1024 * 1024
+    thread.start()
+  }
+}
+
 @available(macOS 14.0, iOS 17.0, *)
 extension ZeppelinStore {
   // Native Cypher needs more stack than a Swift cooperative worker provides.
-  // Keep each synchronous call and its borrowed buffers on one independent thread.
+  // Keep each synchronous call and its borrowed buffers together on a worker.
   nonisolated static func runGraphBlocking<T: Sendable>(_ body: @escaping @Sendable () throws -> T)
     async throws -> T
   {
     try await withCheckedThrowingContinuation { continuation in
-      let thread = Thread {
+      GraphBlockingWorkers.shared.submit {
         continuation.resume(with: Result { try body() })
       }
-      thread.stackSize = 8 * 1024 * 1024
-      thread.start()
     }
   }
   public func enableGraph() async throws -> UInt64 {
