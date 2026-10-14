@@ -282,12 +282,12 @@ fn ze438_search_lowering_case_coalesce_requests() {
 fn pair_query(mode: u8, alias: &str) -> String {
     let spelling = ["default", "auto", "exact", "scan"][mode as usize];
     format!(
-        "MATCH (prior) WITH prior,1+1 AS {alias} CALL ze.vector_search([coalesce(null,{alias}),CASE {alias} WHEN 2 THEN {alias} ELSE 2 END],CASE WHEN true THEN coalesce(2,{alias}) ELSE 1 END,'{spelling}',[]) YIELD node,distance CALL ze.hybrid_search([CASE WHEN false THEN 0 ELSE {alias} END,2],coalesce('x','y'),CASE {alias} WHEN 2 THEN {alias} ELSE 1 END,'auto') YIELD node AS other,score,vector_distance,lexical_score RETURN prior,node,distance,other,score,vector_distance,lexical_score LIMIT 0"
+        "MATCH (prior:Document) WHERE ze.node_id(prior) <= 'ffffffffffffffffffffffffffffffff' WITH prior,1+1 AS {alias} CALL ze.vector_search([coalesce(null,{alias}),CASE {alias} WHEN 2 THEN {alias} ELSE 2 END],CASE WHEN true THEN coalesce(2,{alias}) ELSE 1 END,'{spelling}',[]) YIELD node,distance CALL ze.hybrid_search([CASE WHEN false THEN 0 ELSE {alias} END,2],coalesce('x','y'),CASE {alias} WHEN 2 THEN {alias} ELSE 1 END,'auto') YIELD node AS other,score,vector_distance,lexical_score RETURN prior,node,distance,other,score,vector_distance,lexical_score LIMIT 0"
     )
 }
 
 fn global_query() -> &'static str {
-    "MATCH (n) WITH collect(DISTINCT n) AS eligible CALL ze.text_search('x',1,eligible) YIELD node,score RETURN node,score LIMIT 0"
+    "MATCH (n:Document) WHERE ze.node_id(n) <= 'ffffffffffffffffffffffffffffffff' WITH collect(DISTINCT n) AS eligible CALL ze.text_search('x',1,eligible) YIELD node,score RETURN node,score LIMIT 0"
 }
 
 struct Trial {

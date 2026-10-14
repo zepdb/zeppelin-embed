@@ -739,11 +739,35 @@ fn ze402_hybrid_eligible_collect_scales_and_matches_store() {
 }
 
 fn eligible_collect_parity(hybrid: bool) {
+    eligible_collect_parity_at(hybrid, &[1_024, 1_025, 10_000, 100_000], false);
+}
+
+#[test]
+fn ze403_document_scan_search_work_and_parity() {
+    use zeppelin_embed::property_graph::query::runtime::WorkKind;
+    for hybrid in [false, true] {
+        let sizes = [20_000, 40_000];
+        let counters = eligible_collect_parity_at(hybrid, &sizes, true);
+        for (n, work) in sizes.into_iter().zip(counters) {
+            assert!(
+                work.get(WorkKind::Expressions) <= 5 * n as u64 + 64,
+                "Document scan must not evaluate a second label predicate per row: {work:?}"
+            );
+        }
+    }
+}
+
+fn eligible_collect_parity_at(
+    hybrid: bool,
+    sizes: &[u128],
+    profile: bool,
+) -> Vec<zeppelin_embed::property_graph::query::runtime::WorkCounters> {
     use zeppelin_embed::property_graph::query::QueryValue;
     use zeppelin_embed::property_graph::query::plan::ParameterBinding;
     use zeppelin_embed::property_graph::query::runtime::WorkKind;
     let mut previous = None;
-    for n in [1_024_u128, 1_025, 10_000, 100_000] {
+    let mut counters = Vec::new();
+    for &n in sizes {
         let (_directory, store) = fixture();
         for start in (1..=n + 1).step_by(1_000) {
             store
@@ -774,6 +798,16 @@ fn eligible_collect_parity(hybrid: bool) {
             vec![b"amber".to_vec()],
             &[zeppelin_embed::fts::index::DEFAULT_FIELD],
         );
+        // Warm the same retrieval caches before timing either public path.
+        run(
+            &store,
+            if hybrid {
+                "CALL ze.hybrid_search([1,0],'amber',10,'exact') YIELD node RETURN node"
+            } else {
+                "CALL ze.text_search('amber',10) YIELD node RETURN node"
+            },
+        );
+        let direct_start = std::time::Instant::now();
         let expected: Vec<_> = if hybrid {
             store
                 .search_hybrid(
@@ -807,6 +841,7 @@ fn eligible_collect_parity(hybrid: bool) {
                 .map(|hit| (hit.document.doc_id().get(), hit.score.to_bits()))
                 .collect()
         };
+        let direct_elapsed = direct_start.elapsed();
         let call = if hybrid {
             "ze.hybrid_search([1,0], $text, 10, 'exact', eligible)"
         } else {
@@ -826,15 +861,6 @@ fn eligible_collect_parity(hybrid: bool) {
                 value: QueryValue::String("amber"),
             },
         ];
-        // Warm retrieval so cache construction does not affect work comparisons.
-        run(
-            &store,
-            if hybrid {
-                "CALL ze.hybrid_search([1,0],'amber',10,'exact') YIELD node RETURN node"
-            } else {
-                "CALL ze.text_search('amber',10) YIELD node RETURN node"
-            },
-        );
         // Leave headroom for Windows' larger native mapping descriptors.
         let options = GraphQueryOptions::default()
             .with_limits(
@@ -842,6 +868,49 @@ fn eligible_collect_parity(hybrid: bool) {
                 zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default(),
             )
             .unwrap();
+        if profile {
+            for (stage, query) in [
+                (
+                    "id-filter",
+                    "MATCH (d) WHERE ze.node_id(d) <= $lastId RETURN count(*)",
+                ),
+                (
+                    "document-label",
+                    "MATCH (d:Document) WHERE ze.node_id(d) <= $lastId RETURN count(*)",
+                ),
+                (
+                    "distinct-collect",
+                    "MATCH (d:Document) WHERE ze.node_id(d) <= $lastId WITH collect(DISTINCT d) AS eligible RETURN count(*)",
+                ),
+            ] {
+                let start = std::time::Instant::now();
+                let result = execute(
+                    &store,
+                    &control(),
+                    &options,
+                    query,
+                    &parameters[..1],
+                    CompileLimits::default(),
+                )
+                .unwrap();
+                let expected = if stage == "distinct-collect" {
+                    1
+                } else {
+                    n as i64
+                };
+                assert_eq!(result.cell(0, 0), Some(&Value::I64(expected)));
+                let work = result.metadata().counters;
+                eprintln!(
+                    "ZE403 stage={stage} hybrid={hybrid} n={n} elapsed={:?} scans={} expressions={} operator_rows={} copied_bytes={}",
+                    start.elapsed(),
+                    work.get(WorkKind::Scans),
+                    work.get(WorkKind::Expressions),
+                    work.get(WorkKind::OperatorRows),
+                    work.get(WorkKind::CopiedBytes)
+                );
+            }
+        }
+        let start = std::time::Instant::now();
         let result = execute(
             &store,
             &control(),
@@ -851,6 +920,7 @@ fn eligible_collect_parity(hybrid: bool) {
             CompileLimits::default(),
         )
         .unwrap_or_else(|error| panic!("ZE402 hybrid={hybrid} n={n}: {error}"));
+        let elapsed = start.elapsed();
         let actual: Vec<_> = (0..result.metadata().rows as usize)
             .map(|row| {
                 let Some(Value::String(span)) = result.cell(row, 0) else {
@@ -917,12 +987,16 @@ fn eligible_collect_parity(hybrid: bool) {
             }
         }
         eprintln!(
-            "ZE402 hybrid={hybrid} n={n} rows={} peak_query_bytes={} work={work:?}",
+            "eligible scan hybrid={hybrid} n={n} elapsed={:?} direct={direct_elapsed:?} ns_per_scan={} rows={} peak_query_bytes={} work={work:?}",
+            elapsed,
+            elapsed.as_nanos() / u128::from(work.get(WorkKind::Scans).max(1)),
             result.metadata().rows,
             result.metadata().peak_query_bytes
         );
         previous = Some((n as u64, work));
+        counters.push(work);
     }
+    counters
 }
 
 mod ze404_id_lookup {
@@ -2283,6 +2357,53 @@ mod ze409_scan_tests {
                 result.string(*span).unwrap().to_owned()
             })
             .collect()
+    }
+
+    #[test]
+    fn ze403_id_bound_scan_preserves_mixed_document_nodes_after_reopen() {
+        let (directory, store) = scan_fixture(1_000);
+        run(
+            &store,
+            "MATCH (d:Document) WHERE ze.node_id(d) = '00000000000000000000000000000009' SET d.extra = 1",
+        );
+        run(&store, "CREATE (:Document {folder: 3})");
+        run(
+            &store,
+            "MATCH (d:Document) WHERE ze.node_id(d) = '00000000000000000000000000000009' DELETE d",
+        );
+        store.close().unwrap();
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::read_only().with_epoch(fixture_epoch()),
+        )
+        .unwrap();
+        let fast = run(
+            &store,
+            "MATCH (d:Document) WHERE ze.node_id(d) <= 'ffffffffffffffffffffffffffffffff' RETURN ze.node_id(d) AS id",
+        );
+        // The equivalent expression keeps the original scalar label filter.
+        let original = run(
+            &store,
+            "MATCH (d:Document) WHERE ze.node_id(d) <= coalesce('ffffffffffffffffffffffffffffffff', null) RETURN ze.node_id(d) AS id",
+        );
+        assert_eq!(strings(&fast), strings(&original));
+        assert_eq!(fast.metadata().rows, 1_000);
+        assert!(!strings(&fast).contains(&format!("{:032x}", 9)));
+        for limit in [0, 1, 10] {
+            let fast = run(
+                &store,
+                &format!(
+                    "MATCH (d:Document) WHERE ze.node_id(d) <= 'ffffffffffffffffffffffffffffffff' RETURN ze.node_id(d) AS id LIMIT {limit}"
+                ),
+            );
+            let original = run(
+                &store,
+                &format!(
+                    "MATCH (d:Document) WHERE ze.node_id(d) <= coalesce('ffffffffffffffffffffffffffffffff', null) RETURN ze.node_id(d) AS id LIMIT {limit}"
+                ),
+            );
+            assert_eq!(strings(&fast), strings(&original));
+        }
     }
 
     #[test]

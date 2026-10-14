@@ -215,12 +215,13 @@ impl Builder<'_, '_, '_> {
             Ok(input)
         }
     }
-    /// Only the complete, infallible ID equality of an initial fixed-length
-    /// read may replace enumeration. Constraints and WHERE remain residuals.
-    fn id_equality_lookup(
+    /// Recognize a complete canonical ID comparison on a fixed-length anchor.
+    /// Constraints and WHERE remain residuals even when the source uses it.
+    fn canonical_id_bound(
         &self,
         bound: &BoundQuery<'_>,
         clause: &Node,
+        comparison: Comparison,
     ) -> Result<Option<zeppelin_embed::property_graph::NodeId>, ParseError> {
         let [part_id, predicate_id] = clause.children() else {
             return Ok(None);
@@ -258,13 +259,16 @@ impl Builder<'_, '_, '_> {
         let anchor = slot(bound, *node_id)?;
         let expression = |id: ExprId| bound.expressions().get(id.0 as usize);
         let Some(Expression::Binary {
-            operation: BinaryExpression::Comparison(Comparison::Equal),
+            operation: BinaryExpression::Comparison(actual),
             left,
             right,
         }) = expression(ExprId(child(predicate, 0)?.0 as u32))
         else {
             return Ok(None);
         };
+        if *actual != comparison {
+            return Ok(None);
+        }
         let is_id = |id| {
             matches!(expression(id), Some(Expression::Unary {
             operation: UnaryExpression::NodeIdText, operand,
@@ -312,10 +316,15 @@ impl Builder<'_, '_, '_> {
             .checked_add(1)
             .ok_or_else(|| limit(clause.span))?;
         let lookup = if initial_read && !optional {
-            self.id_equality_lookup(bound, clause)?
+            self.canonical_id_bound(bound, clause, Comparison::Equal)?
         } else {
             None
         };
+        let id_bounded_scan = initial_read
+            && !optional
+            && self
+                .canonical_id_bound(bound, clause, Comparison::LessEqual)?
+                .is_some();
         let mut current = left;
         let mut attached = None;
         for id in clause.children() {
@@ -362,12 +371,11 @@ impl Builder<'_, '_, '_> {
             let first = pattern_child(0)?;
             let mut anchor = slot(bound, first)?;
             let first_node = syntax(bound, first)?;
-            // A simple label on a fresh fixed-length relationship anchor is
-            // represented by the structured scan's existing label field.
+            // The scan proves a simple label on a relationship anchor, or on
+            // an ID-bounded Document scan, without a second per-row lookup.
             let scan_label = if initial_read
                 && !optional
                 && lookup.is_none()
-                && part.children().len() > 1
                 && !part.children().iter().any(|id| {
                     bound.syntax().node(*id).is_some_and(|node| {
                         matches!(
@@ -384,14 +392,15 @@ impl Builder<'_, '_, '_> {
                 if let [label_id] = first_node.children()
                     && let NodeKind::Name(name) = syntax(bound, *label_id)?.kind
                 {
-                    Some(
-                        self.copy_text(
-                            bound
-                                .syntax()
-                                .text(name)
-                                .ok_or_else(|| invariant(first_node.span, "anchor label"))?,
-                        )?,
-                    )
+                    let label = bound
+                        .syntax()
+                        .text(name)
+                        .ok_or_else(|| invariant(first_node.span, "anchor label"))?;
+                    if part.children().len() > 1 || (id_bounded_scan && label == "Document") {
+                        Some(self.copy_text(label)?)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
