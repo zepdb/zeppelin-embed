@@ -1,5 +1,9 @@
 # Internal Cypher frontend
 
+See [the Cypher support profile](CYPHER_PROFILE.md) for implemented syntax,
+functions, procedures, limits, caller-visible errors and the historical ZE-59
+verifier invocation.
+
 This workspace crate parses and binds the accepted first-release profile in
 `docs/graph/plans/cypher.md`. Its only production dependency is the approved
 internal core crate; it adds no third-party package. A successful parse is syntax
