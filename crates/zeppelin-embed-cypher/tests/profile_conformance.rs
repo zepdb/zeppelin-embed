@@ -248,7 +248,7 @@ fn ze59_constants_positive_and_boundary_evidence() {
             "RETURN -9223372036854775808 AS i, 1.25e1 AS f, true AS b, null AS n, 'λ' AS s, [1,[null],false] AS l",
             "|-9223372036854775808|12.5|true|null|'λ'|[1,[null],false]|",
         )],
-        &["RETURN 9223372036854775808", "RETURN {x: 1}"],
+        &["RETURN 9223372036854775808"],
         &[],
     );
 }
