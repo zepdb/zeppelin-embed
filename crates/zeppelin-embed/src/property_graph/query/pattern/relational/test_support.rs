@@ -70,6 +70,8 @@ struct CloseAction {
 
 #[derive(Default)]
 struct ScheduledMapVfs {
+    #[cfg(test)]
+    fail_next: AtomicBool,
     fires: AtomicU64,
     armed: AtomicBool,
     first_successful_path: Mutex<Option<PathBuf>>,
@@ -114,6 +116,11 @@ impl Vfs for ScheduledMapVfs {
     }
 
     fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        #[cfg(test)]
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            self.fires.fetch_add(1, Ordering::SeqCst);
+            return Err(std::io::Error::other("scheduled operator map fault"));
+        }
         if self.armed.load(Ordering::SeqCst) {
             let mut first = self
                 .first_successful_path
@@ -2490,3 +2497,6 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod checkpoint_matrix;

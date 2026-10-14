@@ -608,6 +608,8 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         index: usize,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<bool, NativeExecutionError> {
+        #[cfg(test)]
+        checkpoint_tests::visit(false, self.occurrence(index)?.node);
         context.checkpoint()?;
         self.output_mut(index)?.clear();
         self.uses_mut(index)?.clear();
@@ -2608,6 +2610,8 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
     context: &mut RuntimeContext<'v, 'm, 'g>,
     bindings: Option<&AnchorBinding<'_>>,
 ) -> Result<usize, NativeExecutionError> {
+    #[cfg(test)]
+    checkpoint_tests::visit(true, node);
     context.checkpoint()?;
     if let Some(source) = anchor_source(bindings, node) {
         let schema = schema_for(plan, node, context)?;
@@ -3636,3 +3640,6 @@ fn empty_relationship() -> Result<RelationshipRow, RuntimeError> {
         relationship_type: RelTypeId::new(1).map_err(|_| RuntimeError::Batch)?,
     })
 }
+
+#[cfg(test)]
+mod checkpoint_tests;
