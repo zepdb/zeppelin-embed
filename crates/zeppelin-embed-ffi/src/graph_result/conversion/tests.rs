@@ -594,7 +594,7 @@ fn graph_result_native_all_pools_match_literal_field_oracle() {
                 c_columns[0].name.count,
                 c_columns[0].kinds
             ),
-            (22, 3, 255)
+            (22, 3, 511)
         );
         assert_eq!(
             (
@@ -602,7 +602,7 @@ fn graph_result_native_all_pools_match_literal_field_oracle() {
                 c_columns[1].name.count,
                 c_columns[1].kinds
             ),
-            (25, 3, 255)
+            (25, 3, 511)
         );
         assert_eq!(
             unsafe { output_slice(output.cells, output.cell_count) },
