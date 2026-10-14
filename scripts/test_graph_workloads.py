@@ -12,6 +12,38 @@ spec.loader.exec_module(w)
 
 
 class Contracts(unittest.TestCase):
+    def test_swift_worker_build_stays_inside_workload_output(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / 'repo'
+            output = (Path(d) / 'workload').resolve()
+            (root / 'target/debug').mkdir(parents=True)
+            for name in ('graph-workload', 'graph-fixture', 'libzeppelin_embed_ffi.a'):
+                (root / 'target/debug' / name).write_bytes(b'artifact')
+            headers = root / 'crates/zeppelin-embed-ffi/include'
+            headers.mkdir(parents=True)
+            for name in ('zeppelin_embed.h', 'zeppelin_graph_contracts.h'):
+                (headers / name).write_bytes(b'header')
+            bindir = output / 'swift-build/debug'
+            bindir.mkdir(parents=True)
+            (bindir / 'GraphWorkload').write_bytes(b'swift worker')
+            sentinel = root / '.build/keep'
+            sentinel.parent.mkdir()
+            sentinel.write_bytes(b'existing package build')
+            commands = []
+            def process(command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout=str(bindir), stderr='')
+            with patch.object(w, 'ROOT', root), patch.object(w.subprocess, 'run', process):
+                w.build_workers(output)
+            swift_commands = [c for c in commands if c[0] == 'swift']
+            for command in swift_commands:
+                self.assertIn('--scratch-path', command)
+                self.assertEqual(Path(command[command.index('--scratch-path') + 1]),
+                                 output / 'swift-build')
+            self.assertEqual(sentinel.read_bytes(), b'existing package build')
+            self.assertEqual((output / 'graph-workload-swift').read_bytes(), b'swift worker')
+
     def test_smoke_manifest_is_explicit_and_single_cell(self):
         m = w.smoke_manifest([])
         self.assertTrue(m['smoke'])
