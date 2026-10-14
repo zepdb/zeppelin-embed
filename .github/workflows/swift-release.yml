@@ -80,6 +80,11 @@ jobs:
           PY
       - name: Build XCFramework
         run: scripts/xcframework/build.sh --artifact ${{ matrix.artifact }}
+      - name: Test full legacy Swift package
+        if: matrix.artifact == 'legacy'
+        env:
+          ZE_USE_LOCAL_XCFRAMEWORK: "1"
+        run: swift test --package-path . --scratch-path target/swift-release-legacy --jobs 3
       - name: Report separate graph core sections
         if: matrix.artifact == 'graph-cypher'
         run: |
