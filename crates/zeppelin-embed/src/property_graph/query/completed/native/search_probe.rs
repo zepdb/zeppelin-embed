@@ -228,12 +228,13 @@ impl Fixture {
     }
 }
 
-/// A wrapper retains the producer report and commits between seed ranking and
-/// graph pulling. It never substitutes a scripted hit or report.
+/// A wrapper retains the producer report and commits after admission, either
+/// before ranking or before graph pulling. It never substitutes hits or reports.
 struct Observed<'a> {
     adapter: NativeSearchAdapter<'a>,
     fixture: &'a Fixture,
     publish: Option<i64>,
+    publish_before_search: bool,
     report: Option<SearchReport>,
 }
 impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for Observed<'_> {
@@ -244,6 +245,11 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for Observed<'_> {
         hits: &mut QueryArena<'m, 'g, SearchHit>,
         runtime: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<SearchReport, NativeExecutionError> {
+        if self.publish_before_search
+            && let Some(value) = self.publish.take()
+        {
+            std::thread::scope(|scope| scope.spawn(|| self.fixture.publish(value)).join()).unwrap();
+        }
         let report = self.adapter.search(view, invocation, hits, runtime)?;
         self.report = Some(report);
         if let Some(value) = self.publish.take() {
@@ -406,6 +412,14 @@ fn assert_old(result: &CompletedGraphResult, fixture: &Fixture, value: i64) {
 }
 
 pub(super) fn same_view(value: i64) {
+    same_view_timing(value, false);
+}
+
+pub(super) fn same_view_before_ranking(value: i64) {
+    same_view_timing(value, true);
+}
+
+fn same_view_timing(value: i64, publish_before_search: bool) {
     let fixture = Fixture::new(value);
     // Publication legitimately grows writer bookkeeping. Compare query cleanup
     // with the same publication on an independent store that ran no query.
@@ -417,6 +431,7 @@ pub(super) fn same_view(value: i64) {
         adapter: NativeSearchAdapter::new(&fixture.store),
         fixture: &fixture,
         publish: Some(value + 1),
+        publish_before_search,
         report: None,
     };
     let result = query(&fixture.store, &mut adapter, SearchMode::Exact, false).unwrap();
@@ -462,6 +477,7 @@ pub(super) fn store_report(value: i64) {
             adapter: NativeSearchAdapter::new(&fixture.store),
             fixture: &fixture,
             publish: None,
+            publish_before_search: false,
             report: None,
         };
         let result = query(&fixture.store, &mut adapter, SearchMode::Exact, aggregate).unwrap();

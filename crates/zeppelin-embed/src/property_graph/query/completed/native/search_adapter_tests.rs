@@ -1133,6 +1133,10 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for MeasuredSearch<'_> {
         hits: &mut QueryArena<'m, 'g, crate::property_graph::query::pattern::SearchHit>,
         runtime: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<super::super::SearchReport, NativeExecutionError> {
+        assert_eq!(
+            invocation.window, 65_536,
+            "fixed retained capacity for every k"
+        );
         let before = runtime.counters();
         let report = self.0.search(view, invocation, hits, runtime)?;
         assert_eq!(
@@ -1146,20 +1150,22 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for MeasuredSearch<'_> {
 #[test]
 fn ze64_call_work_includes_preparation() {
     let (store, _directory, _) = fixture();
-    store
-        .with_native_read(
-            &QueryControl::Cancel(CancelToken::new()),
-            RuntimeLimits::default(),
-            16 * 1024 * 1024,
-            64,
-            TextSearch {
-                query: "amber".into(),
-                k: 1,
-                adapter: MeasuredSearch(NativeSearchAdapter::new(&store)),
-            },
-        )
-        .unwrap()
-        .unwrap();
+    for k in [1, 2, 4096] {
+        store
+            .with_native_read(
+                &QueryControl::Cancel(CancelToken::new()),
+                RuntimeLimits::default(),
+                16 * 1024 * 1024,
+                64,
+                TextSearch {
+                    query: "amber".into(),
+                    k,
+                    adapter: MeasuredSearch(NativeSearchAdapter::new(&store)),
+                },
+            )
+            .unwrap()
+            .unwrap();
+    }
 }
 
 #[test]
@@ -1267,4 +1273,9 @@ fn ze400_eligible_id_copy_cannot_exceed_query_memory() {
             )
             .unwrap();
     }
+}
+
+#[test]
+fn ze280_search_uses_admitted_documents_if_publication_precedes_ranking() {
+    super::search_probe::same_view_before_ranking(280);
 }

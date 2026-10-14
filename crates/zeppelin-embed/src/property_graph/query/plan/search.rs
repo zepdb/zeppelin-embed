@@ -142,7 +142,9 @@ impl SearchBounds {
 pub struct SearchOptions {
     /// Uncorrelated structured source emits only its declared yields.
     pub hide_input: bool,
-    /// Evaluated retained-capacity allowance; absent uses the shared default.
+    /// Evaluated retained-capacity allowance. If absent, capacity is fixed at
+    /// 65,536 for every valid k; it is not a per-k producer window.
+    /// Producers choose and charge their actual ranking windows and scratch.
     pub window: Option<ExprId>,
     /// Explicit ANN profile: zero SIFT class, one angular; absent uses the index.
     pub graph_profile: Option<crate::graph::search::GraphSearchProfile>,
