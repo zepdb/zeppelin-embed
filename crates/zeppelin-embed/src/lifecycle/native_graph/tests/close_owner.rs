@@ -350,6 +350,35 @@ pub(super) fn native_close_owner_walk_preserves_poison_policy() {
     run_bounded(run_poison_probe);
 }
 
+#[test]
+fn native_close_drops_documents_before_unregistering_owner() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let parent = tempfile::tempdir().expect("parent");
+    let store = Store::create_native_graph(parent.path().join("native"), native_options(), None)
+        .expect("native store");
+    let lease = store.admit_native_read().expect("native read");
+    let snapshot = Arc::downgrade(&lease.documents.as_ref().expect("documents").snapshot);
+    // Only Store, the publication, and this lease own the snapshot.
+    assert_eq!(snapshot.strong_count(), 3);
+    let observed = Arc::new(AtomicUsize::new(0));
+    store
+        .native_graph
+        .state
+        .lock()
+        .expect("publication")
+        .read_release_snapshot_probe = Some((lease.token(), snapshot, Arc::clone(&observed)));
+    // Inspect the exact point where a close waiter could resume. This is
+    // independent of whether the scheduler actually runs another thread.
+    drop(lease);
+    let owners_at_unregister = observed.load(Ordering::Relaxed);
+    store.close().expect("cleanup");
+    assert_eq!(
+        owners_at_unregister, 2,
+        "native unregister must not wake close with a document snapshot still owned"
+    );
+}
+
 fn ze201_drained_writer_states(operation: impl Fn(&Store) -> Result<(), NativeGraphError>) {
     let parent = tempfile::tempdir().expect("parent");
     let store = Store::create_native_graph(parent.path().join("native"), native_options(), None)

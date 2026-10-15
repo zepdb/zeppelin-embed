@@ -683,6 +683,12 @@ struct PublicationState {
     checkpoint_inventory_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
     #[cfg(any(test, feature = "test-seams"))]
     close_owner_hook: Option<(u64, Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
+    #[cfg(test)]
+    read_release_snapshot_probe: Option<(
+        u64,
+        Weak<super::PublishedSnapshot>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    )>,
 }
 
 impl PublicationState {
@@ -770,6 +776,8 @@ impl NativeGraphPublication {
                 checkpoint_inventory_hook: None,
                 #[cfg(any(test, feature = "test-seams"))]
                 close_owner_hook: None,
+                #[cfg(test)]
+                read_release_snapshot_probe: None,
             }),
             changed: Condvar::new(),
             accounting: Arc::clone(accounting),
@@ -2025,6 +2033,15 @@ impl Drop for NativeReadRegistration {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        if state
+            .read_release_snapshot_probe
+            .as_ref()
+            .is_some_and(|(token, _, _)| *token == self.token)
+            && let Some((_, snapshot, observed)) = state.read_release_snapshot_probe.take()
+        {
+            observed.store(snapshot.strong_count(), Ordering::Relaxed);
+        }
         if state
             .leases
             .get(self.slot)
@@ -2054,8 +2071,9 @@ struct NativeReadOwner {
 }
 
 pub(crate) struct NativeReadLease {
-    owner: Arc<NativeReadOwner>,
+    // Release document snapshots before unregistering can wake graph close.
     documents: Option<documents::NativeDocuments>,
+    owner: Arc<NativeReadOwner>,
 }
 
 impl Clone for NativeReadLease {
