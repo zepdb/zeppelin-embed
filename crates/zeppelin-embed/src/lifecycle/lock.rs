@@ -35,6 +35,11 @@ use std::sync::{Mutex, MutexGuard};
 /// Persistent lock filename; only [`StoreLock`] may open this file.
 pub const STORE_LOCK_FILE: &str = "writer.lock";
 
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
 /// Stable filesystem identity of a store directory.
 type StoreKey = (u64, u64, bool);
 
@@ -254,13 +259,28 @@ fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
 /// `LockFileEx` needs only `GENERIC_READ`.
 #[cfg(windows)]
 fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
-    // The existing share mode prevents deletion while the handle is held.
     use std::os::windows::fs::OpenOptionsExt as _;
 
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .share_mode(crate::sys::windows::FILE_SHARE_READ | crate::sys::windows::FILE_SHARE_WRITE)
-        .open(path)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    refuse_lock_reparse_point(file)
+}
+
+#[cfg(windows)]
+fn refuse_lock_reparse_point(file: File) -> std::io::Result<File> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    // Inspect the opened handle so a path replacement cannot bypass refusal.
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "store lock path is a reparse point",
+        ));
+    }
+    Ok(file)
 }
 
 /// The store directory's stable filesystem identity.
@@ -311,16 +331,17 @@ fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
 /// process cannot inherit writer ownership either.
 #[cfg(windows)]
 fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
-    // The existing share mode prevents deletion while the handle is held.
     use std::os::windows::fs::OpenOptionsExt as _;
 
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .create(create)
         .truncate(false)
         .read(true)
         .write(true)
         .share_mode(crate::sys::windows::FILE_SHARE_READ | crate::sys::windows::FILE_SHARE_WRITE)
-        .open(path)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    refuse_lock_reparse_point(file)
 }
 
 #[cfg(unix)]
@@ -478,5 +499,44 @@ impl std::error::Error for StoreLockError {
         match self {
             Self::Io { source, .. } => Some(source),
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::expect_used, clippy::panic)]
+mod windows_tests {
+    use super::{StoreLock, StoreLockError};
+
+    #[test]
+    fn ze307_lock_reparse_points_fail_loudly() {
+        let root = tempfile::tempdir().expect("root");
+        let target = root.path().join("target");
+        std::fs::write(&target, b"untouched").expect("target");
+        for (name, lease) in [("writer.lock", false), (".ze-readers.lock", true)] {
+            let directory = root.path().join(if lease { "reader" } else { "writer" });
+            std::fs::create_dir(&directory).expect("store directory");
+            let path = directory.join(name);
+            std::os::windows::fs::symlink_file(&target, &path).expect("create lock symlink");
+            for outcome in [
+                StoreLock::exclusive_named(&directory, true, lease),
+                StoreLock::shared_named(&directory, lease, true),
+                StoreLock::shared_named(&directory, lease, false),
+            ] {
+                let StoreLockError::Io {
+                    path: failed,
+                    source,
+                } = outcome.expect_err("lock reparse point must be refused");
+                assert_eq!(failed, path);
+                assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput);
+                assert_eq!(source.to_string(), "store lock path is a reparse point");
+            }
+            std::fs::remove_file(&path).expect("remove symlink");
+            drop(StoreLock::exclusive_named(&directory, true, lease).expect("regular lock"));
+            drop(StoreLock::shared_named(&directory, lease, false).expect("regular shared lock"));
+        }
+        assert_eq!(
+            std::fs::read(target).expect("target contents"),
+            b"untouched"
+        );
     }
 }
