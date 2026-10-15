@@ -18,6 +18,11 @@ impl Resources for SharedResources<'_, '_, '_> {
             .reserve_additional(bytes)
             .map_err(|_| ResourceError::Memory)
     }
+    fn release(&mut self, bytes: usize) -> Result<(), ResourceError> {
+        self.reservation
+            .release_capacity(bytes)
+            .map_err(|_| ResourceError::Memory)
+    }
     fn checkpoint(&mut self) -> Result<(), ResourceError> {
         (self.control)()
     }
@@ -26,7 +31,7 @@ impl Resources for SharedResources<'_, '_, '_> {
 /// The callback prepares lowering; it is not writer admission or execution.
 /// Caller source/parameters are borrowed synchronously; their capacities are
 /// not inferred or credited. Later execution requires actual retained owners.
-/// All frontend backing drops before its grow-only reservation, even on error.
+/// All frontend backing drops before its capacity reservation, even on error.
 /// This guard is not a runtime prepayment capability: retained plan payloads
 /// require separate real copies/owners under the same QueryMemory.
 pub fn compile_in<T>(

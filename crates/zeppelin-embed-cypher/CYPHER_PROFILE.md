@@ -105,8 +105,9 @@ include generation/outcome and work counters; C responses must be released with
 | Lexical postings / lexical blocks / search invocations | 64,000,000 / 4,000,000 / 8 |
 
 `CompileLimits`, `GraphQueryOptions` and `RuntimeLimits` may tighten limits, not
-widen them. Standalone parsing uses a conservative cumulative 24 MiB allocation
-budget; execution shares query accounting and reserves compiler scratch.
+widen them. Standalone parsing uses a conservative 24 MiB allocation
+budget, reserving replacement overlap and releasing freed old capacity.
+Execution shares query accounting and reserves compiler scratch.
 Operator/result/source capacities and store admission can refuse work earlier;
 `LIMIT` does not bypass accounting for work already performed. Cancellation and
 deadlines apply through compilation and execution.

@@ -229,6 +229,10 @@ impl AllocationComponent {
 struct AccountingState {
     resident_owned_bytes: u64,
     resident_peak_bytes: u64,
+    #[cfg(feature = "graph-cypher")]
+    application_bytes: u64,
+    #[cfg(feature = "graph-cypher")]
+    application_peak_bytes: u64,
     wal_bytes: u64,
     cache_bytes: u64,
     temporary_bytes: u64,
@@ -293,6 +297,10 @@ impl Accounting {
             state: Mutex::new(AccountingState {
                 resident_owned_bytes: 0,
                 resident_peak_bytes: 0,
+                #[cfg(feature = "graph-cypher")]
+                application_bytes: 0,
+                #[cfg(feature = "graph-cypher")]
+                application_peak_bytes: 0,
                 wal_bytes: 0,
                 cache_bytes: 0,
                 temporary_bytes: 0,
@@ -458,12 +466,43 @@ impl Accounting {
     }
 
     #[cfg(feature = "graph-cypher")]
-    pub(crate) fn graph_resource_bytes(&self) -> Result<(u64, u64), StoreError> {
+    pub(crate) fn graph_resource_bytes(&self) -> Result<(u64, u64, u64, u64), StoreError> {
         let state = self.state.lock().map_err(|_| StoreError::Synchronization {
             component: "graph resources",
         })?;
-        Ok((state.resident_owned_bytes, state.resident_peak_bytes))
+        Ok((
+            state.resident_owned_bytes,
+            state.resident_peak_bytes,
+            state.application_bytes,
+            state.application_peak_bytes,
+        ))
     }
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn reserve_application(
+        self: &Arc<Self>,
+        bytes: usize,
+    ) -> Result<ApplicationReservation, StoreError> {
+        let bytes = bytes as u64;
+        let mut state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "application retention",
+        })?;
+        let total =
+            state
+                .application_bytes
+                .checked_add(bytes)
+                .ok_or(StoreError::BudgetExceeded {
+                    needed: u64::MAX,
+                    budget: u64::MAX,
+                    component: "application retention arithmetic",
+                })?;
+        state.application_bytes = total;
+        state.application_peak_bytes = state.application_peak_bytes.max(total);
+        Ok(ApplicationReservation {
+            accounting: Arc::clone(self),
+            bytes,
+        })
+    }
+
     #[cfg(all(
         feature = "graph-cypher",
         any(test, feature = "test-seams", feature = "benchmark-kernels")
@@ -735,6 +774,11 @@ impl AccountedCounter {
 
     pub(crate) const fn bytes(&self) -> u64 {
         self.reservation.bytes
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn release(&mut self, bytes: u64) {
+        self.reservation.shrink(bytes);
     }
 
     #[cfg(feature = "graph-cypher")]
@@ -1255,6 +1299,22 @@ impl Store {
         let allocation = Accounted::try_zeroed(&self.accounting, bytes, component)?;
         drop(state);
         Ok(allocation)
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+pub(crate) struct ApplicationReservation {
+    accounting: Arc<Accounting>,
+    bytes: u64,
+}
+#[cfg(feature = "graph-cypher")]
+impl Drop for ApplicationReservation {
+    fn drop(&mut self) {
+        let mut state = match self.accounting.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.application_bytes = state.application_bytes.saturating_sub(self.bytes);
     }
 }
 

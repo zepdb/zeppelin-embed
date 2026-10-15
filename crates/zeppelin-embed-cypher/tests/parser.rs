@@ -274,6 +274,9 @@ impl Resources for Schedule {
         self.bytes += bytes;
         Ok(())
     }
+    fn release(&mut self, _: usize) -> Result<(), ResourceError> {
+        Ok(())
+    }
     fn checkpoint(&mut self) -> Result<(), ResourceError> {
         self.polls += 1;
         if self.cancel_at == Some(self.polls) {

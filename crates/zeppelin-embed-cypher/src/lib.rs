@@ -130,7 +130,7 @@ pub fn parse(text: &str) -> Result<Ast, ParseError> {
 
 /// Parse with tighter limits and the caller's shared allocation/cancellation account.
 /// All owned allocations, including scratch capacity, are charged before reservation.
-/// Charges are conservative cumulative reservations, never hidden extra allowance.
+/// Replacement overlap is reserved before allocation and released after freeing.
 pub fn parse_with(
     text: &str,
     limits: CompileLimits,

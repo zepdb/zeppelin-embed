@@ -16,6 +16,8 @@ pub enum ResourceError {
 /// must fail explicitly; `checkpoint` is called within scanning and AST walks.
 pub trait Resources {
     fn charge(&mut self, bytes: usize) -> Result<(), ResourceError>;
+    /// Releases capacity only after its old allocation has been freed.
+    fn release(&mut self, bytes: usize) -> Result<(), ResourceError>;
     fn checkpoint(&mut self) -> Result<(), ResourceError>;
 }
 
@@ -48,6 +50,13 @@ impl Resources for Budget<'_> {
             .charged
             .checked_add(bytes)
             .filter(|n| *n <= self.maximum)
+            .ok_or(ResourceError::Memory)?;
+        Ok(())
+    }
+    fn release(&mut self, bytes: usize) -> Result<(), ResourceError> {
+        self.charged = self
+            .charged
+            .checked_sub(bytes)
             .ok_or(ResourceError::Memory)?;
         Ok(())
     }
@@ -145,6 +154,7 @@ pub(crate) fn push<T>(
         let bytes = capacity
             .checked_mul(std::mem::size_of::<T>())
             .ok_or_else(|| allocation_error(span, ResourceError::Memory))?;
+        let old_bytes = values.capacity() * std::mem::size_of::<T>();
         // Both owners coexist. Reserve the complete replacement, not only its
         // increment; no uninterruptible realloc copies the old contents.
         charge(resources, bytes, span)?;
@@ -164,6 +174,9 @@ pub(crate) fn push<T>(
             replacement.push(old);
         }
         *values = replacement;
+        resources
+            .release(old_bytes)
+            .map_err(|kind| allocation_error(span, kind))?;
     }
     values.push(value);
     Ok(())
@@ -188,6 +201,7 @@ pub(crate) fn push_char(
             .checked_mul(2)
             .map(|n| n.max(4))
             .ok_or_else(|| allocation_error(span, ResourceError::Memory))?;
+        let old_bytes = value.capacity();
         charge(resources, capacity, span)?;
         let mut replacement = String::new();
         replacement
@@ -201,6 +215,9 @@ pub(crate) fn push_char(
             replacement.push(old);
         }
         *value = replacement;
+        resources
+            .release(old_bytes)
+            .map_err(|kind| allocation_error(span, kind))?;
     }
     value.push(c);
     Ok(())

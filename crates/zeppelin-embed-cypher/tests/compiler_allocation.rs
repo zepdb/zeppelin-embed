@@ -51,6 +51,10 @@ impl Resources for Credits {
         CREDIT.with(|cell| cell.set(cell.get() + bytes));
         Ok(())
     }
+    fn release(&mut self, bytes: usize) -> Result<(), ResourceError> {
+        CREDIT.with(|cell| cell.set(cell.get().checked_sub(bytes).unwrap()));
+        Ok(())
+    }
     fn checkpoint(&mut self) -> Result<(), ResourceError> {
         Ok(())
     }
@@ -83,6 +87,9 @@ impl Resources for Deny {
     fn charge(&mut self, _: usize) -> Result<(), ResourceError> {
         Err(ResourceError::Memory)
     }
+    fn release(&mut self, _: usize) -> Result<(), ResourceError> {
+        Ok(())
+    }
     fn checkpoint(&mut self) -> Result<(), ResourceError> {
         Ok(())
     }
@@ -100,4 +107,46 @@ fn compiler_budget_denial_precedes_the_first_allocator_call() {
     );
     assert_eq!(CALLS.with(Cell::get), 0);
     assert_eq!(LIVE.with(Cell::get), 0);
+}
+
+struct MeasuredBudget<'a>(zeppelin_embed_cypher::Budget<'a>);
+impl Resources for MeasuredBudget<'_> {
+    fn charge(&mut self, bytes: usize) -> Result<(), ResourceError> {
+        self.0.charge(bytes)?;
+        Credits.charge(bytes)
+    }
+    fn release(&mut self, bytes: usize) -> Result<(), ResourceError> {
+        self.0.release(bytes)?;
+        Credits.release(bytes)
+    }
+    fn checkpoint(&mut self) -> Result<(), ResourceError> {
+        self.0.checkpoint()
+    }
+}
+
+#[test]
+fn ze310_replacement_charging_reclaims_freed_capacity() {
+    use zeppelin_embed_cypher::{Budget, parse_with};
+    for (query, limit) in [
+        (format!("RETURN '{}'", "a".repeat(8192)), 25000),
+        (format!("RETURN [{}]", vec!["1"; 512].join(",")), 250000),
+    ] {
+        let mut budget = MeasuredBudget(Budget::new(limit, None));
+        LIVE.with(|cell| cell.set(0));
+        CREDIT.with(|cell| cell.set(0));
+        UNDER.with(|cell| cell.set(false));
+        ACTIVE.with(|cell| cell.set(true));
+        let result = parse_with(&query, CompileLimits::default(), &mut budget).map(drop);
+        ACTIVE.with(|cell| cell.set(false));
+        assert_eq!(LIVE.with(Cell::get), 0);
+        assert!(
+            !UNDER.with(Cell::get),
+            "replacement overlap was undercharged"
+        );
+        assert!(
+            result.is_ok(),
+            "limit={limit} charged={} result={result:?}",
+            budget.0.charged_bytes()
+        );
+    }
 }

@@ -248,3 +248,82 @@ fn ze76_public_resources_report_engine_capacities() {
     );
     assert_eq!(invalid.engine_bytes, observation.engine_bytes);
 }
+
+fn resource_snapshot(handle: ZeHandle) -> ZeGraphResources {
+    let mut snapshot = ZeGraphResources {
+        abi_size: std::mem::size_of::<ZeGraphResources>() as u32,
+        ..ZeGraphResources::default()
+    };
+    assert_eq!(
+        ze_store_graph_resources(handle, &mut snapshot),
+        ZeErrorCode::ZeOk
+    );
+    snapshot
+}
+
+#[test]
+fn ze310_c_responses_retain_engine_reservations_until_free() {
+    let _guard = HEAP_TEST_GUARD.lock().unwrap();
+    let store = GraphTestStore::create();
+    let baseline = resource_snapshot(store.handle);
+    let mut first = cypher_ok(store.handle, "RETURN 'retained'");
+    let held = resource_snapshot(store.handle);
+    assert!(held.engine_bytes > baseline.engine_bytes);
+    assert_eq!(
+        held.application_bytes,
+        held.engine_bytes - baseline.engine_bytes
+    );
+    let mut second = cypher_ok(store.handle, "RETURN 'retained'");
+    let paired = resource_snapshot(store.handle);
+    assert_eq!(
+        paired.engine_bytes - held.engine_bytes,
+        held.engine_bytes - baseline.engine_bytes
+    );
+    assert_eq!(ze_graph_response_free(&mut first), ZeErrorCode::ZeOk);
+    assert_eq!(
+        resource_snapshot(store.handle).engine_bytes,
+        held.engine_bytes
+    );
+    assert_eq!(ze_graph_response_free(&mut second), ZeErrorCode::ZeOk);
+    let freed = resource_snapshot(store.handle);
+    assert_eq!(freed.engine_bytes, baseline.engine_bytes);
+    assert_eq!(freed.application_bytes, 0);
+    assert_eq!(freed.application_peak_bytes, paired.application_bytes);
+}
+
+#[test]
+fn ze310_application_retained_bytes_are_unbudgeted_and_freed() {
+    let _guard = HEAP_TEST_GUARD.lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = zeppelin_embed::lifecycle::Store::open(
+        directory.path(),
+        zeppelin_embed::lifecycle::OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
+    )
+    .unwrap();
+    let resources = store.graph_resources().unwrap();
+    let baseline = resources.snapshot().unwrap();
+    let application = resources.reserve_application(3 * 1024 * 1024).unwrap();
+    let held = resources.snapshot().unwrap();
+    assert_eq!(held.engine_bytes, baseline.engine_bytes);
+    assert_eq!(held.application_bytes, 3 * 1024 * 1024);
+    assert_eq!(held.application_peak_bytes, held.application_bytes);
+    store.close().unwrap();
+    assert_eq!(
+        resources.snapshot().unwrap().application_bytes,
+        held.application_bytes
+    );
+    drop(application);
+    assert_eq!(resources.snapshot().unwrap().application_bytes, 0);
+    assert_eq!(
+        resources.snapshot().unwrap().application_peak_bytes,
+        held.application_peak_bytes
+    );
+
+    let mut c_store = GraphTestStore::create();
+    let mut response = cypher_ok(c_store.handle, "RETURN 'owned'");
+    let retained = resource_snapshot(c_store.handle);
+    assert!(retained.application_bytes > 0);
+    assert_eq!(c_store.close(), ZeErrorCode::ZeOk);
+    assert_eq!(rows(&response)[0][0].tag, 4);
+    assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
+}

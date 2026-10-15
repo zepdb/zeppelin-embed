@@ -2822,11 +2822,11 @@ typedef struct ZeGraphResources {
      */
     uint64_t engine_peak_bytes;
     /*
-     Reserved for application-retention accounting (ZE-310); currently zero.
+     Application-retained allocation bytes, outside engine admission.
      */
     uint64_t application_bytes;
     /*
-     Reserved for application-retention peak (ZE-310); currently zero.
+     Lifetime application-retained capacity high-water.
      */
     uint64_t application_peak_bytes;
 } ZeGraphResources;

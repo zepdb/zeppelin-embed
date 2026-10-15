@@ -71,6 +71,16 @@ impl<'g> QueryMemory<'g> {
             _control: control,
         })
     }
+    /// Records result backing retained by an application after this query.
+    /// This reporting guard does not grant engine allocation headroom.
+    pub fn reserve_application(
+        &self,
+        bytes: usize,
+    ) -> Result<crate::property_graph::resources::GraphApplicationReservation, MemoryError> {
+        self.shared
+            .reserve_application(bytes)
+            .map_err(MemoryError::from)
+    }
     /// Consumes a participant's shared reservation into immutable joint ownership.
     /// Backing keeps one shared charge and gains the nested query charge. A
     /// failure returns the original reservation so no live backing loses its
@@ -309,7 +319,7 @@ impl<'m, 'g, T> QueryArena<'m, 'g, T> {
     }
 }
 
-/// Grow-only anonymous capacity for a scoped external participant such as the
+/// Anonymous capacity for a scoped external participant such as the
 /// frontend. This is not an allocation-owner or retained-address capability.
 /// The participant frees every buffer before dropping this guard.
 pub struct QueryExternalReservation<'m, 'g> {
@@ -326,7 +336,48 @@ impl<'g> QueryMemory<'g> {
         })
     }
 }
-impl QueryExternalReservation<'_, '_> {
+/// A checked split between retained backing and temporary query controls.
+/// Detachment preserves the shared reservation without a second admission.
+pub struct QueryRetainedReservation<'m, 'g> {
+    charge: QueryExternalReservation<'m, 'g>,
+    release: usize,
+}
+impl QueryRetainedReservation<'_, '_> {
+    /// Complete preparation charge, including temporary controls.
+    pub fn reserved_bytes(&self) -> usize {
+        self.charge.charge.bytes
+    }
+    /// Releases only query-local and temporary charges. Shared backing remains
+    /// owned by the returned guard, which must outlive its actual allocation.
+    pub fn detach(self) -> GraphReservation {
+        let Self { charge, release } = self;
+        let charge = std::mem::ManuallyDrop::new(charge.charge);
+        charge
+            .memory
+            .used
+            .set(charge.memory.used.get().saturating_sub(charge.bytes));
+        // SAFETY: the consumed query guard is disarmed. Move its shared owner
+        // exactly once; no borrow of QueryMemory escapes with the reservation.
+        let mut shared = unsafe { std::ptr::read(&charge.shared) };
+        shared.release(release);
+        shared
+    }
+}
+impl<'m, 'g> QueryExternalReservation<'m, 'g> {
+    /// Pins the exact backing retained after this query ends. Validate before
+    /// publication so detach is infallible even on a durable write path.
+    pub fn retain(self, bytes: usize) -> Result<QueryRetainedReservation<'m, 'g>, MemoryError> {
+        let release = self
+            .charge
+            .bytes
+            .checked_sub(bytes)
+            .ok_or(MemoryError::Limit)?;
+        Ok(QueryRetainedReservation {
+            charge: self,
+            release,
+        })
+    }
+
     /// Monotonically reserves more participant backing. Failed growth preserves
     /// the previous reservation. It grants no prepaid pointer/alias proof.
     pub fn reserve_additional(&mut self, bytes: usize) -> Result<(), MemoryError> {
@@ -336,6 +387,12 @@ impl QueryExternalReservation<'_, '_> {
                 .checked_add(bytes)
                 .ok_or(MemoryError::Limit)?,
         )
+    }
+    /// Releases external backing after deallocation; failed arithmetic leaves
+    /// the existing reservation unchanged.
+    pub fn release_capacity(&mut self, bytes: usize) -> Result<(), MemoryError> {
+        let retained = self.bytes().checked_sub(bytes).ok_or(MemoryError::Limit)?;
+        self.charge.resize(retained + std::mem::size_of::<Self>())
     }
     /// Anonymous capacity excluding this guard's separately reserved descriptor.
     pub fn bytes(&self) -> usize {

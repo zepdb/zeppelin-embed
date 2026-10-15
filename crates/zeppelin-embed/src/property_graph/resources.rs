@@ -36,14 +36,25 @@ impl GraphResources {
             accounting: Arc::clone(accounting),
         })
     }
-    /// Current engine capacities; application-retention reporting is reserved for ZE-310.
+    /// Current engine and application-retained capacities.
     pub fn snapshot(&self) -> Result<GraphResourceSnapshot, StoreError> {
-        let (engine_bytes, engine_peak_bytes) = self.accounting.graph_resource_bytes()?;
+        let (engine_bytes, engine_peak_bytes, application_bytes, application_peak_bytes) =
+            self.accounting.graph_resource_bytes()?;
         Ok(GraphResourceSnapshot {
             engine_bytes,
             engine_peak_bytes,
-            application_bytes: 0,
-            application_peak_bytes: 0,
+            application_bytes,
+            application_peak_bytes,
+        })
+    }
+    /// Records application-retained capacity without imposing an engine budget.
+    /// The backing must be freed before this owned reporting guard is dropped.
+    pub fn reserve_application(
+        &self,
+        bytes: usize,
+    ) -> Result<GraphApplicationReservation, StoreError> {
+        Ok(GraphApplicationReservation {
+            _reservation: self.accounting.reserve_application(bytes)?,
         })
     }
     /// Nonshipping snapshot of internal store-cumulative work for tests and benchmarks.
@@ -90,6 +101,10 @@ pub struct GraphReservation {
     charge: AccountedCounter,
 }
 impl GraphReservation {
+    pub(crate) fn release(&mut self, bytes: usize) {
+        self.charge.release(bytes as u64);
+    }
+
     pub(crate) fn belongs_to(&self, resources: &GraphResources) -> bool {
         self.charge.belongs_to(&resources.accounting)
     }
@@ -111,10 +126,16 @@ pub struct GraphResourceSnapshot {
     pub engine_bytes: u64,
     /// Lifetime engine capacity high-water, including replacement overlap.
     pub engine_peak_bytes: u64,
-    /// Reserved for ZE-310; currently zero.
+    /// Current application-retained allocation bytes, outside engine admission.
     pub application_bytes: u64,
-    /// Reserved for ZE-310; currently zero.
+    /// Lifetime application-retained capacity high-water.
     pub application_peak_bytes: u64,
 }
 
 pub(crate) mod work_batch;
+
+/// Unbudgeted application-retention reporting, tied to the originating store.
+/// Keeps accounting alive across store close without retaining a store/view.
+pub struct GraphApplicationReservation {
+    _reservation: crate::lifecycle::stats::ApplicationReservation,
+}

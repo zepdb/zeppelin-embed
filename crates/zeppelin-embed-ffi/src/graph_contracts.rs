@@ -1462,9 +1462,9 @@ pub struct ZeGraphResources {
     pub engine_bytes: u64,
     /// Lifetime engine capacity high-water.
     pub engine_peak_bytes: u64,
-    /// Reserved for application-retention accounting (ZE-310); currently zero.
+    /// Application-retained allocation bytes, outside engine admission.
     pub application_bytes: u64,
-    /// Reserved for application-retention peak (ZE-310); currently zero.
+    /// Lifetime application-retained capacity high-water.
     pub application_peak_bytes: u64,
 }
 

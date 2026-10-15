@@ -6,6 +6,8 @@ use std::mem::{ManuallyDrop, size_of};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use zeppelin_embed::property_graph::EntityId;
+use zeppelin_embed::property_graph::query::resources::QueryRetainedReservation;
+use zeppelin_embed::property_graph::resources::{GraphApplicationReservation, GraphReservation};
 use zeppelin_embed::property_graph::staging::ItemReceipt;
 
 // Shared across registry instances, including all-empty arenas.
@@ -16,6 +18,8 @@ struct Node {
     published: AtomicBool,
     root: UnsafeCell<ZeGraphResponse>,
     arena: AlignedArena,
+    engine: Option<GraphReservation>,
+    application: Option<GraphApplicationReservation>,
     next: *mut Node,
 }
 struct List {
@@ -188,6 +192,9 @@ impl GraphResultRegistry {
             .and_then(|n| n.checked_add(controls))
             .ok_or(OwnerError::Limit)?;
         charge.reserve_additional(bytes)?;
+        let retained_bytes = plan.layout.size() + size_of::<Node>();
+        let charge = charge.retain(retained_bytes)?;
+        let application = context.memory().reserve_application(retained_bytes)?;
         let arena = AlignedArena::allocate(plan.layout)?;
         let mut root = initialize(&arena, &plan, context)?;
         root.owner_token = token;
@@ -203,6 +210,8 @@ impl GraphResultRegistry {
                 published: AtomicBool::new(false),
                 root: UnsafeCell::new(root),
                 arena,
+                engine: None,
+                application: Some(application),
                 next: std::ptr::null_mut(),
             });
         }
@@ -314,8 +323,14 @@ struct OwnedNode(NonNull<Node>);
 impl Drop for OwnedNode {
     fn drop(&mut self) {
         unsafe {
+            // Move both guards out so the arena AND registry allocation are
+            // freed before their capacity reservations disappear.
+            let engine = (*self.0.as_ptr()).engine.take();
+            let application = (*self.0.as_ptr()).application.take();
             std::ptr::drop_in_place(self.0.as_ptr());
             dealloc(self.0.as_ptr().cast(), Layout::new::<Node>());
+            drop(engine);
+            drop(application);
         }
     }
 }
@@ -337,7 +352,7 @@ pub struct FreeReport {
 pub struct PreparedResponse<'m, 'g> {
     registry: &'static GraphResultRegistry,
     node: NonNull<Node>,
-    charge: QueryExternalReservation<'m, 'g>,
+    charge: QueryRetainedReservation<'m, 'g>,
 }
 impl PreparedResponse<'_, '_> {
     /// Read-only descriptor snapshot. Free rejects it until publication.
@@ -374,7 +389,7 @@ impl PreparedResponse<'_, '_> {
     }
     /// Complete temporary reservation, including explicit control descriptors.
     pub fn reserved_bytes(&self) -> usize {
-        self.charge.bytes() + size_of::<QueryExternalReservation<'_, '_>>()
+        self.charge.reserved_bytes()
     }
     /// Infallible fixed-metadata publication. Caller establishes the authentic
     /// successful outcome. No registry/fallible gate, allocation, payload copy
@@ -389,16 +404,16 @@ impl PreparedResponse<'_, '_> {
         unsafe {
             let charge = std::ptr::read(&prepared.charge);
             let node = prepared.node.as_ptr();
+            (*node).engine = Some(charge.detach());
             outcome.apply(&mut *(*node).root.get());
             let root = *(*node).root.get();
             (*node).published.store(true, Ordering::Release);
-            drop(charge);
             root
         }
     }
     /// Detaches the still-private owner from its query before a possibly
     /// durable commit, exactly as core's `UnsettledWriteResult` does: the
-    /// query charge is released here and the registered node stays private,
+    /// query-local charge is released; shared backing stays with the node,
     /// so free keeps refusing it. No allocation or registry gate occurs.
     /// Native write callers must supply sorted, unique entity pools.
     pub(crate) fn detach(self) -> PendingResponse {
@@ -410,7 +425,9 @@ impl PreparedResponse<'_, '_> {
             registry: prepared.registry,
             node: prepared.node,
         };
-        drop(charge);
+        unsafe {
+            (*prepared.node.as_ptr()).engine = Some(charge.detach());
+        }
         pending
     }
 }
@@ -422,7 +439,8 @@ impl Drop for PreparedResponse<'_, '_> {
 
 /// Registered, still-private C owner of a write result whose outcome is not
 /// known yet. It has no query, store, snapshot or caller lifetime; its query
-/// charge was released at detach. Free rejects it (`InvalidOwner`) until the
+/// local charge was released at detach; shared backing stays charged.
+/// Free rejects it (`InvalidOwner`) until the
 /// coordinator's infallible settle publishes it. Drop aborts: the node is
 /// unlinked and both allocations are released, as for a prepared owner.
 /// Settlement stays on the creating thread; cross-thread use requires an
