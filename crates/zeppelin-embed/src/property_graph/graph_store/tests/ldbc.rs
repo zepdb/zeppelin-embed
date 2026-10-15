@@ -607,3 +607,64 @@ fn ze455_tail_mutations_reopen_with_bounded_key_matching() {
         );
     }
 }
+
+#[test]
+fn ze283_checkpoint_open_work_scales_with_relationships() {
+    let mut measurements = Vec::new();
+    for count in [32, 64] {
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("graph");
+        let store = Store::create_graph(&path, options(), None).unwrap();
+        let source = node_id(&create_node(&store, "source", 1), 0);
+        let target = node_id(&create_node(&store, "target", 1), 0);
+        // Fixed-size commits make artifact count grow with relationship count.
+        // Capture only open, excluding per-commit marking and census work.
+        for index in 0..count {
+            let key = format!("rel-{index:04}");
+            store
+                .graph_apply(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Relationship, "app", &key).unwrap(),
+                        revision: revision(1),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Relationship {
+                            source: NodeRef::Existing(source),
+                            target: NodeRef::Existing(target),
+                            relationship_type: GraphName::new("EDGE").unwrap(),
+                            properties: &[],
+                        }),
+                    }],
+                    &control(),
+                )
+                .unwrap();
+        }
+        store.checkpoint_native_graph(&control()).unwrap();
+        drop(store);
+        capture::start();
+        let start = std::time::Instant::now();
+        let reopened = Store::open(&path, options()).unwrap();
+        let elapsed = start.elapsed();
+        let report = capture::take();
+        let (_, work) = report
+            .phases
+            .iter()
+            .find(|(phase, _)| *phase == "checkpoint_descriptor_comparisons")
+            .unwrap();
+        let (open_work, _, _, _) = crate::lifecycle::native_graph::open_metrics_for_test();
+        println!(
+            "ZE283 relationships={count} checkpoint_descriptor_comparisons={work} open_work={open_work} open_ms={:.3}",
+            elapsed.as_secs_f64() * 1000.0
+        );
+        assert!(*work > 0);
+        measurements.push(*work);
+        drop(reopened);
+    }
+    println!(
+        "ZE283 checkpoint inventory doubling ratio={:.6}",
+        measurements[1] as f64 / measurements[0] as f64
+    );
+    assert!(
+        measurements[1] * 10 <= measurements[0] * 25,
+        "checkpoint open inventory work must grow at most 2.5x for 2x relationships: {measurements:?}"
+    );
+}

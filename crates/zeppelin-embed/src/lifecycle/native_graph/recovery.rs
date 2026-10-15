@@ -68,6 +68,7 @@ thread_local! {
     /// producer's proof and the recovery retrace. ZE-163 gates the count.
     static STATE_TRACE_COUNT: Cell<u64> = const { Cell::new(0) };
     static SERIAL_PROBES: Cell<u64> = const { Cell::new(0) };
+    static CHECKPOINT_DESCRIPTOR_COMPARISONS: Cell<u64> = const { Cell::new(0) };
     static FENCE_CANDIDATES: Cell<u64> = const { Cell::new(0) };
     static OPEN_METRICS: Cell<(u64, usize, u64, u64)> = const { Cell::new((0, 0, 0, 0)) };
 }
@@ -152,6 +153,13 @@ fn reopen_phase(name: &'static str, start: &mut std::time::Instant) {
 #[cfg(test)]
 pub(crate) fn serial_probes_for_test() -> u64 {
     SERIAL_PROBES.with(Cell::get)
+}
+
+// Count actual descriptor comparisons, including work outside TreeResources.
+fn checkpoint_descriptor_comparison<T>(result: T) -> T {
+    #[cfg(all(test, feature = "graph-cypher"))]
+    CHECKPOINT_DESCRIPTOR_COMPARISONS.with(|count| count.set(count.get() + 1));
+    result
 }
 
 fn canonical_payload<S: BlockSource>(
@@ -5008,6 +5016,8 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             if state.text.is_some() || state.vector.is_some() {
                 return Err(TreeError::Invalid("retired sparse search roots"));
             }
+            #[cfg(all(test, feature = "graph-cypher"))]
+            CHECKPOINT_DESCRIPTOR_COMPARISONS.with(|count| count.set(0));
             let mut checkpoint_descriptors =
                 StorageBuffer::<ArtifactDescriptor>::new(self.memory, self.artifact_capacity)?;
             let inventory_count = state.prepared_inventories.len().map_err(|error| {
@@ -5027,14 +5037,15 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                 for position in 0..inventory.count {
                     tree.step(1)?;
                     let descriptor = inventory.descriptor(position)?;
-                    let duplicate = checkpoint_descriptors
-                        .as_slice()
-                        .iter()
-                        .find(|previous| previous.artifact == descriptor.artifact);
+                    let duplicate = checkpoint_descriptors.as_slice().iter().find(|previous| {
+                        checkpoint_descriptor_comparison(previous.artifact == descriptor.artifact)
+                    });
                     if duplicate.is_some_and(|previous| *previous != descriptor)
                         || checkpoint_descriptors.as_slice().iter().any(|previous| {
-                            previous.serial == descriptor.serial
-                                && previous.artifact != descriptor.artifact
+                            checkpoint_descriptor_comparison(
+                                previous.serial == descriptor.serial
+                                    && previous.artifact != descriptor.artifact,
+                            )
                         })
                     {
                         return Err(TreeError::Invalid(
@@ -5046,14 +5057,15 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                     }
                     checkpoint_descriptors.push(descriptor)?;
                 }
-                let duplicate = checkpoint_descriptors
-                    .as_slice()
-                    .iter()
-                    .find(|previous| previous.artifact == required.object.artifact);
+                let duplicate = checkpoint_descriptors.as_slice().iter().find(|previous| {
+                    checkpoint_descriptor_comparison(previous.artifact == required.object.artifact)
+                });
                 if duplicate.is_some_and(|previous| *previous != required.object)
                     || checkpoint_descriptors.as_slice().iter().any(|previous| {
-                        previous.serial == required.object.serial
-                            && previous.artifact != required.object.artifact
+                        checkpoint_descriptor_comparison(
+                            previous.serial == required.object.serial
+                                && previous.artifact != required.object.artifact,
+                        )
                     })
                 {
                     return Err(TreeError::Invalid(
@@ -5090,9 +5102,14 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                         ));
                     }
                 }
-                if let Ok(index) = checkpoint_descriptors
+                let prepared = checkpoint_descriptors
                     .as_slice()
-                    .binary_search_by_key(&rooted.object.artifact, |descriptor| descriptor.artifact)
+                    .binary_search_by(|descriptor| {
+                        checkpoint_descriptor_comparison(
+                            descriptor.artifact.cmp(&rooted.object.artifact),
+                        )
+                    });
+                if let Ok(index) = prepared
                     && checkpoint_descriptors
                         .as_slice()
                         .get(index)
@@ -5102,11 +5119,10 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                         "checkpoint rooted/prepared descriptor contradiction",
                     ));
                 }
-                if !self
-                    .checkpoint_allocations
-                    .iter()
-                    .any(|descriptor| descriptor.artifact == rooted.object.artifact)
-                {
+                // Inventory keys are unique artifact IDs. Only the already
+                // sorted prepared prefix can overlap this row; earlier rooted
+                // rows cannot. Do not scan the growing union for every row.
+                if prepared.is_err() {
                     if self.checkpoint_allocations.len() == self.artifact_capacity {
                         return Err(TreeError::Memory);
                     }
@@ -5114,15 +5130,21 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                 }
                 for descriptor in checkpoint_descriptors.as_slice() {
                     tree.step(1)?;
-                    if descriptor.serial == rooted.object.serial
-                        && descriptor.artifact != rooted.object.artifact
-                    {
+                    if checkpoint_descriptor_comparison(
+                        descriptor.serial == rooted.object.serial
+                            && descriptor.artifact != rooted.object.artifact,
+                    ) {
                         return Err(TreeError::Invalid(
                             "checkpoint rooted/prepared serial alias",
                         ));
                     }
                 }
             }
+            #[cfg(all(test, feature = "graph-cypher"))]
+            crate::property_graph::storage::preparation_work_capture::phase(
+                "checkpoint_descriptor_comparisons",
+                CHECKPOINT_DESCRIPTOR_COMPARISONS.with(Cell::get),
+            );
             Ok::<(), TreeError>(())
         })();
         resources.charge(tree.work())?;
