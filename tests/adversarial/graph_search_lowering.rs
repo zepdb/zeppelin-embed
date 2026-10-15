@@ -41,6 +41,8 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.search-lowering.comparator.fire",
     "property-graph.search-lowering.release",
     "property-graph.search-lowering.case-coalesce",
+    "property-graph.search-lowering.labelled-scan",
+    "property-graph.search-lowering.unlabelled-scan",
 ];
 
 #[derive(Default, Debug)]
@@ -279,10 +281,43 @@ fn ze438_search_lowering_case_coalesce_requests() {
     oracle::check_pair(0, &observed).unwrap();
 }
 
+#[test]
+fn ze456_unlabelled_search_lowering_queries() {
+    for mode in 0..4 {
+        let query = unlabelled_pair_query(mode, "k");
+        let observed = trial(0, &query, None, None, false)
+            .unwrap()
+            .observation
+            .unwrap();
+        oracle::check_pair(mode, &observed).unwrap();
+    }
+    let observed = trial(0, unlabelled_global_query(), None, None, false)
+        .unwrap()
+        .observation
+        .unwrap();
+    oracle::check_global(&observed).unwrap();
+}
+
+fn unlabelled_pair_query(mode: u8, alias: &str) -> String {
+    pair_query_with_scan(mode, alias, "MATCH (prior)")
+}
+
+fn unlabelled_global_query() -> &'static str {
+    "MATCH (n) WITH collect(DISTINCT n) AS eligible CALL ze.text_search('x',1,eligible) YIELD node,score RETURN node,score LIMIT 0"
+}
+
 fn pair_query(mode: u8, alias: &str) -> String {
+    pair_query_with_scan(
+        mode,
+        alias,
+        "MATCH (prior:Document) WHERE ze.node_id(prior) <= 'ffffffffffffffffffffffffffffffff'",
+    )
+}
+
+fn pair_query_with_scan(mode: u8, alias: &str, scan: &str) -> String {
     let spelling = ["default", "auto", "exact", "scan"][mode as usize];
     format!(
-        "MATCH (prior:Document) WHERE ze.node_id(prior) <= 'ffffffffffffffffffffffffffffffff' WITH prior,1+1 AS {alias} CALL ze.vector_search([coalesce(null,{alias}),CASE {alias} WHEN 2 THEN {alias} ELSE 2 END],CASE WHEN true THEN coalesce(2,{alias}) ELSE 1 END,'{spelling}',[]) YIELD node,distance CALL ze.hybrid_search([CASE WHEN false THEN 0 ELSE {alias} END,2],coalesce('x','y'),CASE {alias} WHEN 2 THEN {alias} ELSE 1 END,'auto') YIELD node AS other,score,vector_distance,lexical_score RETURN prior,node,distance,other,score,vector_distance,lexical_score LIMIT 0"
+        "{scan} WITH prior,1+1 AS {alias} CALL ze.vector_search([coalesce(null,{alias}),CASE {alias} WHEN 2 THEN {alias} ELSE 2 END],CASE WHEN true THEN coalesce(2,{alias}) ELSE 1 END,'{spelling}',[]) YIELD node,distance CALL ze.hybrid_search([CASE WHEN false THEN 0 ELSE {alias} END,2],coalesce('x','y'),CASE {alias} WHEN 2 THEN {alias} ELSE 1 END,'auto') YIELD node AS other,score,vector_distance,lexical_score RETURN prior,node,distance,other,score,vector_distance,lexical_score LIMIT 0"
     )
 }
 
@@ -431,13 +466,34 @@ fn trial(
 }
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, String> {
+    let mut report = ProbeReport::default();
+    for unlabelled in [false, true] {
+        let shape = probe_shape(seed, coverage, unlabelled)?;
+        coverage.hit(REQUIRED_COVERAGE[if unlabelled { 13 } else { 12 }]);
+        report.observations += shape.observations;
+        report.fault_fires += shape.fault_fires;
+        report.clean_controls += shape.clean_controls;
+        report.comparator_fires += shape.comparator_fires;
+    }
+    Ok(report)
+}
+
+fn probe_shape(
+    seed: u64,
+    coverage: &mut CoverageRegistry,
+    unlabelled: bool,
+) -> Result<ProbeReport, String> {
     let mut rng = super::test_support::seeded_rng("property_graph::search_lowering_probe", seed);
     let alias = format!("k_{}", rng.next_u64());
     let selected_mode = (rng.next_u64() % 4) as u8;
     let mut report = ProbeReport::default();
     let mut selected = None;
     for request_mode in 0..4 {
-        let query = pair_query(request_mode, &alias);
+        let query = if unlabelled {
+            unlabelled_pair_query(request_mode, &alias)
+        } else {
+            pair_query(request_mode, &alias)
+        };
         let observed = trial(seed, &query, None, None, false)?
             .observation
             .ok_or_else(|| "PG20 pair observation absent".to_owned())?;
@@ -449,7 +505,12 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
     }
     coverage.hit(REQUIRED_COVERAGE[0]);
     coverage.hit(REQUIRED_COVERAGE[11]);
-    let global = trial(seed, global_query(), None, None, false)?
+    let global_query = if unlabelled {
+        unlabelled_global_query()
+    } else {
+        global_query()
+    };
+    let global = trial(seed, global_query, None, None, false)?
         .observation
         .ok_or_else(|| "PG20 global observation absent".to_owned())?;
     oracle::check_global(&global)?;

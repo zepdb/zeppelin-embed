@@ -534,6 +534,8 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.search-lowering.comparator.fire",
     "property-graph.search-lowering.release",
     "property-graph.search-lowering.case-coalesce",
+    "property-graph.search-lowering.labelled-scan",
+    "property-graph.search-lowering.unlabelled-scan",
     "property-graph.mutation-lowering.create-shapes",
     "property-graph.mutation-lowering.create-dependencies",
     "property-graph.mutation-lowering.item-order",

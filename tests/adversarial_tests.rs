@@ -19667,7 +19667,7 @@ fn property_graph_search_lowering_probe_checks_typed_plans_and_inflight_faults()
                 report.clean_controls,
                 report.comparator_fires
             ),
-            (5, 2, 2, 7)
+            (10, 4, 4, 14)
         );
         for key in adversarial::graph_search_lowering::REQUIRED_COVERAGE {
             assert!(coverage.count(key) > 0, "{key}");
