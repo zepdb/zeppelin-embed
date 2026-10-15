@@ -1122,6 +1122,77 @@ fn ze446_default_plain_writes_recover_after_refusal() {
     store.close().unwrap();
 }
 
+/// Separate ordinary publication from ZE-446's full-maintenance debt exception.
+#[test]
+fn ze306_write_census_is_only_reclaim_debt() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = super::tempfile::tempdir().unwrap();
+    let mut debt_census = Vec::new();
+    for commits in [16, 128] {
+        let store = Store::create_native_graph(
+            parent.path().join(commits.to_string()),
+            durable_options(),
+            None,
+        )
+        .unwrap();
+        let mut folds = 0;
+        for index in 0..commits {
+            capture::start();
+            commit_probe_node(&store, index);
+            let report = capture::take();
+            assert_eq!(report.census_rows, 0, "commit {index}: {report:?}");
+            assert!(report.protected_mark.is_empty(), "{report:?}");
+            assert!(!report.phases.iter().any(|(phase, _)| matches!(
+                *phase,
+                "maintenance-census-end" | "maintenance-proof-end"
+            )));
+            folds += report
+                .phases
+                .iter()
+                .filter(|(phase, _)| *phase == "maintenance-start")
+                .count();
+        }
+        if commits == 128 {
+            assert!(folds > 0, "ordinary-write observation must include folds");
+        }
+        // Exercise the real ZE-446 recovery path without thousands of writes.
+        // The estimate is conservative admission bookkeeping, not graph state.
+        store
+            .native_graph
+            .writer
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .retained_artifacts = crate::property_graph::storage::MAX_NATIVE_ARTIFACTS / 2;
+        capture::start();
+        commit_probe_node(&store, commits);
+        let report = capture::take();
+        let census_work: Vec<_> = report
+            .phases
+            .iter()
+            .filter(|(phase, _)| *phase == "maintenance-census-end")
+            .map(|(_, work)| *work)
+            .collect();
+        println!(
+            "ZE306 commits={commits} ordinary_census_rows=0 folds={folds} debt_census_rows={} debt_census_work={census_work:?} debt_protected_mark={:?}",
+            report.census_rows, report.protected_mark
+        );
+        assert!(
+            report.census_rows > 0,
+            "counter positive control: {report:?}"
+        );
+        assert!(!report.protected_mark.is_empty(), "{report:?}");
+        assert!(!census_work.is_empty(), "{report:?}");
+        debt_census.push(report.census_rows);
+        store.close().unwrap();
+    }
+    assert!(
+        debt_census[1] > debt_census[0],
+        "ZE-446 debt recovery still covers retained history: {debt_census:?}"
+    );
+}
+
 /// Owner-requested deterministic history curve; timing is supporting evidence.
 #[test]
 #[ignore = "ZE-290 release history qualification"]
