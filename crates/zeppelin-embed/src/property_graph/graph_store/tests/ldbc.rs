@@ -354,6 +354,64 @@ fn ze454_graph_only_folds_cannot_suppress_document_wal_checkpoint() {
 }
 
 #[test]
+fn ze454_automatic_checkpoint_without_wal_progress_refuses() {
+    use crate::ingest::DeleteBatch;
+    use crate::lifecycle::native_graph::WAL_CHECKPOINT_LIMIT;
+    let parent = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(parent.path().join("graph"), options(), None).unwrap();
+    create_node(&store, "before-delete", 1);
+    // A document-only record advances durable_end beyond the last graph
+    // record, while leaving the active segment empty. Neither checkpoint
+    // watermark pair can release this WAL.
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(999)]))
+        .unwrap();
+    assert!(
+        store
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .segment
+            .is_empty()
+    );
+    let before = store.stats().unwrap().wal_bytes;
+    assert!(before > 0);
+    let result = WAL_CHECKPOINT_LIMIT.with(|limit| {
+        let previous = limit.replace(before);
+        let result = store.checkpoint_native_graph_on_open();
+        limit.set(previous);
+        result
+    });
+    // Exercise one automatic checkpoint first: RED fails here without ever
+    // entering the unbounded mutation retry loop.
+    assert!(
+        matches!(result, Err(NativeGraphError::WalTailBoundExceeded)),
+        "{result:?}"
+    );
+    assert_eq!(store.stats().unwrap().wal_bytes, before);
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let writes = [StructuredWrite {
+        key: node_key("after-delete"),
+        revision: revision(1),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    }];
+    let error = WAL_CHECKPOINT_LIMIT
+        .with(|limit| {
+            let previous = limit.replace(before);
+            let result = store.graph_apply(&writes, &control());
+            limit.set(previous);
+            result
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), GraphStoreErrorKind::Limit);
+    assert!(error.nothing_committed());
+    assert_eq!(store.stats().unwrap().wal_bytes, before);
+}
+
+#[test]
 fn ze455_recovery_limit_is_not_corruption() {
     use crate::lifecycle::native_graph::recovery::RECOVERY_WORK_LIMIT;
     let parent = tempfile::tempdir().unwrap();

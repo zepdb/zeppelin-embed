@@ -43,9 +43,9 @@ fn blob(v: &[u8], w: &mut Writer<'_>, r: &mut WalResources<'_>) -> Result<(), Wa
     w.put(v, r)
 }
 fn text<'a>(rd: &mut Reader<'a>, r: &mut WalResources<'_>) -> Result<&'a str, WalError> {
-    let n = usize::try_from(rd.u64(r)?).map_err(|_| WalError::Capacity)?;
+    let n = usize::try_from(rd.u64(r)?).map_err(|_| WalError::Malformed)?;
     if n > MAX_GRAPH_INPUT_BYTES {
-        return Err(WalError::Capacity);
+        return Err(WalError::Malformed);
     }
     let bytes = rd.take(n, r)?;
     let mut remaining = bytes;
@@ -316,9 +316,9 @@ pub(super) fn read<'a>(
                 return Err(WalError::Malformed);
             }
             rd.zero(6, r)?;
-            let n = usize::try_from(rd.u64(r)?).map_err(|_| WalError::Capacity)?;
+            let n = usize::try_from(rd.u64(r)?).map_err(|_| WalError::Malformed)?;
             if n > MAX_GRAPH_INPUT_BYTES {
-                return Err(WalError::Capacity);
+                return Err(WalError::Malformed);
             }
             let mut pr = Reader {
                 bytes: rd.take(n, r)?,

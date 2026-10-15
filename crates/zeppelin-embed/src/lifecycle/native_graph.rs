@@ -104,9 +104,9 @@ impl std::fmt::Display for NativeGraphError {
         match self {
             Self::Store(error) => error.fmt(f),
             Self::Ingest(error) => error.fmt(f),
-            Self::WalTailBoundExceeded => f.write_str(
-                "invalid native graph bundle: single native WAL envelope exceeds tail bound",
-            ),
+            Self::WalTailBoundExceeded => {
+                f.write_str("native graph retained WAL exceeds tail bound")
+            }
             Self::PreparedBaseChanged => {
                 f.write_str("invalid native graph bundle: prepared native base changed")
             }

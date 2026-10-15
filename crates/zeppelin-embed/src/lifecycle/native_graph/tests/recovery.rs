@@ -1451,6 +1451,65 @@ fn repair_wal_record(bytes: &mut [u8], offset: usize) {
         .copy_from_slice(&checksum.to_le_bytes());
 }
 
+#[test]
+fn ze455_decoded_over_length_wal_is_corrupt_on_reopen() {
+    // Mutation provenance length, then its application-key namespace length.
+    for length_offset in [8, 25] {
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("graph");
+        let store = Store::create_graph(&path, native_options(), None).unwrap();
+        commit_tail_test_node(&store, "over-length");
+        drop(store);
+        let wal = wal_path(&path);
+        let mut bytes = first_graph_envelope(&wal);
+        let payload_length = |bytes: &[u8], at: usize| {
+            u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap()) as usize
+        };
+        let mutation = 72 + payload_length(&bytes, 0);
+        assert_eq!(
+            u16::from_le_bytes(bytes[mutation + 4..mutation + 6].try_into().unwrap()),
+            2
+        );
+        let offset = mutation + 64 + length_offset;
+        bytes[offset..offset + 8].copy_from_slice(
+            &(crate::property_graph::MAX_GRAPH_INPUT_BYTES as u64 + 1).to_le_bytes(),
+        );
+        repair_wal_record(&mut bytes, mutation);
+        let mut commit = mutation + 72 + payload_length(&bytes, mutation);
+        while u16::from_le_bytes(bytes[commit + 4..commit + 6].try_into().unwrap()) != 6 {
+            commit += 72 + payload_length(&bytes, commit);
+        }
+        let digest = xxhash_rust::xxh3::xxh3_64(&bytes[..commit]);
+        bytes[commit + 72..commit + 80].copy_from_slice(&digest.to_le_bytes());
+        repair_wal_record(&mut bytes, commit);
+        replace_first_graph_envelope(&wal, &bytes);
+        let mut cancelled = || false;
+        let mut resources = crate::property_graph::wal::WalResources::new(
+            u64::MAX,
+            crate::property_graph::wal::STACK_RESERVATION_BYTES,
+            &mut cancelled,
+        )
+        .unwrap();
+        let decoded = crate::property_graph::wal::validate_envelope_framing(&bytes, &mut resources)
+            .expect_err("invalid decoded length");
+        let error =
+            super::super::recovery::store_error(super::super::NativeGraphError::Wal(decoded));
+        assert_eq!(
+            error.kind(),
+            crate::lifecycle::StoreErrorKind::Corrupt,
+            "{error}"
+        );
+        let error = Store::open(&path, native_options())
+            .err()
+            .expect("invalid decoded length");
+        assert_eq!(
+            error.kind(),
+            crate::lifecycle::StoreErrorKind::Corrupt,
+            "{error}"
+        );
+    }
+}
+
 fn omit_second_mutation_with_valid_framing(path: &Path) {
     let mut bytes = first_graph_envelope(path);
     let envelope = 0;

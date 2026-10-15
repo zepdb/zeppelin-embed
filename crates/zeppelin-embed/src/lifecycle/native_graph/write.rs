@@ -727,10 +727,23 @@ fn checkpoint_current_with_documents(
     control: &crate::lifecycle::QueryControl,
     seal_documents: bool,
 ) -> Result<(), NativeGraphError> {
+    let retained_before = if seal_documents {
+        store.accounting.audit()?.wal_bytes
+    } else {
+        0
+    };
     let result =
         checkpoint_current_inner(store, writer, admitted, resources, control, seal_documents);
     if result.is_err() && !matches!(result, Err(NativeGraphError::StalePreparation)) {
         writer.checkpoint_failed = true;
+    }
+    // Graph counters reset even when document watermarks pin the WAL. An
+    // automatic checkpoint must release bytes before the write can retry.
+    if result.is_ok() && seal_documents {
+        let retained = store.accounting.audit()?.wal_bytes;
+        if retained >= wal_checkpoint_limit() && retained >= retained_before {
+            return Err(NativeGraphError::WalTailBoundExceeded);
+        }
     }
     result
 }

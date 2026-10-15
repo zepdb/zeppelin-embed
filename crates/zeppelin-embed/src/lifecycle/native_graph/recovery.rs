@@ -6136,6 +6136,9 @@ pub(crate) fn store_error(error: NativeGraphError) -> crate::lifecycle::StoreErr
         NativeGraphError::Read(TreeError::Work) | NativeGraphError::Wal(WalError::WorkLimit) => {
             crate::lifecycle::StoreError::RecoveryLimit { component: "work" }
         }
+        NativeGraphError::WalTailBoundExceeded => crate::lifecycle::StoreError::RecoveryLimit {
+            component: "retained WAL",
+        },
         NativeGraphError::Read(TreeError::Memory)
         | NativeGraphError::Catalog(CatalogError::Capacity)
         | NativeGraphError::Wal(WalError::Capacity)
