@@ -252,3 +252,300 @@ fn ze453_retained_wal_refuses_before_preparation() {
     }
     panic!("fixture did not exhaust resident headroom");
 }
+
+#[test]
+fn ze454_write_only_mixed_graph_bounds_retained_wal() {
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = Store::create_graph(&path, options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let document = [GraphNodeDocument {
+        item_index: 0,
+        document: IngestDocument::new(
+            DocumentVersion::new(DocId::new(91), Revision::new(1)),
+            vec![1.0],
+        ),
+    }];
+    let writes = [StructuredWrite {
+        key: node_key("bound"),
+        revision: revision(1),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    }];
+    store
+        .graph_apply(
+            GraphBatch::with_node_documents(&writes, &document),
+            &control(),
+        )
+        .unwrap();
+    let first = store.stats().unwrap().wal_bytes;
+    let mut peak = first;
+    for batch in 1..=192 {
+        let key = format!("{batch}-{}", "k".repeat(128));
+        let writes = [StructuredWrite {
+            key: node_key(&key),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        }];
+        store.graph_apply(&writes, &control()).unwrap();
+        let retained = store.stats().unwrap().wal_bytes;
+        peak = peak.max(retained);
+        if batch % 64 == 0 {
+            println!("ZE454 batch={batch} retained={retained} peak={peak} first={first}");
+            assert!(
+                retained <= 32 * 1024,
+                "checkpoint must release the absorbed WAL"
+            );
+        }
+        assert!(
+            retained <= 2 * 1024 * 1024,
+            "write-only retained WAL must stay bounded"
+        );
+    }
+    drop(store);
+    let reopened = Store::open(&path, options()).unwrap();
+    assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+}
+
+#[test]
+fn ze454_graph_only_folds_cannot_suppress_document_wal_checkpoint() {
+    use crate::lifecycle::native_graph::WAL_CHECKPOINT_LIMIT;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = Store::create_graph(&path, options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    WAL_CHECKPOINT_LIMIT.with(|limit| limit.set(32 * 1024));
+    let mut peak = 0;
+    for batch in 1..=96 {
+        let key = format!("{batch}-{}", "k".repeat(128));
+        let documents = [GraphNodeDocument {
+            item_index: 0,
+            document: IngestDocument::new(
+                DocumentVersion::new(DocId::new(20_000 + batch), Revision::new(1)),
+                vec![1.0],
+            ),
+        }];
+        let writes = [StructuredWrite {
+            key: node_key(&key),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        }];
+        store
+            .graph_apply(
+                GraphBatch::with_node_documents(&writes, &documents),
+                &control(),
+            )
+            .unwrap();
+        // Inventory folds and explicit graph checkpoints reset graph counters
+        // without consuming active document rows. They cannot suppress the
+        // physical WAL threshold on a subsequent ordinary write.
+        store.checkpoint_native_graph(&control()).unwrap();
+        let retained = store.stats().unwrap().wal_bytes;
+        peak = peak.max(retained);
+        assert!(retained <= 64 * 1024, "batch={batch} retained={retained}");
+    }
+    WAL_CHECKPOINT_LIMIT.with(|limit| limit.set(16 * 1024 * 1024));
+    println!("ZE454 repeated graph folds batches=96 retained_peak={peak}");
+    drop(store);
+    let reopened = Store::open(&path, options()).unwrap();
+    assert_eq!(reopened.count_documents(None, None).unwrap().count, 96);
+}
+
+#[test]
+fn ze455_recovery_limit_is_not_corruption() {
+    use crate::lifecycle::native_graph::recovery::RECOVERY_WORK_LIMIT;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = Store::create_graph(&path, options(), None).unwrap();
+    create_node(&store, "recover", 1);
+    drop(store);
+    RECOVERY_WORK_LIMIT.with(|limit| limit.set(Some(1)));
+    let error = Store::open(&path, options())
+        .err()
+        .expect("tight recovery work must refuse");
+    RECOVERY_WORK_LIMIT.with(|limit| limit.set(None));
+    println!("ZE455 kind={:?} error={error}", error.kind());
+    assert_eq!(error.kind(), StoreErrorKind::BudgetExceeded);
+    let reopened =
+        Store::open(&path, options()).expect("valid store reopens with its required work");
+    assert!(reopened.admit_native_read().is_ok());
+}
+
+#[test]
+fn ze454_reopen_releases_legacy_pinned_wal() {
+    use crate::lifecycle::native_graph::WAL_CHECKPOINT_LIMIT;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = Store::create_graph(&path, options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let documents = [GraphNodeDocument {
+        item_index: 0,
+        document: IngestDocument::new(
+            DocumentVersion::new(DocId::new(91), Revision::new(1)),
+            vec![1.0],
+        ),
+    }];
+    let writes = [StructuredWrite {
+        key: node_key("bound"),
+        revision: revision(1),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    }];
+    store
+        .graph_apply(
+            GraphBatch::with_node_documents(&writes, &documents),
+            &control(),
+        )
+        .unwrap();
+    // Explicit folds reproduce old writers: graph watermarks advance while
+    // active document rows keep all WAL bytes pinned.
+    for batch in 0..32 {
+        create_node(&store, &format!("legacy-{batch}"), 1);
+        store.checkpoint_native_graph(&control()).unwrap();
+    }
+    let before = store.stats().unwrap().wal_bytes;
+    assert!(before > 32 * 1024);
+    drop(store);
+    WAL_CHECKPOINT_LIMIT.with(|limit| limit.set(32 * 1024));
+    let reopened = Store::open(&path, options());
+    WAL_CHECKPOINT_LIMIT
+        .with(|limit| limit.set(crate::property_graph::wal::MAX_ENVELOPE_BYTES as u64));
+    let reopened = reopened.unwrap();
+    let after = reopened.stats().unwrap().wal_bytes;
+    println!("ZE454 legacy retained before={before} after={after}");
+    assert_eq!(
+        after, 0,
+        "writable reopen must discharge an oversized absorbed log"
+    );
+    assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+}
+
+#[test]
+fn ze455_large_directory_reopens_with_bounded_validation_work() {
+    use crate::lifecycle::native_graph::recovery::RECOVERY_WORK_LIMIT;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = Store::create_graph(&path, options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let mut nodes = Vec::new();
+    for first in (0..512).step_by(128) {
+        let keys: Vec<_> = (first..first + 128).map(|n| n.to_string()).collect();
+        let writes: Vec<_> = keys
+            .iter()
+            .map(|key| StructuredWrite {
+                key: node_key(key),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        let result = store.graph_apply(&writes, &control()).unwrap();
+        nodes.extend((0..128).map(|i| node_id(&result, i)));
+    }
+    let keys: Vec<_> = (0..512).map(|n| format!("rel-{n}")).collect();
+    let writes: Vec<_> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Relationship, "app", key).unwrap(),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Relationship {
+                source: NodeRef::Existing(nodes[i]),
+                target: NodeRef::Existing(nodes[(i + 1) % 512]),
+                relationship_type: GraphName::new("EDGE").unwrap(),
+                properties: &[],
+            }),
+        })
+        .collect();
+    for chunk in writes.chunks(128) {
+        store.graph_apply(chunk, &control()).unwrap();
+    }
+    store.checkpoint_native_graph(&control()).unwrap();
+    drop(store);
+    RECOVERY_WORK_LIMIT.with(|limit| limit.set(Some(25_165_824)));
+    capture::start();
+    let reopened = Store::open(&path, options());
+    let report = capture::take();
+    println!(
+        "ZE455 recovery directory_work={} rejected={:?}",
+        report.directory_work, report.rejected
+    );
+    RECOVERY_WORK_LIMIT.with(|limit| limit.set(None));
+    let reopened = reopened
+        .expect("engine-written relationship directory must reopen within its validation work");
+    let (work, _, candidates, _) = crate::lifecycle::native_graph::open_metrics_for_test();
+    println!(
+        "ZE455 directory nodes=512 relationships=512 work={work} fence_candidates={candidates}"
+    );
+    assert!(work <= 25_165_824);
+    assert_eq!(candidates, 1024);
+    for i in [0, 511] {
+        let result = reopened.graph_apply(&writes[i..i + 1], &control()).unwrap();
+        assert_eq!(result.outcome(), GraphWriteOutcome::Replayed);
+    }
+}
+
+#[test]
+fn ze455_tail_mutations_reopen_with_bounded_key_matching() {
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = Store::create_graph(&path, options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let keys: Vec<_> = (0..2048).map(|n| format!("{n:04}")).collect();
+    let mut nodes = Vec::new();
+    for chunk in keys.chunks(128) {
+        let writes: Vec<_> = chunk
+            .iter()
+            .map(|key| StructuredWrite {
+                key: node_key(key),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        let result = store.graph_apply(&writes, &control()).unwrap();
+        nodes.extend((0..chunk.len()).map(|i| node_id(&result, i)));
+    }
+    store.checkpoint_native_graph(&control()).unwrap();
+    let writes: Vec<_> = keys
+        .iter()
+        .zip(&nodes)
+        .map(|(key, node)| StructuredWrite {
+            key: node_key(key),
+            revision: revision(2),
+            operation: StructuredOperation::Put(EntityId::Node(*node)),
+            image: Some(WriteImage::Node(&image)),
+        })
+        .collect();
+    assert!(matches!(
+        store.graph_apply(&writes, &control()).unwrap().outcome(),
+        GraphWriteOutcome::Committed { .. }
+    ));
+    drop(store);
+    capture::start();
+    let reopened = Store::open(&path, options());
+    let report = capture::take();
+    println!(
+        "ZE455 tail directory_work={} rejected={:?}",
+        report.directory_work, report.rejected
+    );
+    let reopened = reopened.expect("valid tail must reopen with bounded mutation-key matching");
+    let (work, _, _, _) = crate::lifecycle::native_graph::open_metrics_for_test();
+    println!("ZE455 tail nodes=2048 mutations=2048 work={work}");
+    assert!(
+        report.directory_work <= 100_000_000,
+        "tail matching must not scan every mutation for every stored key"
+    );
+    for i in [0, 2047] {
+        assert_eq!(
+            reopened
+                .graph_apply(&writes[i..i + 1], &control())
+                .unwrap()
+                .outcome(),
+            GraphWriteOutcome::Replayed
+        );
+    }
+}

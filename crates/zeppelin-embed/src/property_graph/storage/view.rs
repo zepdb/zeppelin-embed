@@ -52,6 +52,8 @@ pub(crate) use preparation_source::{
 pub(crate) use prepared::{GraphPreparation, PreparedGraphArtifacts, PreparedGraphFailure};
 #[cfg(feature = "graph-cypher")]
 pub(crate) use source::{NativeQuerySource, NativeReadCapability};
+#[cfg(feature = "graph-cypher")]
+pub(crate) use source::{PAGE_MEMO_BYTES, memo_bit};
 
 /// Source-bound live node returned only inside one admitted read scope.
 pub(crate) struct NodeView<'a, S: BlockSource> {

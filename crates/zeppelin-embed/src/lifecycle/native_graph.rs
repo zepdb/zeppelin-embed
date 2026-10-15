@@ -40,6 +40,8 @@ pub(crate) mod recovery;
 #[cfg(test)]
 pub(crate) use recovery::{open_metrics_for_test, serial_probes_for_test};
 mod write;
+#[cfg(test)]
+pub(crate) use write::WAL_CHECKPOINT_LIMIT;
 
 // The structured execution seam drives a `Mutate` occurrence through the real
 // writer admission, so it needs the consumer seam from outside this module.

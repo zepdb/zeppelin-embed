@@ -693,6 +693,22 @@ pub(super) fn commit_state(bundle: &NativeGraphBundle) -> CommitState<'_> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static WAL_CHECKPOINT_LIMIT: std::cell::Cell<u64> = const { std::cell::Cell::new(MAX_ENVELOPE_BYTES as u64) };
+}
+
+fn wal_checkpoint_limit() -> u64 {
+    #[cfg(not(test))]
+    {
+        MAX_ENVELOPE_BYTES as u64
+    }
+    #[cfg(test)]
+    {
+        WAL_CHECKPOINT_LIMIT.with(std::cell::Cell::get)
+    }
+}
+
 pub(super) fn checkpoint_current(
     store: &crate::lifecycle::Store,
     writer: &mut NativeWriter,
@@ -700,7 +716,19 @@ pub(super) fn checkpoint_current(
     resources: &GraphResources,
     control: &crate::lifecycle::QueryControl,
 ) -> Result<(), NativeGraphError> {
-    let result = checkpoint_current_inner(store, writer, admitted, resources, control);
+    checkpoint_current_with_documents(store, writer, admitted, resources, control, false)
+}
+
+fn checkpoint_current_with_documents(
+    store: &crate::lifecycle::Store,
+    writer: &mut NativeWriter,
+    admitted: &Arc<NativeGraphBundle>,
+    resources: &GraphResources,
+    control: &crate::lifecycle::QueryControl,
+    seal_documents: bool,
+) -> Result<(), NativeGraphError> {
+    let result =
+        checkpoint_current_inner(store, writer, admitted, resources, control, seal_documents);
     if result.is_err() && !matches!(result, Err(NativeGraphError::StalePreparation)) {
         writer.checkpoint_failed = true;
     }
@@ -713,6 +741,7 @@ fn checkpoint_current_inner(
     admitted: &Arc<NativeGraphBundle>,
     resources: &GraphResources,
     control: &crate::lifecycle::QueryControl,
+    seal_documents: bool,
 ) -> Result<(), NativeGraphError> {
     control
         .checkpoint()
@@ -753,18 +782,32 @@ fn checkpoint_current_inner(
         })
     })?;
     let active = active_slot
-        .as_mut()
+        .as_ref()
         .ok_or(crate::lifecycle::StoreError::Closed)?;
-    let (graph_mark, document_mark) = checkpoint_manifest_locked(
-        store,
-        admitted,
-        writer.last_graph_seq,
-        wal,
-        active,
-        objects,
-        resources,
-        store.vfs.as_ref(),
-    )?;
+    let sealed = seal_documents && !active.segment.is_empty();
+    let (graph_mark, document_mark) = if !sealed {
+        checkpoint_manifest_locked(
+            store,
+            admitted,
+            writer.last_graph_seq,
+            wal,
+            active_slot
+                .as_mut()
+                .ok_or(crate::lifecycle::StoreError::Closed)?,
+            objects,
+            resources,
+            store.vfs.as_ref(),
+        )?
+    } else {
+        // Document-bound graph nodes pin the document watermark. Seal their
+        // active rows with the graph roots before releasing any WAL bytes.
+        // This uses the existing manifest commit and crash-safe rotation.
+        if !store.native_graph.is_current_bundle(admitted)? {
+            return Err(NativeGraphError::StalePreparation);
+        }
+        store.seal_active_locked(wal, &mut active_slot, None, store.vfs.as_ref())?;
+        (wal.durable_end(), wal.durable_end())
+    };
     writer.complete_envelopes = 0;
     writer.envelope_bytes = 0;
     writer.checkpoint_failed = false;
@@ -778,7 +821,7 @@ fn checkpoint_current_inner(
         writer.durable_protected.clear();
     }
     writer.last_graph_seq = graph_mark;
-    if document_mark == graph_mark && document_mark == wal.durable_end() {
+    if !sealed && document_mark == graph_mark && document_mark == wal.durable_end() {
         wal.retire_visible_through(crate::wal::LogSeq::new(document_mark))?;
         wal.truncate_absorbed(
             store.vfs.as_ref(),
@@ -2491,8 +2534,15 @@ pub(super) fn commit_staged_batch_with_documents<'m>(
         return Err(NativeGraphError::CheckpointRequired);
     }
     let committed_tail = writer.envelope_bytes;
-    if writer.complete_envelopes >= 64 || committed_tail >= MAX_ENVELOPE_BYTES {
-        return match checkpoint_current(store, writer, admitted, shared, control) {
+    // Inventory folds can reset graph counters while document rows still pin
+    // the shared WAL. Its retained bytes independently require a checkpoint.
+    if writer.complete_envelopes >= 64
+        || committed_tail >= MAX_ENVELOPE_BYTES
+        || store.accounting.audit()?.wal_bytes >= wal_checkpoint_limit()
+    {
+        return match checkpoint_current_with_documents(
+            store, writer, admitted, shared, control, true,
+        ) {
             Ok(()) | Err(NativeGraphError::StalePreparation) => Ok(CommitStep::Checkpointed),
             Err(error) => Err(error),
         };
@@ -2759,7 +2809,7 @@ pub(super) fn commit_staged_batch_with_documents<'m>(
         if !*allow_pending_checkpoint {
             return Err(NativeGraphError::WalTailBoundExceeded);
         }
-        match checkpoint_current(store, writer, admitted, shared, control) {
+        match checkpoint_current_with_documents(store, writer, admitted, shared, control, true) {
             Ok(()) => {}
             Err(NativeGraphError::StalePreparation) => return Ok(CommitStep::Checkpointed),
             Err(error) => return Err(error),
@@ -3368,6 +3418,24 @@ impl crate::lifecycle::Store {
         &self,
         control: &crate::lifecycle::QueryControl,
     ) -> Result<(), NativeGraphError> {
+        self.checkpoint_native_graph_with_documents(control, false)
+    }
+
+    pub(crate) fn checkpoint_native_graph_on_open(&self) -> Result<(), NativeGraphError> {
+        if self.accounting.audit()?.wal_bytes < wal_checkpoint_limit() {
+            return Ok(());
+        }
+        self.checkpoint_native_graph_with_documents(
+            &crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()),
+            true,
+        )
+    }
+
+    fn checkpoint_native_graph_with_documents(
+        &self,
+        control: &crate::lifecycle::QueryControl,
+        seal_documents: bool,
+    ) -> Result<(), NativeGraphError> {
         self.native_graph.require_writable()?;
         let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
             NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
@@ -3384,7 +3452,14 @@ impl crate::lifecycle::Store {
             let lease = self.admit_native_read()?;
             let admitted = Arc::clone(lease.bundle());
             let resources = GraphResources::from_store(self)?;
-            match checkpoint_current(self, writer, &admitted, &resources, control) {
+            match checkpoint_current_with_documents(
+                self,
+                writer,
+                &admitted,
+                &resources,
+                control,
+                seal_documents,
+            ) {
                 Err(NativeGraphError::StalePreparation) => continue,
                 result => return result,
             }

@@ -9,7 +9,6 @@ use crate::property_graph::catalog::{
 };
 use crate::property_graph::resources::{GraphReservation, GraphResources};
 use crate::property_graph::staging::{BaseIdentity, WriteLimits, WriteMemory};
-use crate::property_graph::storage::NativeReadonlyMapping;
 use crate::property_graph::storage::adjacency::{
     Direction, RangeScratch, RelationshipRow, validate_range,
 };
@@ -34,6 +33,7 @@ use crate::property_graph::storage::tree::{
         TreeResources, lookup_entry, lookup_fence_entry, verify_directory,
     },
 };
+use crate::property_graph::storage::{NativeReadonlyMapping, PAGE_MEMO_BYTES, memo_bit};
 use crate::property_graph::wal::FramedCaptureStep;
 use crate::property_graph::wal::{
     ArtifactDescriptor, Change, ChangeReader, CommitState, InventoryChange, InventoryState,
@@ -56,6 +56,11 @@ use std::sync::Arc;
 use xxhash_rust::xxh3::Xxh3;
 
 const MAX_RECOVERED_DESCRIPTORS: usize = crate::property_graph::storage::MAX_NATIVE_ARTIFACTS;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static RECOVERY_WORK_LIMIT: Cell<Option<u64>> = const { Cell::new(None) };
+}
 
 #[cfg(any(test, feature = "test-seams"))]
 thread_local! {
@@ -743,9 +748,9 @@ pub(super) fn visit_captured_state(
 }
 
 struct RecoveryMappedArtifact {
-    artifact: ArtifactId,
     mapping: NativeReadonlyMapping,
     validation: ValidatedArtifact,
+    validated_pages: Option<Box<[Cell<u8>]>>,
 }
 
 struct RecoveryArtifactWindow<'source, 'store, 'm> {
@@ -763,6 +768,7 @@ struct RecoverySource<'a, 'm> {
     creation_serial: u64,
     memory: &'m StorageMemory<'m>,
     slots: StorageBuffer<'m, OnceCell<RecoveryMappedArtifact>>,
+    page_memo_charge: RefCell<StorageReservation<'m>>,
     scoped: Cell<bool>,
     /// At most one authenticated mapping retained for the current scoped
     /// traversal, keeping its open/authenticate cost at parity with the
@@ -828,6 +834,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             creation_serial: state.high_waters.creation_serial,
             memory,
             slots,
+            page_memo_charge: RefCell::new(memory.reserve(0)?),
             scoped: Cell::new(scoped),
             window: RefCell::new(None),
             retain_window: Cell::new(scoped),
@@ -959,7 +966,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         let slot = crate::property_graph::storage::mapping_slot(
             self.slots.as_slice(),
             reference.artifact,
-            |mapped| mapped.artifact,
+            |mapped| mapped.validation.artifact(),
             || resources.step(1),
         )?;
         if !self.scoped_blocks()
@@ -980,7 +987,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         }
         if let Ok(retained) = self.window.try_borrow()
             && let Some(mapped) = retained.as_ref()
-            && mapped.artifact == reference.artifact
+            && mapped.validation.artifact() == reference.artifact
         {
             let window = RecoveryArtifactWindow {
                 source: self,
@@ -1262,9 +1269,9 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             entries.push((
                 reference.object,
                 RecoveryMappedArtifact {
-                    artifact: reference.object.artifact,
                     mapping,
                     validation,
+                    validated_pages: None,
                 },
             ))?;
         }
@@ -1867,9 +1874,9 @@ impl RecoverySource<'_, '_> {
         drop(path_charge);
         let validation = self.admit_mapping(&mapping, reference, resources)?;
         Ok(RecoveryMappedArtifact {
-            artifact: reference.artifact,
             validation,
             mapping,
+            validated_pages: None,
         })
     }
 
@@ -1885,7 +1892,7 @@ impl RecoverySource<'_, '_> {
         let slot = crate::property_graph::storage::mapping_slot(
             self.slots.as_slice(),
             reference.artifact,
-            |mapped| mapped.artifact,
+            |mapped| mapped.validation.artifact(),
             || resources.step(1),
         )?;
         if let Some(mapped) = slot.and_then(OnceCell::get) {
@@ -1908,13 +1915,38 @@ impl RecoverySource<'_, '_> {
         let Some(slot) = crate::property_graph::storage::mapping_slot(
             self.slots.as_slice(),
             reference.artifact,
-            |mapped| mapped.artifact,
+            |mapped| mapped.validation.artifact(),
             || resources.step(1),
         )?
         else {
             return Ok(None);
         };
-        slot.set(self.open_mapping(reference, resources)?)
+        let mut mapped = self.open_mapping(reference, resources)?;
+        let mut charge = self.page_memo_charge.borrow_mut();
+        let prior = charge.bytes();
+        charge.resize(
+            prior
+                .checked_add(PAGE_MEMO_BYTES)
+                .ok_or(TreeError::Memory)?,
+        )?;
+        let mut pages = Vec::new();
+        pages
+            .try_reserve_exact(PAGE_MEMO_BYTES)
+            .map_err(|_| TreeError::Memory)?;
+        charge.resize(
+            prior
+                .checked_add(pages.capacity())
+                .ok_or(TreeError::Memory)?,
+        )?;
+        pages.resize_with(PAGE_MEMO_BYTES, || Cell::new(0));
+        mapped.validated_pages = Some(pages.into_boxed_slice());
+        charge.resize(
+            prior
+                .checked_add(PAGE_MEMO_BYTES)
+                .ok_or(TreeError::Memory)?,
+        )?;
+        drop(charge);
+        slot.set(mapped)
             .map_err(|_| TreeError::Invalid("native recovery source slot initialized twice"))?;
         self.filled.set(self.filled.get().saturating_add(1));
         #[cfg(any(test, feature = "test-seams"))]
@@ -1941,6 +1973,42 @@ impl RecoverySource<'_, '_> {
 }
 
 impl BlockSource for RecoverySource<'_, '_> {
+    fn page_validated(&self, reference: PhysicalRef) -> Result<bool, TreeError> {
+        let slot = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.validation.artifact(),
+            || Ok(()),
+        )?;
+        match slot
+            .and_then(OnceCell::get)
+            .and_then(|mapped| mapped.validated_pages.as_deref())
+        {
+            Some(pages) => {
+                let (byte, mask) = memo_bit(pages, reference)?;
+                Ok(byte.get() & mask != 0)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn mark_page_validated(&self, reference: PhysicalRef) -> Result<(), TreeError> {
+        let slot = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.validation.artifact(),
+            || Ok(()),
+        )?;
+        if let Some(pages) = slot
+            .and_then(OnceCell::get)
+            .and_then(|mapped| mapped.validated_pages.as_deref())
+        {
+            let (byte, mask) = memo_bit(pages, reference)?;
+            byte.set(byte.get() | mask);
+        }
+        Ok(())
+    }
+
     fn resolve<'a>(
         &'a self,
         reference: PhysicalRef,
@@ -1974,7 +2042,7 @@ impl BlockSource for RecoverySource<'_, '_> {
             }
             if let Ok(window) = self.window.try_borrow()
                 && let Some(mapped) = window.as_ref()
-                && mapped.artifact == reference.artifact
+                && mapped.validation.artifact() == reference.artifact
             {
                 let block = self.decode(mapped, reference, resources)?;
                 return callback(block, resources);
@@ -2284,91 +2352,57 @@ impl<'store, 'source_memory, 'catalog, 'catalog_memory>
     }
 }
 
-fn exact_relationship_membership(
+fn require_relationship_absent(
     source: &RecoverySource<'_, '_>,
     roots: GraphRoots,
     sequence: u64,
-    row: crate::property_graph::storage::adjacency::RelationshipRow,
-    present: bool,
+    row: RelationshipRow,
     memory: &StorageMemory<'_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
-    for (kind, node, direction, neighbor) in [
-        (TreeKind::OutRanges, row.source, Direction::Out, row.target),
-        (TreeKind::InRanges, row.target, Direction::In, row.source),
+    for (kind, node) in [
+        (TreeKind::OutRanges, row.source),
+        (TreeKind::InRanges, row.target),
     ] {
         let root = roots.directory(kind)?;
         let mut scratch = RangeScratch::for_prepare(memory, resources)?;
-        if !present {
-            let mut probe = [0; 40];
-            probe
-                .get_mut(..16)
-                .ok_or(TreeError::Memory)?
-                .copy_from_slice(&node.get().to_le_bytes());
-            probe
-                .get_mut(16..24)
-                .ok_or(TreeError::Memory)?
-                .copy_from_slice(&row.relationship_type.get().to_le_bytes());
-            probe
-                .get_mut(24..)
-                .ok_or(TreeError::Memory)?
-                .copy_from_slice(&row.rel.get().to_le_bytes());
-            if let Some(entry) =
-                crate::property_graph::storage::tree::directory::lookup_predecessor(
-                    source, root, &probe, resources,
-                )?
+        let mut probe = [0; 40];
+        probe
+            .get_mut(..16)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&node.get().to_le_bytes());
+        probe
+            .get_mut(16..24)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&row.relationship_type.get().to_le_bytes());
+        probe
+            .get_mut(24..)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&row.rel.get().to_le_bytes());
+        if let Some(entry) = crate::property_graph::storage::tree::directory::lookup_predecessor(
+            source, root, &probe, resources,
+        )? {
+            let crate::property_graph::storage::tree::Key::Inline(key) = entry.key() else {
+                return Err(TreeError::Invalid("incident range key"));
+            };
+            let descriptor = crate::property_graph::storage::adjacency::RangeDescriptor::decode(
+                kind,
+                key,
+                entry.value(),
+            )?;
+            let key = descriptor.key();
+            if key.node == node
+                && key.rel_type == row.relationship_type
+                && row.rel >= key.lower
+                && !matches!(key.upper, crate::property_graph::storage::adjacency::UpperBound::Exclusive(upper) if row.rel >= upper)
             {
-                let crate::property_graph::storage::tree::Key::Inline(key) = entry.key() else {
-                    return Err(TreeError::Invalid("incident range key"));
-                };
-                let descriptor =
-                    crate::property_graph::storage::adjacency::RangeDescriptor::decode(
-                        kind,
-                        key,
-                        entry.value(),
-                    )?;
-                let key = descriptor.key();
-                if key.node == node
-                    && key.rel_type == row.relationship_type
-                    && row.rel >= key.lower
-                    && !matches!(key.upper, crate::property_graph::storage::adjacency::UpperBound::Exclusive(upper) if row.rel >= upper)
-                {
-                    let range =
-                        validate_range(source, root, entry, sequence, &mut scratch, resources)?;
-                    if range.edges().iter().any(|edge| edge.rel == row.rel) {
-                        return Err(TreeError::Invalid(
-                            "recovery relationship adjacency mismatch",
-                        ));
-                    }
+                let range = validate_range(source, root, entry, sequence, &mut scratch, resources)?;
+                if range.edges().iter().any(|edge| edge.rel == row.rel) {
+                    return Err(TreeError::Invalid(
+                        "recovery relationship adjacency mismatch",
+                    ));
                 }
             }
-            continue;
-        }
-        let mut count = 0_u64;
-        verify_directory(source, root, resources, &mut |entry, resources| {
-            let range = validate_range(source, root, entry, sequence, &mut scratch, resources)?;
-            let key = range.descriptor().key();
-            for edge in range.edges() {
-                resources.step(1)?;
-                if edge.rel == row.rel {
-                    if key.node != node
-                        || key.direction != direction
-                        || key.rel_type != row.relationship_type
-                        || edge.neighbor != neighbor
-                    {
-                        return Err(TreeError::Invalid(
-                            "recovery relationship adjacency topology mismatch",
-                        ));
-                    }
-                    count = count.checked_add(1).ok_or(TreeError::Work)?;
-                }
-            }
-            Ok(())
-        })?;
-        if (present && count != 1) || (!present && count != 0) {
-            return Err(TreeError::Invalid(
-                "recovery relationship adjacency mismatch",
-            ));
         }
     }
     Ok(())
@@ -2412,9 +2446,9 @@ fn authoritative_relationship(
     }))
 }
 
-fn fence_matches_record(
-    fence: &FenceView<'_, RecoverySource<'_, '_>>,
-    record: &RecordView<'_, RecoverySource<'_, '_>>,
+fn fence_matches_record<'m>(
+    fence: &FenceView<'_, RecoverySource<'_, 'm>>,
+    record: &RecordView<'_, RecoverySource<'_, 'm>>,
     resources: &mut TreeResources<'_>,
 ) -> Result<bool, TreeError> {
     Ok(fence.incarnation() == record.incarnation()
@@ -2430,12 +2464,12 @@ fn fence_matches_record(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_fence_record_agreement(
-    source: &RecoverySource<'_, '_>,
+fn validate_fence_record_agreement<'m>(
+    source: &RecoverySource<'_, 'm>,
     catalog: &RecoveryCatalog<'_, '_>,
     document: Option<&EmbeddingTower>,
     roots: GraphRoots,
-    fence: &FenceView<'_, RecoverySource<'_, '_>>,
+    fence: &FenceView<'_, RecoverySource<'_, 'm>>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     match fence.incarnation() {
@@ -2518,12 +2552,12 @@ fn validate_fence_record_agreement(
     Ok(())
 }
 
-fn require_live_record_fence(
-    source: &RecoverySource<'_, '_>,
+fn require_live_record_fence<'m>(
+    source: &RecoverySource<'_, 'm>,
     catalog: &RecoveryCatalog<'_, '_>,
     document: Option<&EmbeddingTower>,
     roots: GraphRoots,
-    record: &RecordView<'_, RecoverySource<'_, '_>>,
+    record: &RecordView<'_, RecoverySource<'_, 'm>>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     let Some(key) = record.provenance().key() else {
@@ -2703,7 +2737,7 @@ fn validate_native_checkpoint(
 
     let relationship_root = roots.directory(TreeKind::Relationships)?;
     let mut values = NativeDirectoryValues::new(catalog, document);
-    verify_directory(
+    let relationship_count = verify_directory(
         source,
         relationship_root,
         resources,
@@ -2721,7 +2755,7 @@ fn validate_native_checkpoint(
             }
             let relationship = crate::property_graph::RelId::new(id)
                 .map_err(|_| TreeError::Invalid("recovery relationship identity"))?;
-            let row = authoritative_relationship(
+            let _row = authoritative_relationship(
                 source,
                 catalog,
                 document,
@@ -2739,7 +2773,7 @@ fn validate_native_checkpoint(
                 resources,
             )?;
             require_live_record_fence(source, catalog, document, roots, &record, resources)?;
-            exact_relationship_membership(source, roots, sequence, row, true, memory, resources)
+            Ok(())
         },
     )?;
 
@@ -2812,11 +2846,27 @@ fn validate_native_checkpoint(
     let mut scratch = RangeScratch::for_prepare(memory, resources)?;
     for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
         let root = roots.directory(kind)?;
+        let mut previous: Option<crate::property_graph::storage::adjacency::RangeKey> = None;
+        let mut edge_count = 0_u64;
         verify_directory(source, root, resources, &mut |entry, resources| {
             let range = validate_range(source, root, entry, sequence, &mut scratch, resources)?;
             let key = range.descriptor().key();
+            if let Some(previous) = previous
+                && previous.node == key.node
+                && previous.rel_type == key.rel_type
+                && match previous.upper {
+                    crate::property_graph::storage::adjacency::UpperBound::Infinity => true,
+                    crate::property_graph::storage::adjacency::UpperBound::Exclusive(upper) => {
+                        key.lower < upper
+                    }
+                }
+            {
+                return Err(TreeError::Invalid("recovery adjacency ranges overlap"));
+            }
+            previous = Some(key);
             for edge in range.edges() {
                 resources.step(1)?;
+                edge_count = edge_count.checked_add(1).ok_or(TreeError::Work)?;
                 let row = authoritative_relationship(
                     source, catalog, document, roots, edge.rel, resources,
                 )?
@@ -2841,6 +2891,14 @@ fn validate_native_checkpoint(
             }
             Ok(())
         })?;
+        // Each edge has the authoritative owner/type/neighbor. Disjoint ranges
+        // and merged unique IDs prevent duplicates, so equal counts also prove
+        // every relationship occurs exactly once in each physical direction.
+        if edge_count != relationship_count {
+            return Err(TreeError::Invalid(
+                "recovery relationship adjacency mismatch",
+            ));
+        }
     }
 
     let inventory_root = roots.directory(TreeKind::ObjectInventory)?;
@@ -3010,28 +3068,71 @@ fn entity_logically_equal(
     }
 }
 
-fn mutation_count_for_entity(mutations: &[Mutation<'_>], entity: EntityId) -> usize {
-    mutations
-        .iter()
-        .filter(|mutation| mutation.provenance.incarnation == entity)
-        .count()
+// These copies index an already unique, provenance-validated mutation set.
+// The original mutation order remains authoritative for validation.
+struct RecoveryMutationIndex<'m, 'a> {
+    entities: StorageBuffer<'m, EntityId>,
+    keys: StorageBuffer<'m, ApplicationKey<'a>>,
+}
+
+impl<'m, 'a> RecoveryMutationIndex<'m, 'a> {
+    fn new(
+        memory: &'m StorageMemory<'m>,
+        mutations: &[Mutation<'a>],
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Self, TreeError> {
+        let mut entities = StorageBuffer::new(memory, mutations.len())?;
+        let mut keys = StorageBuffer::new(memory, mutations.len())?;
+        for mutation in mutations {
+            resources.step(1)?;
+            entities.push(mutation.provenance.incarnation)?;
+            if let Some(key) = mutation.provenance.key {
+                keys.push(key)?;
+            }
+        }
+        entities.as_mut_slice().sort_unstable();
+        keys.as_mut_slice().sort_unstable();
+        resources.step(0)?;
+        Ok(Self { entities, keys })
+    }
+}
+
+fn mutation_count_for_entity(mutations: &RecoveryMutationIndex<'_, '_>, entity: EntityId) -> usize {
+    usize::from(mutations.entities.as_slice().binary_search(&entity).is_ok())
 }
 
 fn mutation_count_for_stored_key(
-    mutations: &[Mutation<'_>],
+    mutations: &RecoveryMutationIndex<'_, '_>,
     stored: StoredKey<'_, RecoverySource<'_, '_>>,
     resources: &mut TreeResources<'_>,
 ) -> Result<usize, TreeError> {
-    let mut count = 0_usize;
-    for mutation in mutations {
+    let keys = mutations.keys.as_slice();
+    let mut low = 0;
+    let mut high = keys.len();
+    while low < high {
         resources.step(1)?;
-        if let Some(key) = mutation.provenance.key
-            && stored_key_matches(stored, key, resources)?
-        {
-            count = count.checked_add(1).ok_or(TreeError::Work)?;
+        let middle = low + (high - low) / 2;
+        let key = keys
+            .get(middle)
+            .ok_or(TreeError::Invalid("recovery mutation-key index"))?;
+        let mut order = stored.kind().cmp(&key.kind());
+        if order.is_eq() {
+            order = stored
+                .namespace()
+                .compare_bytes(key.namespace().as_str().as_bytes(), resources)?;
+        }
+        if order.is_eq() {
+            order = stored
+                .key()
+                .compare_bytes(key.key().as_str().as_bytes(), resources)?;
+        }
+        match order {
+            std::cmp::Ordering::Less => high = middle,
+            std::cmp::Ordering::Greater => low = middle + 1,
+            std::cmp::Ordering::Equal => return Ok(1),
         }
     }
-    Ok(count)
+    Ok(0)
 }
 
 #[allow(
@@ -3045,7 +3146,7 @@ fn reconcile_entity_directory(
     base: GraphRoots,
     target: GraphRoots,
     kind: TreeKind,
-    mutations: &[Mutation<'_>],
+    mutations: &RecoveryMutationIndex<'_, '_>,
     base_high: u128,
     maintenance: bool,
     target_sequence: u64,
@@ -3194,9 +3295,9 @@ fn find_fence_by_key<'s, 'store, 'm, 'catalog_memory>(
     Ok(Some(fence))
 }
 
-fn fences_equal(
-    left: &FenceView<'_, RecoverySource<'_, '_>>,
-    right: &FenceView<'_, RecoverySource<'_, '_>>,
+fn fences_equal<'m>(
+    left: &FenceView<'_, RecoverySource<'_, 'm>>,
+    right: &FenceView<'_, RecoverySource<'_, 'm>>,
     resources: &mut TreeResources<'_>,
 ) -> Result<bool, TreeError> {
     if left.incarnation() != right.incarnation()
@@ -3223,7 +3324,7 @@ fn reconcile_fence_directory(
     document: Option<&EmbeddingTower>,
     base: GraphRoots,
     target: GraphRoots,
-    mutations: &[Mutation<'_>],
+    mutations: &RecoveryMutationIndex<'_, '_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     for (outer_roots, inner_roots) in [(base, target), (target, base)] {
@@ -3933,23 +4034,8 @@ fn validate_mutation_state(
                 {
                     return Err(TreeError::Invalid("recovery relationship mutation outcome"));
                 }
-                exact_relationship_membership(
-                    source,
-                    target_roots,
-                    target_sequence,
-                    authoritative_relationship(
-                        source,
-                        catalog,
-                        document,
-                        target_roots,
-                        rel,
-                        resources,
-                    )?
-                    .ok_or(TreeError::Invalid("recovery relationship is absent"))?,
-                    true,
-                    memory,
-                    resources,
-                )?;
+                // validate_native_checkpoint proved the target's complete
+                // adjacency bijections before mutation provenance is checked.
             } else {
                 let target_root = target_roots.directory(TreeKind::Relationships)?;
                 if lookup_entry(source, target_root, &rel.get().to_le_bytes(), resources)?.is_some()
@@ -4002,12 +4088,11 @@ fn validate_mutation_state(
                         source, base_roots, fields, namespace, catalog, document, resources,
                     )?
                 };
-                exact_relationship_membership(
+                require_relationship_absent(
                     source,
                     target_roots,
                     target_sequence,
                     row,
-                    false,
                     memory,
                     resources,
                 )?;
@@ -5459,6 +5544,8 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                     &mut tree,
                 )?;
             }
+            let mutation_index =
+                RecoveryMutationIndex::new(self.memory, retained_mutations.as_slice(), &mut tree)?;
             reconcile_entity_directory(
                 &source,
                 &catalog,
@@ -5466,7 +5553,7 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                 base_native,
                 target_native,
                 TreeKind::Nodes,
-                retained_mutations.as_slice(),
+                &mutation_index,
                 base.high_waters.node,
                 kind == crate::property_graph::wal::EnvelopeKind::Maintenance,
                 target.sequence,
@@ -5480,7 +5567,7 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                 base_native,
                 target_native,
                 TreeKind::Relationships,
-                retained_mutations.as_slice(),
+                &mutation_index,
                 base.high_waters.relationship,
                 kind == crate::property_graph::wal::EnvelopeKind::Maintenance,
                 target.sequence,
@@ -5493,7 +5580,7 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                 self.document,
                 base_native,
                 target_native,
-                retained_mutations.as_slice(),
+                &mutation_index,
                 &mut tree,
             )?;
             let base_count = base.prepared_inventories.len().map_err(|error| {
@@ -5862,7 +5949,7 @@ fn validate_maintenance_removal(
                     "maintenance removed visible relationship",
                 ));
             }
-            exact_relationship_membership(source, target, sequence, row, false, memory, r)?;
+            require_relationship_absent(source, target, sequence, row, memory, r)?;
             require_type_absent(source, target, row, r)?;
             (
                 crate::property_graph::storage::records::verify_provenance(
@@ -5912,14 +5999,14 @@ fn validate_maintenance_removal(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn validate_swept_lifecycle(
-    source: &RecoverySource<'_, '_>,
+fn validate_swept_lifecycle<'m>(
+    source: &RecoverySource<'_, 'm>,
     catalog: &RecoveryCatalog<'_, '_>,
     document: Option<&EmbeddingTower>,
     base: GraphRoots,
     target: GraphRoots,
     mutation: Mutation<'_>,
-    fence: &FenceView<'_, RecoverySource<'_, '_>>,
+    fence: &FenceView<'_, RecoverySource<'_, 'm>>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     let fields = mutation.provenance;
@@ -6038,17 +6125,30 @@ pub(crate) fn install_unified(
     access: AccessMode,
     document: Option<EmbeddingTower>,
 ) -> Result<(), crate::lifecycle::StoreError> {
-    install_unified_inner(store, graph, manifest_generation, commits, access, document).map_err(
-        |error| match error {
-            NativeGraphError::Store(error) => error,
-            NativeGraphError::Io { path, source } => {
-                crate::lifecycle::StoreError::Io { path, source }
+    install_unified_inner(store, graph, manifest_generation, commits, access, document)
+        .map_err(store_error)
+}
+
+pub(crate) fn store_error(error: NativeGraphError) -> crate::lifecycle::StoreError {
+    match error {
+        NativeGraphError::Store(error) => error,
+        NativeGraphError::Io { path, source } => crate::lifecycle::StoreError::Io { path, source },
+        NativeGraphError::Read(TreeError::Work) | NativeGraphError::Wal(WalError::WorkLimit) => {
+            crate::lifecycle::StoreError::RecoveryLimit { component: "work" }
+        }
+        NativeGraphError::Read(TreeError::Memory)
+        | NativeGraphError::Catalog(CatalogError::Capacity)
+        | NativeGraphError::Wal(WalError::Capacity)
+        | NativeGraphError::Stage(crate::property_graph::staging::StageError::Limit) => {
+            crate::lifecycle::StoreError::RecoveryLimit {
+                component: "scratch",
             }
-            error => crate::lifecycle::StoreError::Manifest(
-                crate::manifest::ManifestError::Decode(error.to_string()),
-            ),
-        },
-    )
+        }
+        NativeGraphError::Stage(crate::property_graph::staging::StageError::Memory(error)) => error,
+        error => crate::lifecycle::StoreError::Manifest(crate::manifest::ManifestError::Decode(
+            error.to_string(),
+        )),
+    }
 }
 
 fn install_unified_inner(
@@ -6230,10 +6330,15 @@ fn replay_unified<'a, 'm>(
         store, directory, expected, document, control, capacity, shared, storage,
     )?;
     let mut cancelled = || control.checkpoint().is_err();
+    let states = u64::try_from(commits.len())
+        .ok()
+        .and_then(|count| count.checked_add(1))
+        .ok_or(NativeGraphError::Wal(WalError::WorkLimit))?;
     let replay_work = u64::try_from(capacity)
         .ok()
         .and_then(|count| count.checked_mul(MAX_ARTIFACT_BYTES as u64))
         .and_then(|bytes| bytes.checked_mul(8))
+        .and_then(|work| work.checked_mul(states))
         .and_then(|work| {
             commits.iter().try_fold(work, |work, commit| {
                 u64::try_from(commit.bytes.len())
@@ -6242,7 +6347,13 @@ fn replay_unified<'a, 'm>(
                     .and_then(|bytes| work.checked_add(bytes))
             })
         })
-        .ok_or(NativeGraphError::Invalid("unified recovery work bound"))?;
+        .ok_or(NativeGraphError::Wal(WalError::WorkLimit))?;
+    #[cfg(test)]
+    let replay_work = RECOVERY_WORK_LIMIT.with(|limit| {
+        limit
+            .get()
+            .map_or(replay_work, |limit| limit.min(replay_work))
+    });
     let mut resources = WalResources::new(replay_work, STACK_RESERVATION_BYTES, &mut cancelled)?;
     #[cfg(test)]
     reopen_phase("manifest_checkpoint_setup", &mut phase_start);

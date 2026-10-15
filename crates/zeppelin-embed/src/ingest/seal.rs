@@ -155,14 +155,30 @@ impl Store {
                 component: "WAL writer",
             })?;
         let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
-        let mut publication = writer.manifest_publication()?;
-        let absorbed_through = writer.durable_end();
         let mut active = self
             .active
             .lock()
             .map_err(|_| StoreError::Synchronization {
                 component: "active segment",
             })?;
+        let generation = self.seal_active_locked(writer, &mut active, cancel, vfs)?;
+        drop(active);
+        drop(wal);
+        drop(writer_lock);
+        drop(state);
+        Ok(generation)
+    }
+
+    /// The caller holds WAL and active locks, excluding every publisher.
+    pub(crate) fn seal_active_locked(
+        &self,
+        writer: &mut super::StoreWal,
+        active: &mut Option<ActiveState>,
+        cancel: Option<&CancelToken>,
+        vfs: &dyn Vfs,
+    ) -> Result<u64, StoreError> {
+        let mut publication = writer.manifest_publication()?;
+        let absorbed_through = writer.durable_end();
         let current = active.as_ref().ok_or(StoreError::Closed)?;
         if current.segment.is_empty() {
             // A crash-restart after a durably committed seal leaves a correctly
@@ -331,10 +347,6 @@ impl Store {
             self.durability_policy,
             LogSeq::new(absorbed_through),
         )?;
-        drop(active);
-        drop(wal);
-        drop(writer_lock);
-        drop(state);
         Ok(generation)
     }
 }

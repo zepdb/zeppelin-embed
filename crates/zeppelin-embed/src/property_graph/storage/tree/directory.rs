@@ -67,8 +67,8 @@ pub(crate) const RESERVED_PINNED_SLOTS: usize = 4;
 /// charges mapping/cache capacity. A successful callback must return an exact
 /// framed block; tree consumers independently reject substituted references.
 pub trait BlockSource {
-    /// Full directory-page proof owned by this query or preparation source only.
-    /// Recovery and scoped trace sources always validate their pages.
+    /// Full directory-page proof owned by this immutable source only.
+    /// Scoped reads without a retained proof validate their pages again.
     fn page_validated(&self, _reference: PhysicalRef) -> Result<bool, TreeError> {
         Ok(false)
     }

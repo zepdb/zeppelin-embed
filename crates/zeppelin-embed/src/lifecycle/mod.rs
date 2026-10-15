@@ -2102,6 +2102,11 @@ pub enum StoreError {
         /// Engine component requesting the allocation.
         component: &'static str,
     },
+    /// Native recovery exhausted a checked work or scratch allowance.
+    RecoveryLimit {
+        /// Recovery resource whose allowance was exhausted.
+        component: &'static str,
+    },
     /// The allocator rejected a checked reservation without aborting.
     AllocationFailed {
         /// Exact requested bytes.
@@ -2332,6 +2337,9 @@ impl std::fmt::Display for StoreError {
             Self::Statistics { component, source } => {
                 write!(formatter, "store statistics {component}: {source}")
             }
+            Self::RecoveryLimit { component } => {
+                write!(formatter, "graph recovery {component} allowance exhausted")
+            }
             Self::BudgetExceeded {
                 needed,
                 budget,
@@ -2515,7 +2523,7 @@ impl StoreError {
             | Self::WalRevisionOrder { .. }
             | Self::WalVector { .. }
             | Self::PurgeRecovery { .. } => StoreErrorKind::Corrupt,
-            Self::BudgetExceeded { .. } | Self::GroupLimitExceeded { .. } => {
+            Self::BudgetExceeded { .. } | Self::GroupLimitExceeded { .. } | Self::RecoveryLimit { .. } => {
                 StoreErrorKind::BudgetExceeded
             }
             Self::AllocationFailed { .. } => StoreErrorKind::OutOfMemory,
@@ -2579,6 +2587,7 @@ impl std::error::Error for StoreError {
             | Self::WalRevisionOrder { .. }
             | Self::UnsupportedWalMutation { .. }
             | Self::BudgetExceeded { .. }
+            | Self::RecoveryLimit { .. }
             | Self::GroupLimitExceeded { .. }
             | Self::AllocationFailed { .. }
             | Self::DimensionMismatch { .. }
@@ -3514,9 +3523,9 @@ impl Store {
             && store.native_graph.has_pending_reclaim()?
         {
             for _ in 0..2 {
-                let admission = store.admit_native_graph_maintenance().map_err(|error| {
-                    StoreError::Manifest(crate::manifest::ManifestError::Decode(error.to_string()))
-                })?;
+                let admission = store
+                    .admit_native_graph_maintenance()
+                    .map_err(native_graph::recovery::store_error)?;
                 match store.commit_native_graph_maintenance(
                     &admission,
                     &QueryControl::Cancel(CancelToken::new()),
@@ -3524,9 +3533,7 @@ impl Store {
                     Ok(_) => break,
                     Err(native_graph::NativeGraphError::StalePreparation) => continue,
                     Err(error) => {
-                        return Err(StoreError::Manifest(
-                            crate::manifest::ManifestError::Decode(error.to_string()),
-                        ));
+                        return Err(native_graph::recovery::store_error(error));
                     }
                 }
             }
@@ -3547,6 +3554,15 @@ impl Store {
         if !repair_before_purge {
             // Preserve main's exact graph-free generation, bytes and refusals.
             store.recover_sealed_tombstones(&sealed_tombstones)?;
+        }
+        #[cfg(feature = "graph-cypher")]
+        if repair_before_purge && options.access_mode == AccessMode::ReadWrite {
+            // Older writers could fold graph roots while document rows pinned
+            // an oversized WAL. Checkpoint both participants after recovery,
+            // before a new batch competes with that retained log for memory.
+            store
+                .checkpoint_native_graph_on_open()
+                .map_err(native_graph::recovery::store_error)?;
         }
         if options.access_mode == AccessMode::ReadWrite {
             let cleanup_report = cleanup_open_orphans(&store)?;

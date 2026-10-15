@@ -31,6 +31,8 @@ pub(crate) use view::{
     PreparedGraphArtifacts, PreparedGraphFailure, RelView, RelationshipTypeSelection,
     TextPayloadReader,
 };
+#[cfg(feature = "graph-cypher")]
+pub(crate) use view::{PAGE_MEMO_BYTES, memo_bit};
 
 /// Combined private storage capacity inside the authentic writer/store owner.
 pub mod memory;

@@ -1276,3 +1276,29 @@ Compiler failures before execution retain their original stage and spans.
 The seeded GraphStore constructor is doc-hidden and available only in tests
 or test-support builds. It adds no release API or prepared-plan interface.
 See tasks/evidence/ze-58/README.md for focused proofs and excluded gates.
+
+## ZE-454 / ZE-455 graph checkpoint and recovery
+
+Automatic native graph checkpoints seal active document rows through the
+existing seal publication before truncating their shared WAL. Explicit graph
+checkpoints retain their graph-only watermark semantics. Writable reopen
+checkpoints legacy retained WAL at the 16 MiB byte threshold after recovery
+repairs, so old pinned logs do not consume the next write's resident headroom.
+This is checkpointing, independent of explicit reclamation.
+Retained shared WAL bytes independently trigger the 16 MiB write checkpoint;
+inventory folds resetting graph-tail counters must not suppress this trigger.
+
+Recovery proves each adjacency direction is a bijection with relationship
+records: ranges are disjoint, merged IDs are unique, every edge matches its
+authoritative row, and edge and relationship counts agree. Do this once per
+recovered state, before checking mutation provenance; do not scan the entire
+adjacency directory separately for every relationship. Recovery's work owner
+budgets the manifest and each retained WAL state, independently of write
+preparation allowances. Work and scratch refusals are recovery limits, never
+evidence of corrupt persisted bytes.
+Tail reconciliation uses accounted sorted indices of the validated mutation
+identities and application keys; never scan the whole batch for every store
+row. Keep the original mutation order for duplicate/provenance validation.
+Retained recovery mappings may reuse a fully validated immutable page proof
+within that state. Charge its bitmap when retaining the mapping, retain artifact
+framing and ancestor-bound checks, and never share a proof between states.
