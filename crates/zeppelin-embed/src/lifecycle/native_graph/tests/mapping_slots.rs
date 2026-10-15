@@ -103,8 +103,6 @@ pub(super) fn logical_state(store: &Store, nodes: &[NodeId]) -> Vec<NodeState> {
 
 #[test]
 fn ze321_logical_state_outlives_source_slots() {
-    use crate::property_graph::storage::tree::directory::TreeError;
-
     let parent = super::tempfile::tempdir().expect("temporary parent");
     let path = parent.path().join("oracle-slots");
     let store = Store::create_native_graph(&path, durable_options(), None).expect("create store");
@@ -150,27 +148,26 @@ fn ze321_logical_state_outlives_source_slots() {
             let catalog = NativeCatalog::open(&source, &mut resources).expect("catalog");
             drop(resources);
             let view = GraphReadView::new(&source, &catalog).expect("view");
-            let mut refused = false;
             for (index, node) in nodes.iter().enumerate() {
                 let mut resources = TreeResources::for_query(&mut runtime).expect("resources");
-                match view.lookup_node(*node, &mut resources) {
-                    Ok(Some(_)) => {}
-                    Err(TreeError::Memory) => {
-                        assert_eq!(
-                            store.native_graph.mapping_stats().unwrap().0,
-                            baseline.0 + 16
-                        );
-                        println!(
-                            "ZE321 retained source refused sample={index} node={node:?}: TreeError::Memory; filled=16"
-                        );
-                        refused = true;
-                        break;
-                    }
-                    Ok(None) => panic!("missing committed node"),
-                    Err(error) => panic!("unexpected retained-source lookup: {error:?}"),
-                }
+                let row = view.lookup_node(*node, &mut resources).unwrap().unwrap();
+                let record = row.record();
+                assert_eq!(record.revision().get(), expected[index].revision);
+                assert_eq!(
+                    record.provenance().original_generation().get(),
+                    expected[index].original_generation
+                );
+                let mut canonical = vec![0; expected[index].canonical.len()];
+                assert_eq!(
+                    record
+                        .canonical_bytes()
+                        .read_at(0, &mut canonical, &mut resources)
+                        .unwrap(),
+                    canonical.len()
+                );
+                assert_eq!(canonical, expected[index].canonical);
+                assert!(store.native_graph.mapping_stats().unwrap().0 <= baseline.0 + 16);
             }
-            assert!(refused, "retained source must exhaust its 16 slots");
         }
         assert_eq!(store.native_graph.mapping_stats().unwrap(), baseline);
     }

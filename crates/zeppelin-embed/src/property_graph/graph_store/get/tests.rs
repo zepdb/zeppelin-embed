@@ -53,6 +53,55 @@ fn rel_id(result: &GraphWriteResult, index: usize) -> RelId {
     }
 }
 
+#[test]
+fn ze458_relationship_batch_read_after_small_commits() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = Store::create_graph(parent.path().join("history"), options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let nodes = store
+        .graph_apply(
+            &[StructuredWrite {
+                key: node_key("endpoint"),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control(),
+        )
+        .unwrap();
+    let endpoint = node_id(&nodes, 0);
+    let mut ids = Vec::new();
+    for i in 0..300 {
+        let key = format!("edge-{i}");
+        let result = store
+            .graph_apply(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Relationship, "app", &key).unwrap(),
+                    revision: revision(1),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Relationship {
+                        source: crate::property_graph::NodeRef::Existing(endpoint),
+                        target: crate::property_graph::NodeRef::Existing(endpoint),
+                        relationship_type: GraphName::new("LINKS").unwrap(),
+                        properties: &[],
+                    }),
+                }],
+                &control(),
+            )
+            .unwrap();
+        ids.push(rel_id(&result, 0));
+    }
+    let result = store.get_relationships(&ids, &control()).unwrap();
+    assert_eq!(result.relationships().len(), ids.len());
+    for (row, id) in result.relationships().iter().zip(ids) {
+        let row = row.as_ref().unwrap();
+        assert_eq!(row.id, id);
+        assert_eq!((row.source, row.target), (endpoint, endpoint));
+        assert_eq!(result.string(row.relationship_type), Some("LINKS"));
+    }
+    store.close().unwrap();
+}
+
 fn tower() -> EmbeddingTower {
     EmbeddingTower {
         model_id: "doc".into(),

@@ -9,7 +9,7 @@ use crate::property_graph::storage::artifact::{
     PhysicalRef, ValidatedArtifact,
 };
 use crate::property_graph::storage::tree::directory::{
-    BlockSource, QueryOwner, TreeError, TreeResources,
+    BlockSource, QueryOwner, RESERVED_PINNED_SLOTS, TreeError, TreeResources,
 };
 use std::{
     cell::{Cell, OnceCell},
@@ -85,6 +85,7 @@ pub(crate) struct NativeQuerySource<'a, 'm, 'g> {
     owner: QueryOwner<'m, 'g>,
     runtime: RuntimeInstanceId,
     slots: QueryArena<'m, 'g, OnceCell<MappedArtifact>>,
+    filled: Cell<usize>,
 }
 
 /// Unforgeable proof that one retained lease, query-memory owner and runtime
@@ -140,6 +141,7 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
             owner,
             runtime: capability.runtime,
             slots,
+            filled: Cell::new(0),
         })
     }
 
@@ -170,15 +172,16 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
         resources.step(0)
     }
 
-    fn page_bit(&self, reference: PhysicalRef) -> Result<(&Cell<u8>, u8), TreeError> {
+    fn page_bit(&self, reference: PhysicalRef) -> Result<Option<(&Cell<u8>, u8)>, TreeError> {
         let mapped = self
             .slots
             .as_slice()
             .iter()
             .filter_map(OnceCell::get)
-            .find(|mapped| mapped.validation.artifact() == reference.artifact)
-            .ok_or(TreeError::Invalid("page memo mapping missing"))?;
-        memo_bit(&mapped.validated_pages, reference)
+            .find(|mapped| mapped.validation.artifact() == reference.artifact);
+        mapped
+            .map(|mapped| memo_bit(&mapped.validated_pages, reference))
+            .transpose()
     }
 
     fn decode<'s>(
@@ -246,17 +249,46 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
         }
         Ok(block)
     }
+
+    fn open_mapping(
+        &self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<MappedArtifact, TreeError> {
+        let (path, path_charge) = charged_artifact_path(
+            self.memory,
+            self.lease.bundle().directory(),
+            reference.artifact,
+        )?;
+        let file = self
+            .lease
+            .bundle()
+            .vfs()
+            .open_for_map(&path)
+            .map_err(TreeError::Io)?;
+        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        drop(path);
+        drop(path_charge);
+        let validation = self.admit_mapping(&mapping, reference, resources)?;
+        Ok(MappedArtifact {
+            mapping,
+            validation,
+            validated_pages: [const { Cell::new(0) }; PAGE_MEMO_BYTES],
+        })
+    }
 }
 
 impl BlockSource for NativeQuerySource<'_, '_, '_> {
     fn page_validated(&self, reference: PhysicalRef) -> Result<bool, TreeError> {
-        let (byte, mask) = self.page_bit(reference)?;
-        Ok(byte.get() & mask != 0)
+        Ok(self
+            .page_bit(reference)?
+            .is_some_and(|(byte, mask)| byte.get() & mask != 0))
     }
 
     fn mark_page_validated(&self, reference: PhysicalRef) -> Result<(), TreeError> {
-        let (byte, mask) = self.page_bit(reference)?;
-        byte.set(byte.get() | mask);
+        if let Some((byte, mask)) = self.page_bit(reference)? {
+            byte.set(byte.get() | mask);
+        }
         Ok(())
     }
 
@@ -276,32 +308,51 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
         if let Some(mapped) = cell.get() {
             return self.decode(mapped, reference, resources);
         }
-        let (path, path_charge) = charged_artifact_path(
-            self.memory,
-            self.lease.bundle().directory(),
-            reference.artifact,
-        )?;
-        let file = self
-            .lease
-            .bundle()
-            .vfs()
-            .open_for_map(&path)
-            .map_err(TreeError::Io)?;
-        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
-        drop(path);
-        drop(path_charge);
-        let validation = self.admit_mapping(&mapping, reference, resources)?;
-        let mapped = MappedArtifact {
-            mapping,
-            validation,
-            validated_pages: [const { Cell::new(0) }; PAGE_MEMO_BYTES],
-        };
+        let mapped = self.open_mapping(reference, resources)?;
         cell.set(mapped)
             .map_err(|_| TreeError::Invalid("native graph source slot initialized twice"))?;
+        self.filled.set(self.filled.get().saturating_add(1));
         let mapped = cell.get().ok_or(TreeError::Invalid(
             "native graph source slot remained empty",
         ))?;
         self.decode(mapped, reference, resources)
+    }
+
+    fn with_block<R>(
+        &self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+        callback: impl for<'a, 'r> FnOnce(
+            FramedBlock<'a>,
+            &'r mut TreeResources<'_>,
+        ) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        if !self.scoped_blocks() {
+            return callback(self.resolve(reference, resources)?, resources);
+        }
+        self.check_owner(resources)?;
+        if let Some(mapped) = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.validation.artifact(),
+            || resources.step(1),
+        )?
+        .and_then(OnceCell::get)
+        {
+            return callback(self.decode(mapped, reference, resources)?, resources);
+        }
+        let mapped = self.open_mapping(reference, resources)?;
+        callback(self.decode(&mapped, reference, resources)?, resources)
+    }
+
+    fn scoped_blocks(&self) -> bool {
+        // Keep a reserve for readers already committed to a borrowed block.
+        // Incidental payloads then live only for their checked callback.
+        self.slots
+            .as_slice()
+            .len()
+            .saturating_sub(self.filled.get())
+            <= RESERVED_PINNED_SLOTS
     }
 }
 
