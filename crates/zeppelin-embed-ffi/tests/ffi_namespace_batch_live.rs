@@ -68,6 +68,11 @@ fn live_batch_preserves_handles_and_rejects_closed_participants() {
         handles: handles.as_ptr(),
     };
     assert_eq!(ze_namespace_batch(&batch), ZeErrorCode::ZeErrStoreBusy);
+    assert_eq!(
+        ze_namespace_delete_cascade(&batch),
+        ZeErrorCode::ZeErrStoreBusy
+    );
+    assert_eq!(generations, [u64::MAX; 2]);
     // A separately owned root writer excludes coordinator admission.
     let (code, coordinator) = common::open_path(root.path());
     assert_eq!(code, ZeErrorCode::ZeOk);
@@ -119,6 +124,7 @@ fn live_batch_preserves_handles_and_rejects_closed_participants() {
     }
     assert_eq!(ze_namespace_batch_live(&request), ZeErrorCode::ZeOk);
     assert!(generations.iter().all(|g| *g != u64::MAX));
+    let cascade_generation = generations[0] + 3; // ingest, delete, seal
     for handle in handles {
         assert_eq!(common::ingest_rows(handle, 2, 4), ZeErrorCode::ZeOk);
     }
@@ -142,6 +148,9 @@ fn live_batch_preserves_handles_and_rejects_closed_participants() {
     assert_eq!(ze_namespace_batch_live(&request), ZeErrorCode::ZeErrClosed);
     assert_eq!(generations, [u64::MAX; 2]);
     assert_eq!(ze_close(handles[0]), ZeErrorCode::ZeOk);
+    batch.participant_count = 1;
+    assert_eq!(ze_namespace_delete_cascade(&batch), ZeErrorCode::ZeOk);
+    assert_eq!(generations, [cascade_generation, u64::MAX]);
 }
 
 #[cfg(feature = "abi-panic-probe")]

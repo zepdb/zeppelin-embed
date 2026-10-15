@@ -3023,7 +3023,8 @@ impl Store {
         Ok(store)
     }
 
-    pub(crate) fn open_private_preparation(
+    #[cfg(test)]
+    fn open_private_preparation(
         path: &Path,
         options: OpenOptions,
         authority: namespace_batch::PrivatePreparation,

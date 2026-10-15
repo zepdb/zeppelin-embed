@@ -106,6 +106,80 @@ fn state(root: &Path) -> Vec<Vec<bool>> {
         .collect()
 }
 #[test]
+fn cascade_uses_live_publication() {
+    use zeppelin_embed::lifecycle::namespace_delete_cascade_with_steps;
+
+    let root = tempfile::tempdir().expect("root");
+    seed(root.path());
+    let mut steps = Vec::new();
+    let generations = namespace_delete_cascade_with_steps(root.path(), deletion(), &mut |step| {
+        steps.push(step.to_owned());
+        Ok(())
+    })
+    .expect("cascade");
+    assert!(steps.iter().any(|step| step == "live states installed"));
+    assert!(!steps.iter().any(|step| step == "copy chunk"));
+    assert_eq!(generations, vec![3; 3]);
+    assert_eq!(state(root.path()), vec![vec![false, true]; 3]);
+}
+
+#[test]
+fn cascade_preserves_singleton_and_checkpoint_generations() {
+    for deletes in [vec![], vec![DocId::new(1)], vec![DocId::new(99)]] {
+        let root = tempfile::tempdir().expect("root");
+        let store = Store::open(root.path().join("notes"), options()).expect("open");
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 2.0],
+            )]))
+            .expect("unsealed row");
+        store.close().expect("close");
+        let expected = if deletes.is_empty() { 2 } else { 3 };
+        let mut mutations = participants(&["notes"]);
+        mutations[0].deletes = deletes;
+        assert_eq!(
+            namespace_delete_cascade(root.path(), mutations).expect("singleton cascade"),
+            vec![expected]
+        );
+        let reopened = Store::open(root.path().join("notes"), options()).expect("reopen");
+        assert_eq!(reopened.seal().expect("already checkpointed"), expected);
+    }
+}
+
+#[test]
+fn namespace_batch_does_not_expand_cascade_declarations() {
+    let root = tempfile::tempdir().expect("root");
+    seed(root.path());
+    zeppelin_embed::lifecycle::namespace_batch(root.path(), deletion()).expect("explicit batch");
+    assert_eq!(
+        state(root.path()),
+        vec![vec![true, true], vec![true, true], vec![false, true]]
+    );
+}
+
+#[test]
+fn cascade_refuses_pinned_writer_without_deletion() {
+    let root = tempfile::tempdir().expect("root");
+    seed(root.path());
+    let store = Store::open(root.path().join("notes"), options()).expect("source");
+    let view = store.open_snapshot().expect("pin");
+    store.close().expect("closed writer");
+    assert!(matches!(
+        namespace_delete_cascade(root.path(), deletion()),
+        Err(StoreError::StoreBusy { .. })
+    ));
+    assert!(
+        view.get_documents(&[DocId::new(1)], DocumentFields::ALL)
+            .expect("old snapshot")
+            .iter()
+            .all(Option::is_some)
+    );
+    view.close().expect("release pin");
+    assert_eq!(state(root.path()), vec![vec![true, true]; 3]);
+}
+
+#[test]
 fn durable_cascade_deletes_transitive_dependants_and_rejects_cycles() {
     let root = tempfile::tempdir().expect("root");
     seed(root.path());
@@ -160,13 +234,27 @@ mod kills {
     fn seeded_sigkill_preserves_whole_families_without_orphans() {
         let baseline = tempfile::tempdir().expect("baseline");
         seed(baseline.path());
-        let mut count = 0;
-        namespace_delete_cascade_with_steps(baseline.path(), deletion(), &mut |_| {
-            count += 1;
+        let mut steps = Vec::new();
+        namespace_delete_cascade_with_steps(baseline.path(), deletion(), &mut |step| {
+            steps.push(step.to_owned());
             Ok(())
         })
         .expect("count steps");
-        assert!(count >= 105, "must cover the original 105-step protocol");
+        for required in [
+            "prepared append",
+            "prepared WAL sync",
+            "commit rename",
+            "live states installed",
+            "accept manifest rename",
+            "accept binding rename",
+            "cascade checkpoint",
+        ] {
+            assert!(
+                steps.iter().any(|step| step == required),
+                "missing {required}"
+            );
+        }
+        let count = steps.len();
         let mut cuts: Vec<_> = (0..count).collect();
         cuts.shuffle(&mut test_support::seeded_rng("ZE225 cascade SIGKILL"));
         let mut observed = std::collections::BTreeSet::new();

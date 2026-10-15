@@ -2,11 +2,11 @@
 //!
 //! ZE-256 batches stage changes in stable participant directories. Local
 //! acceptance keeps prepared WAL frames committed after root retirement.
-//! ZE-239 copy routes remain readable; cascade semantics are unchanged.
-use super::durability::{CommitTier, DurabilityMode};
+//! Explicit cascades share publication but retain logical deletion and sealing.
+//! ZE-239 copy routes remain readable.
 use super::lock::StoreLock;
 use super::{AccessMode, OpenOptions, Store, StoreError};
-use crate::ingest::{DeleteBatch, DocId, IngestBatch, IngestDocument};
+use crate::ingest::{DocId, IngestDocument};
 use crate::meta::Predicate;
 use crate::vfs::{StdVfs, SyncKind, Vfs};
 use std::collections::BTreeMap;
@@ -91,7 +91,7 @@ pub fn namespace_batch_live(
     root: &Path,
     participants: Vec<LiveNamespaceMutation<'_>>,
 ) -> Result<Vec<u64>, StoreError> {
-    execute_live(root, participants, &StdVfs, &mut |_| Ok(()), None)
+    execute_live(root, participants, &StdVfs, &mut |_| Ok(()), None, false)
 }
 
 /// Explicit protocol interruption seam for deterministic tests.
@@ -102,7 +102,7 @@ pub fn namespace_batch_live_with_steps(
     participants: Vec<LiveNamespaceMutation<'_>>,
     step: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<Vec<u64>, StoreError> {
-    execute_live(root, participants, &StdVfs, step, None)
+    execute_live(root, participants, &StdVfs, step, None, false)
 }
 
 /// Protocol VFS seam. Participant handles must use the supplied VFS too.
@@ -113,7 +113,7 @@ pub fn namespace_batch_live_on_vfs(
     participants: Vec<LiveNamespaceMutation<'_>>,
     vfs: &dyn Vfs,
 ) -> Result<Vec<u64>, StoreError> {
-    execute_live(root, participants, vfs, &mut |_| Ok(()), None)
+    execute_live(root, participants, vfs, &mut |_| Ok(()), None, false)
 }
 
 fn execute_live(
@@ -121,26 +121,28 @@ fn execute_live(
     mut participants: Vec<LiveNamespaceMutation<'_>>,
     vfs: &dyn Vfs,
     step: &mut dyn FnMut(&str) -> std::io::Result<()>,
-    coordinator: Option<StoreLock>,
+    coordinator: Option<&StoreLock>,
+    logical_delete: bool,
 ) -> Result<Vec<u64>, StoreError> {
     use crate::ingest::wal_payload::{self, TransactionBinding};
     use std::sync::Arc;
     let root = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
-    if !(2..=128).contains(&participants.len()) {
+    let minimum = if logical_delete { 1 } else { 2 };
+    if !(minimum..=128).contains(&participants.len()) {
         return Err(invalid(
             &root,
             "namespace batch requires 2..128 participants",
         ));
     }
     let _coordinator = match coordinator {
-        Some(lock) => lock,
-        None => StoreLock::acquire(&root).map_err(StoreError::Lock)?,
+        Some(_) => None,
+        None => Some(StoreLock::acquire(&root).map_err(StoreError::Lock)?),
     };
     reclamation::run(vfs, &root, step)?;
     let deleting = participants
         .iter()
         .any(|p| !p.mutation.deletes.is_empty() || p.mutation.delete_where.is_some());
-    if deleting {
+    if deleting && !logical_delete {
         reclamation::require_retired_erased(vfs, &root)?;
     }
     normalize_accepted(vfs, &root, step)?;
@@ -373,6 +375,7 @@ fn execute_live(
         let selection = StagedSelection {
             manifest: format!(".ze-manifest-{transaction}"),
             binding,
+            logical_delete,
         };
         descriptor
             .0
@@ -619,7 +622,7 @@ fn execute_live(
         );
         completed.insert(p.mutation.name.clone(), generation);
     }
-    if deleting {
+    if deleting && !logical_delete {
         reclamation::run(vfs, &root, step)?;
         reclamation::require_retired_erased(vfs, &root)?;
     }
@@ -801,7 +804,7 @@ fn root_record_vfs(
     decode_descriptor(&path, &bytes).map(|descriptor| (None, descriptor))
 }
 fn decode_descriptor(path: &Path, bytes: &[u8]) -> Result<RootDescriptor, StoreError> {
-    if bytes.starts_with(STAGED_MAGIC) {
+    if bytes.starts_with(STAGED_MAGIC) || bytes.starts_with(LOGICAL_STAGED_MAGIC) {
         return decode_staged(path, bytes).map(RootDescriptor::Staged);
     }
     decode_routes(path, bytes).map(RootDescriptor::Legacy)
@@ -1005,56 +1008,6 @@ fn publish(
     sync_dir(vfs, root, step)
 }
 
-// The coordinator exclusively owns this source Store and never exposes its
-// handle. Copy its validated disk image directly: purge may have rewritten the
-// WAL sequence origin, which a concurrent snapshot's retained-tail seam rejects.
-fn prepare_copy(
-    source: &Store,
-    destination: &Path,
-    step: &mut dyn FnMut(&str) -> std::io::Result<()>,
-) -> Result<(), StoreError> {
-    StdVfs
-        .create_directory(destination)
-        .map_err(|e| io(destination, e))?;
-    step("participant directory").map_err(|e| io(destination, e))?;
-    for path in source
-        .vfs
-        .list(&source.directory)
-        .map_err(|e| io(&source.directory, e))?
-    {
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            return Err(invalid(&path, "store filename is not UTF-8"));
-        };
-        let acceptance = name
-            .strip_prefix(".ze-accepted-")
-            .is_some_and(|transaction| transaction.parse::<u128>().is_ok());
-        if name != "manifest.ze" && name != "wal.ze" && !name.ends_with(".zseg") && !acceptance {
-            continue;
-        }
-        let length = source.vfs.open(&path).map_err(|e| io(&path, e))?;
-        let target = destination.join(name);
-        let mut file = StdVfs.open_append(&target).map_err(|e| io(&target, e))?;
-        let mut offset = 0;
-        while offset < length {
-            let count = usize::try_from((length - offset).min(1024 * 1024))
-                .map_err(|_| invalid(&path, "copy size"))?;
-            let bytes = source
-                .vfs
-                .read_range(&path, offset, count)
-                .map_err(|e| io(&path, e))?;
-            if bytes.len() != count {
-                return Err(invalid(&path, "short preparation read"));
-            }
-            file.append(&bytes).map_err(|e| io(&target, e))?;
-            offset += bytes.len() as u64;
-            step("copy chunk").map_err(|e| io(&target, e))?;
-        }
-        file.sync(SyncKind::Full).map_err(|e| io(&target, e))?;
-        step("copied file sync").map_err(|e| io(&target, e))?;
-    }
-    sync_dir(&StdVfs, destination, step)
-}
-
 /// Atomically commits ordered namespace mutations through one root rename.
 ///
 /// This path API opens closed writers and shares the incremental live protocol.
@@ -1159,7 +1112,7 @@ fn execute(
     if root_record_vfs(&StdVfs, &root)?.0.is_some() {
         normalize_accepted(&StdVfs, &root, step)?;
     }
-    let mut next = routes(&root)?;
+    routes(&root)?;
     let mut ordered = BTreeMap::new();
     for (index, mutation) in mutations.iter().enumerate() {
         if !name_valid(&mutation.name)
@@ -1172,8 +1125,7 @@ fn execute(
             ));
         }
     }
-    // Opening originals also owns their stable logical writer locks. Never
-    // mutate these stores: all validation and mutation happens on private copies.
+    // Open closed participants in canonical order and retain their writer locks.
     let mut sources = BTreeMap::new();
     for (name, index) in &ordered {
         let mutation = mutations
@@ -1194,7 +1146,12 @@ fn execute(
         options.access_mode = AccessMode::ReadOnly;
         // Validate declarations without allowing additive schema evolution.
         drop(Store::open(&path, options)?);
-        sources.insert(name.clone(), Store::open(&path, mutation.options.clone())?);
+        let mut options = mutation.options.clone();
+        if matches!(operation, Operation::Cascade) {
+            options.durability_mode = super::durability::DurabilityMode::Durable;
+            options.commit_tier = super::durability::CommitTier::Durable;
+        }
+        sources.insert(name.clone(), Store::open(&path, options)?);
     }
     match operation {
         Operation::Declare(rule) => {
@@ -1202,162 +1159,41 @@ fn execute(
             return Ok(Vec::new());
         }
         Operation::Cascade => super::cascade::expand(&root, &sources, &mut mutations)?,
-        Operation::Batch => {
-            let live = mutations
-                .into_iter()
-                .map(|mutation| {
-                    sources
-                        .get(&mutation.name)
-                        .map(|store| LiveNamespaceMutation { store, mutation })
-                        .ok_or_else(|| invalid(&root, "missing source"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            return execute_live(&root, live, &StdVfs, step, Some(_coordinator));
-        }
+        Operation::Batch => {}
     }
-    let mut root_id = root_record_vfs(&StdVfs, &root)?.0;
-    if read_optional(&root.join(RECORD))?.is_none() {
-        root_id = Some(NamespaceRootId::generate().map_err(|e| io(&root, e))?);
+    let logical_delete = matches!(operation, Operation::Cascade);
+    let input_order = mutations.iter().map(|m| m.name.clone()).collect::<Vec<_>>();
+    let live = mutations
+        .into_iter()
+        .map(|mutation| {
+            sources
+                .get(&mutation.name)
+                .map(|store| LiveNamespaceMutation { store, mutation })
+                .ok_or_else(|| invalid(&root, "missing source"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let generations = execute_live(
+        &root,
+        live,
+        &StdVfs,
+        step,
+        Some(&_coordinator),
+        logical_delete,
+    )?;
+    if !logical_delete {
+        return Ok(generations);
     }
-    let transaction = loop {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = root.join(format!(".ze-batch-{}-{id}", std::process::id()));
-        match StdVfs.create_directory(&path) {
-            Ok(()) => break path,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(io(&path, e)),
-        }
-    };
-    step("transaction directory").map_err(|e| io(&transaction, e))?;
-    let transaction_name = transaction
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| invalid(&transaction, "transaction name"))?;
-    for name in ordered.keys() {
-        next.insert(name.clone(), format!("{transaction_name}/{name}"));
-    }
-    let intent = encode(&next);
-    let decision = encode_root_record(root_id, &RootDescriptor::Legacy(next.clone()))?;
-    if decision.len() > MAX_RECORD {
-        return Err(invalid(&root, "namespace decision too large"));
-    }
-    durable_write(&StdVfs, &transaction.join("intent.ze"), &intent, step)?;
-    sync_dir(&StdVfs, &transaction, step)?;
-    sync_dir(&StdVfs, &root, step)?;
-    if root_id.is_some() {
-        if read_optional(&root.join(RECORD))?.is_none() {
-            publish(
-                &StdVfs,
-                &root,
-                &encode_root_record(root_id, &RootDescriptor::Legacy(Routes::new()))?,
-                step,
-            )?;
-            step("bootstrap root published").map_err(|e| io(&root, e))?;
-        }
-        for name in ordered.keys() {
-            let logical = root.join(name);
-            if read_optional(&logical.join(REFERENCE))?.is_none() {
-                publish_reference(
-                    &StdVfs,
-                    &logical,
-                    &encode_participant_reference(root_id, &root, name, 1)?,
-                    step,
-                )?;
-                step("participant reference installed").map_err(|e| io(&logical, e))?;
-            }
-        }
-    }
+    // Keep the cascade's delete-then-seal generations, including participants
+    // with no matching deletes. Publication is already durable; any checkpoint
+    // failure is indeterminate, as with other post-publication failures.
     let mut generations = Vec::new();
-    for mutation in mutations {
-        let source = sources
-            .get(&mutation.name)
-            .ok_or_else(|| invalid(&root, "missing participant"))?;
-        let destination = transaction.join(&mutation.name);
-        prepare_copy(source, &destination, step)?;
-        step("snapshot prepared").map_err(|e| io(&destination, e))?;
-        let mut options = mutation.options;
-        // Even an empty, previously unstamped source gets a manifest in its
-        // private copy, making missing prepared files an unambiguous error.
-        options.schema = Some(source.schema().clone());
-        options.durability_mode = DurabilityMode::Durable;
-        options.commit_tier = CommitTier::Durable;
-        let store = match root_id {
-            Some(id) => {
-                publish_reference(
-                    &StdVfs,
-                    &destination,
-                    &encode_participant_reference(root_id, &root, &mutation.name, 2)?,
-                    step,
-                )?;
-                let authority =
-                    PrivatePreparation::new(id, &mutation.name, &destination, &_coordinator);
-                Store::open_private_preparation(&destination, options, authority)?
-            }
-            None => Store::open(&destination, options)?,
-        };
-        if !mutation.upserts.is_empty() {
-            let mut batch = IngestBatch::new(mutation.upserts);
-            if let Some(epoch) = store.epoch_identity() {
-                batch = batch.with_epoch(epoch);
-            }
-            store
-                .ingest(batch)
-                .map_err(|e| invalid(&destination, &e.to_string()))?;
-            step("upserts prepared").map_err(|e| io(&destination, e))?;
-        }
-        if !mutation.deletes.is_empty() {
-            store
-                .delete(DeleteBatch::new(mutation.deletes))
-                .map_err(|e| invalid(&destination, &e.to_string()))?;
-            step("deletes prepared").map_err(|e| io(&destination, e))?;
-        }
-        if let Some(predicate) = mutation.delete_where {
-            store
-                .delete_matching(&predicate)
-                .map_err(|e| invalid(&destination, &e.to_string()))?;
-            step("predicate prepared").map_err(|e| io(&destination, e))?;
-        }
-        let generation = store.seal()?;
-        step("prepared checkpoint").map_err(|e| io(&destination, e))?;
-        store.close()?;
-        generations.push(generation);
-        let relative = next
-            .get(&mutation.name)
-            .ok_or_else(|| invalid(&root, "missing route"))?;
-        durable_write(
-            &StdVfs,
-            &destination.join(PREPARED),
-            &envelope(relative.as_bytes()),
-            step,
-        )?;
-        sync_dir(&StdVfs, &destination, step)?;
+    for name in input_order {
+        let store = sources
+            .get(&name)
+            .ok_or_else(|| invalid(&root, "missing source"))?;
+        generations.push(store.seal()?);
+        step("cascade checkpoint").map_err(|e| io(&root, e))?;
     }
-    sync_dir(&StdVfs, &transaction, step)?;
-    if root_id.is_none() {
-        // Create the empty baseline before references, so a crash while enlisting
-        // namespaces still resolves to all original stores.
-        if read_optional(&root.join(RECORD))?.is_none() {
-            publish(
-                &StdVfs,
-                &root,
-                &encode_root_record(root_id, &RootDescriptor::Legacy(Routes::new()))?,
-                step,
-            )?;
-        }
-        for name in ordered.keys() {
-            let directory = root.join(name);
-            let reference = directory.join(REFERENCE);
-            if read_optional(&reference)?.is_none() {
-                let root_text = root
-                    .to_str()
-                    .ok_or_else(|| invalid(&root, "root must be UTF-8"))?;
-                publish_reference(&StdVfs, &directory, &envelope(root_text.as_bytes()), step)?;
-            }
-        }
-    }
-    publish(&StdVfs, &root, &decision, step)?;
-    drop(sources);
-    reclamation::run(&StdVfs, &root, step)?;
     Ok(generations)
 }
 
@@ -1419,6 +1255,7 @@ mod descriptor_tests {
             BTreeMap::from([(
                 "a".into(),
                 StagedSelection {
+                    logical_delete: false,
                     manifest: ".ze-manifest-1".into(),
                     binding: crate::ingest::wal_payload::TransactionBinding {
                         transaction: 1,
@@ -1457,6 +1294,7 @@ mod descriptor_tests {
             BTreeMap::from([(
                 "a".into(),
                 StagedSelection {
+                    logical_delete: false,
                     manifest: ".ze-manifest-1".into(),
                     binding,
                 },
@@ -1482,14 +1320,27 @@ mod descriptor_tests {
             decode_staged(Path::new("root"), &bytes).expect("decode"),
             descriptor
         );
+        let mut logical = descriptor;
+        logical.0.get_mut("a").expect("participant").logical_delete = true;
+        let bytes = encode_staged(&logical).expect("logical encode");
+        assert!(bytes.starts_with(LOGICAL_STAGED_MAGIC));
+        assert!(body(Path::new("root"), &bytes).is_err());
+        assert_eq!(
+            decode_staged(Path::new("root"), &bytes).expect("logical decode"),
+            logical
+        );
     }
 }
 
 // ZE-256 v2 carries staged selections and the complete existing route table.
 // V1 readers reject the distinct magic before interpreting any route.
+// V3 retains the V2 layout but deletes logically. Older readers must reject
+// it rather than adopting the physical-purge obligations of V2.
 const STAGED_MAGIC: &[u8] = b"ZENS0002";
+const LOGICAL_STAGED_MAGIC: &[u8] = b"ZENS0003";
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StagedSelection {
+    logical_delete: bool,
     manifest: String,
     binding: crate::ingest::wal_payload::TransactionBinding,
 }
@@ -1498,7 +1349,17 @@ struct StagedDescriptor(BTreeMap<String, StagedSelection>, Routes);
 
 fn encode_staged(descriptor: &StagedDescriptor) -> Result<Vec<u8>, StoreError> {
     let path = Path::new(RECORD);
-    let mut bytes = STAGED_MAGIC.to_vec();
+    let logical_delete = descriptor
+        .0
+        .values()
+        .next()
+        .is_some_and(|s| s.logical_delete);
+    let mut bytes = if logical_delete {
+        LOGICAL_STAGED_MAGIC
+    } else {
+        STAGED_MAGIC
+    }
+    .to_vec();
     let count =
         u32::try_from(descriptor.0.len()).map_err(|_| invalid(path, "participant count"))?;
     if count == 0 {
@@ -1508,7 +1369,8 @@ fn encode_staged(descriptor: &StagedDescriptor) -> Result<Vec<u8>, StoreError> {
     let mut transaction = None;
     let mut identities = std::collections::BTreeSet::new();
     for (name, selection) in &descriptor.0 {
-        if !name_valid(name)
+        if selection.logical_delete != logical_delete
+            || !name_valid(name)
             || !selection.manifest.starts_with(".ze-manifest-")
             || !name_valid(selection.manifest.trim_start_matches('.'))
             || selection.manifest.contains("..")
@@ -1550,7 +1412,7 @@ fn decode_staged(path: &Path, bytes: &[u8]) -> Result<StagedDescriptor, StoreErr
         .get(..end)
         .ok_or_else(|| invalid(path, "staged bounds"))?;
     if bytes.len() > MAX_RECORD
-        || !prefix.starts_with(STAGED_MAGIC)
+        || !(prefix.starts_with(STAGED_MAGIC) || prefix.starts_with(LOGICAL_STAGED_MAGIC))
         || bytes.get(end..) != Some(xxh3_64(prefix).to_le_bytes().as_slice())
     {
         return Err(invalid(path, "staged checksum/version"));
@@ -1594,7 +1456,14 @@ fn decode_staged(path: &Path, bytes: &[u8]) -> Result<StagedDescriptor, StoreErr
             crate::ingest::wal_payload::TransactionBinding::decode(take(path, &mut remaining, 64)?)
                 .map_err(|_| invalid(path, "transaction binding"))?;
         if result
-            .insert(name, StagedSelection { manifest, binding })
+            .insert(
+                name,
+                StagedSelection {
+                    manifest,
+                    binding,
+                    logical_delete: prefix.starts_with(LOGICAL_STAGED_MAGIC),
+                },
+            )
             .is_some()
         {
             return Err(invalid(path, "duplicate participant"));
@@ -1866,11 +1735,13 @@ fn accept(
     }
     ids.sort_unstable();
     ids.dedup();
-    crate::ingest::namespace_purge_intent(vfs, directory, selected.binding.transaction, ids)
-        .map_err(|e| StoreError::PurgeRecovery {
-            detail: e.to_string(),
-        })?;
-    step("purge obligation adopted").map_err(|e| io(directory, e))?;
+    if !selected.logical_delete {
+        crate::ingest::namespace_purge_intent(vfs, directory, selected.binding.transaction, ids)
+            .map_err(|e| StoreError::PurgeRecovery {
+                detail: e.to_string(),
+            })?;
+        step("purge obligation adopted").map_err(|e| io(directory, e))?;
+    }
     let bytes = crate::manifest::encode_manifest(manifest).map_err(StoreError::Manifest)?;
     let temporary = directory.join(".manifest.ze.tmp");
     durable_write(vfs, &temporary, &bytes, step)?;

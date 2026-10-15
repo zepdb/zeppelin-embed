@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-const { declareCascade, deleteCascade, openNamespace, uuidToId } = createRequire(import.meta.url)('..');
+const { declareCascade, deleteCascade, namespaceBatch, openNamespace, uuidToId } = createRequire(import.meta.url)('..');
 const spec = { attributes: [{ id: 1, name: 'parent', type: 'id128', nullable: true }] };
 const names = ['notes', 'segments', 'words'];
 const participants = names.map(name => ({ name, spec }));
@@ -34,6 +34,26 @@ function state(root) {
   });
 }
 const deletes = () => participants.map((p, i) => ({ ...p, deletes: i === 0 ? [parent + 1n] : [] }));
+
+test('namespaceBatch does not implicitly expand declared cascades', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ze-batch-no-cascade-'));
+  try {
+    seed(root); declare(root);
+    namespaceBatch(root, deletes());
+    assert.deepEqual(state(root), [[true, true], [true, true], [false, true]]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('deleteCascade preserves singleton checkpoint generations', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ze-cascade-singleton-'));
+  try {
+    const store = openNamespace(root, 'notes', spec);
+    try { store.upsert([{ id: 1n, text: 'unsealed' }]); }
+    finally { store.close(); }
+    assert.deepEqual(deleteCascade(root, [participants[0]]), [2n]);
+    assert.deepEqual(deleteCascade(root, [{ ...participants[0], deletes: [1n] }]), [3n]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test('cascade declarations survive reopen and delete transitive dependants', () => {
   const root = mkdtempSync(join(tmpdir(), 'ze-cascade-'));

@@ -320,6 +320,7 @@ fn validate(
                             &StdVfs,
                             &directory,
                             &StagedSelection {
+                                logical_delete: false,
                                 manifest: retained,
                                 binding,
                             },

@@ -149,6 +149,7 @@ fn portable_namespace_records_round_trip_and_reject_corruption() {
         BTreeMap::from([(
             "a".into(),
             StagedSelection {
+                logical_delete: false,
                 manifest: ".ze-manifest-1".into(),
                 binding: crate::ingest::wal_payload::TransactionBinding {
                     transaction: 1,
@@ -298,6 +299,7 @@ fn portable_fixture(
             BTreeMap::from([(
                 "a".into(),
                 StagedSelection {
+                    logical_delete: false,
                     manifest: ".ze-manifest-1".into(),
                     binding,
                 },

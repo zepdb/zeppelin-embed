@@ -5562,7 +5562,7 @@ mod namespace_probe_tests {
         }
         assert_eq!(
             super::super::coverage::REQUIRED_NAMESPACE_COVERAGE.len(),
-            61
+            82
         );
         let required = super::super::campaign::CampaignSpec::for_kind(
             super::super::campaign::CampaignKind::StorageDurability,
@@ -6082,8 +6082,151 @@ fn namespace_run(
     Ok(observed)
 }
 
-/// Executable fault family, like the catalog probes: credit follows comparator
-/// success and an actual protocol callback/VFS firing, never a planned schedule.
+// Cascade publication uses the same fault seams but retains logical deletion.
+const CASCADE_STEPS: &[(&str, bool)] = &[
+    ("prepared append", false),
+    ("prepared WAL sync", false),
+    ("commit rename", true),
+    ("live states installed", true),
+    ("accept manifest rename", true),
+    ("accept binding rename", true),
+    ("cascade checkpoint", true),
+];
+
+fn cascade_run(seed: u64, fault: Option<&str>) -> Result<independent::NamespaceImage, String> {
+    use zeppelin_embed::lifecycle::{
+        CascadeRule, NamespaceMutation, namespace_declare_cascade,
+        namespace_delete_cascade_with_steps,
+    };
+    let root = tempdir().map_err(|e| e.to_string())?;
+    let schema = Schema::new(vec![ColumnDefinition::new(
+        ColumnId::new(1),
+        "parent",
+        ColumnType::Id128,
+        true,
+    )])
+    .map_err(|e| e.to_string())?;
+    let options = OpenOptions::new().with_schema(schema.clone());
+    let first = u128::from(seed) * 10 + 1;
+    for name in ["a", "b"] {
+        let store =
+            Store::open(root.path().join(name), options.clone()).map_err(|e| e.to_string())?;
+        store
+            .ingest(IngestBatch::new(
+                (first..=first + 1)
+                    .map(|id| {
+                        namespace_document(id, 1, b"cascade").with_columns(vec![(
+                            ColumnId::new(1),
+                            PredicateValue::Id128(DocId::new(id)),
+                        )])
+                    })
+                    .collect(),
+            ))
+            .map_err(|e| e.to_string())?;
+        store.close().map_err(|e| e.to_string())?;
+    }
+    let participants = || {
+        ["b", "a"]
+            .into_iter()
+            .map(|name| NamespaceMutation {
+                name: name.into(),
+                options: options.clone(),
+                upserts: vec![],
+                deletes: vec![],
+                delete_where: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    namespace_declare_cascade(
+        root.path(),
+        participants(),
+        CascadeRule {
+            parent: "a".into(),
+            child: "b".into(),
+            attribute: ColumnId::new(1),
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let mut mutations = participants();
+    mutations
+        .iter_mut()
+        .find(|m| m.name == "a")
+        .ok_or("missing parent")?
+        .deletes = vec![DocId::new(first)];
+    let mut fired = false;
+    let mut prepared = false;
+    let result = namespace_delete_cascade_with_steps(root.path(), mutations, &mut |step| {
+        prepared |= step == "prepared WAL sync";
+        if !fired && fault == Some(step) && (step != "commit rename" || prepared) {
+            fired = true;
+            return Err(std::io::Error::other("seeded cascade interruption"));
+        }
+        Ok(())
+    });
+    if fault.is_some() {
+        if !fired || result.is_ok() {
+            return Err(format!("cascade fault cannot fire: {fault:?} {result:?}"));
+        }
+    } else {
+        let generations = result.map_err(|e| e.to_string())?;
+        if generations != [3, 3] {
+            return Err(format!("cascade generations: {generations:?}"));
+        }
+    }
+    let read_only = OpenOptions::read_only().with_schema(schema);
+    let observed = namespace_observe_with_options(root.path(), &["a", "b"], &read_only)?;
+    // Writable recovery must also adopt the logical decision without a purge.
+    for name in ["b", "a"] {
+        let store =
+            Store::open(root.path().join(name), options.clone()).map_err(|e| e.to_string())?;
+        store.close().map_err(|e| e.to_string())?;
+        if root.path().join(name).join("purge.ze").exists() {
+            return Err("cascade adopted physical purge".into());
+        }
+    }
+    if namespace_observe_with_options(root.path(), &["a", "b"], &read_only)? != observed {
+        return Err("cascade writable recovery changed result".into());
+    }
+    Ok(observed)
+}
+
+fn cascade_probe(
+    seed: u64,
+    coverage: &mut super::coverage::CoverageRegistry,
+) -> Result<(), String> {
+    let first = u128::from(seed) * 10 + 1;
+    let before: independent::NamespaceImage = ["a", "b"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.into(),
+                [(first, 1), (first + 1, 1)].into_iter().collect(),
+            )
+        })
+        .collect();
+    let after: independent::NamespaceImage = ["a", "b"]
+        .into_iter()
+        .map(|name| (name.into(), [(first + 1, 1)].into_iter().collect()))
+        .collect();
+    let clean = cascade_run(seed, None)?;
+    independent::check_namespace_publication(&before, &after, &clean, true)?;
+    let mut partial = after.clone();
+    partial.insert("b".into(), before["b"].clone());
+    if independent::check_namespace_publication(&before, &after, &partial, true).is_ok() {
+        return Err("cascade comparator accepted partial family".into());
+    }
+    for &(step, committed) in CASCADE_STEPS {
+        let observed = cascade_run(seed, Some(step))?;
+        independent::check_namespace_publication(&before, &after, &observed, committed)?;
+        for suffix in ["clean", "fire", "can-fire"] {
+            coverage.hit(format!("storage.namespace.cascade.{step}.{suffix}"));
+        }
+    }
+    Ok(())
+}
+
+/// Executable fault family: credit requires successful independent comparison
+/// and an actual protocol callback/VFS firing, never a planned schedule.
 pub fn namespace_probe(
     seed: u64,
     coverage: &mut super::coverage::CoverageRegistry,
@@ -6184,6 +6327,7 @@ pub fn namespace_probe(
         }
     }
     namespace_conversion_probe(seed, coverage)?;
+    cascade_probe(seed, coverage)?;
     Ok(())
 }
 
