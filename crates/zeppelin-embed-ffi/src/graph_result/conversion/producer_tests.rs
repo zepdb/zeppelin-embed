@@ -395,10 +395,12 @@ fn ze241_receipt_allocation_failures_leave_batch_not_committed() {
         store.close_graph().unwrap();
         let store = Store::open_graph(dir.path().join("native"), store_options(), None).unwrap();
         let retry = apply_and_settle(&REGISTRY, &store, &requests, &control());
+        // Unified graph creation publishes generation 1. The refused allocation
+        // commits nothing, so this first successful batch publishes generation 2.
         assert_eq!(
             retry.outcome,
             OperationOutcome::Success(SuccessfulOutcome::Committed(
-                std::num::NonZeroU64::new(1).unwrap()
+                std::num::NonZeroU64::new(2).unwrap()
             ))
         );
         let mut response = retry.value.unwrap().unwrap();

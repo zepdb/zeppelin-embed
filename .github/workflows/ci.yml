@@ -73,6 +73,10 @@ jobs:
         run: >-
           cargo test --workspace --exclude zeppelin-embed-workspace-tests
           --features zeppelin-embed-ffi/graph-cypher
+      - name: Test FFI lib with graph-result allocation hooks
+        run: >-
+          cargo test -p zeppelin-embed-ffi
+          --features graph-result-test-support --lib
       - name: Exercise the scoped graph-result allocation hook
         run: >-
           cargo test -p zeppelin-embed-workspace-tests
