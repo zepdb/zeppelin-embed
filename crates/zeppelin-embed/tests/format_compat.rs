@@ -461,6 +461,39 @@ fn the_v0_6_0_reader_refuses_portable_namespaces_without_changing_data() {
             eprintln!("ZE-383/384 old reader {mode} lock-file changes: {lock_changes:?}");
         }
     };
+    let assert_live_cascade_refused = |root: &Path| {
+        assert!(
+            std::fs::read(root.join(".ze-namespaces"))
+                .expect("portable root record")
+                .starts_with(b"ZENS0003")
+        );
+        // Live publication stages files inside the participants, not copies.
+        // Pin the complete directory set: no .ze-batch-* or preparation dirs
+        // may escape the refusal checks below, including empty directories.
+        let mut directories = Vec::new();
+        for entry in std::fs::read_dir(root).expect("root entries") {
+            let entry = entry.expect("root entry");
+            if entry.file_type().expect("root entry type").is_dir() {
+                directories.push(entry.file_name());
+            }
+        }
+        directories.sort();
+        assert_eq!(directories, ["a", "b"]);
+        for name in ["a", "b"] {
+            let participant = root.join(name);
+            for entry in std::fs::read_dir(&participant).expect("participant entries") {
+                assert!(
+                    !entry
+                        .expect("participant entry")
+                        .file_type()
+                        .expect("type")
+                        .is_dir(),
+                    "unexpected directory inside participant {name}"
+                );
+            }
+            assert_refused(root, &participant);
+        }
+    };
     let conversion = tempfile::tempdir().expect("conversion");
     let source = conversion.path().join("source");
     copy_tree(
@@ -475,21 +508,8 @@ fn the_v0_6_0_reader_refuses_portable_namespaces_without_changing_data() {
     for name in ["a", "b"] {
         assert_refused(&converted, &converted.join(name));
     }
-    namespace_delete_cascade(&converted, mutations(false)).expect("converted copy routes");
-    for name in ["a", "b"] {
-        assert_refused(&converted, &converted.join(name));
-        let routed = std::fs::read_dir(&converted)
-            .expect("entries")
-            .map(|e| e.expect("entry").path())
-            .find(|p| {
-                p.file_name()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| s.starts_with(".ze-batch-"))
-            })
-            .expect("route")
-            .join(name);
-        assert_refused(&converted, &routed);
-    }
+    namespace_delete_cascade(&converted, mutations(false)).expect("converted live cascade");
+    assert_live_cascade_refused(&converted);
     assert_eq!(file_hashes(&source), source_before);
     let bootstrap = tempfile::tempdir().expect("bootstrap root");
     for name in ["a", "b"] {
@@ -502,27 +522,9 @@ fn the_v0_6_0_reader_refuses_portable_namespaces_without_changing_data() {
     .expect("empty portable bootstrap descriptor");
     assert!(!bootstrap.path().join("a/.ze-namespace-root").exists());
     assert_refused(bootstrap.path(), &bootstrap.path().join("a"));
-    for routed in [false, true] {
-        if routed {
-            namespace_delete_cascade(root.path(), mutations(false))
-                .expect("portable copy publication");
-        }
-        let paths = if routed {
-            std::fs::read_dir(root.path())
-                .expect("root entries")
-                .map(|entry| entry.expect("entry").path())
-                .find(|path| {
-                    path.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with(".ze-batch-"))
-                })
-                .map(|path| vec![root.path().join("a"), path.join("a")])
-                .expect("routed participant")
-        } else {
-            vec![root.path().join("a")]
-        };
-        for path in paths {
-            assert_refused(root.path(), &path);
-        }
+    for name in ["a", "b"] {
+        assert_refused(root.path(), &root.path().join(name));
     }
+    namespace_delete_cascade(root.path(), mutations(false)).expect("portable live cascade");
+    assert_live_cascade_refused(root.path());
 }
