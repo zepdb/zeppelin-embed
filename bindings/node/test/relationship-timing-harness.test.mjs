@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const harness = fileURLToPath(new URL('../../../scripts/cy_time.sh', import.meta.url));
+const harnessTestOptions = {
+  skip: process.platform === 'win32' && 'scripts/cy_time.sh is a POSIX-only timing harness',
+};
 
 function fixture(t, buildStatus = 0) {
   const root = mkdtempSync(join(tmpdir(), 'relationship-timing-'));
@@ -35,7 +38,7 @@ function fixture(t, buildStatus = 0) {
   return { run, log };
 }
 
-test('timing_harness_rebuilds_an_existing_addon_on_every_run', t => {
+test('timing_harness_rebuilds_an_existing_addon_on_every_run', harnessTestOptions, t => {
   const { run, log } = fixture(t);
   assert.equal(run().status, 0);
   assert.equal(run().status, 0);
@@ -44,7 +47,7 @@ test('timing_harness_rebuilds_an_existing_addon_on_every_run', t => {
   assert.equal(commands.match(/node .*relationship-timing.mjs/g)?.length, 2);
 });
 
-test('timing_harness_refuses_to_time_a_failed_rebuild', t => {
+test('timing_harness_refuses_to_time_a_failed_rebuild', harnessTestOptions, t => {
   const { run, log } = fixture(t, 17);
   assert.notEqual(run().status, 0);
   const commands = readFileSync(log, 'utf8');
@@ -52,7 +55,7 @@ test('timing_harness_refuses_to_time_a_failed_rebuild', t => {
   assert.doesNotMatch(commands, /node /);
 });
 
-test('timing_harness_records_head_and_addon_hash_before_timing', t => {
+test('timing_harness_records_head_and_addon_hash_before_timing', harnessTestOptions, t => {
   const { run } = fixture(t);
   const result = run();
   assert.equal(result.status, 0);
