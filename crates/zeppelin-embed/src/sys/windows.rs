@@ -132,10 +132,8 @@ struct SYSTEM_INFO {
     wProcessorRevision: u16,
 }
 
-#[cfg(any(feature = "graph-cypher", test))]
 const BCRYPT_USE_SYSTEM_PREFERRED_RNG: DWORD = 0x0000_0002;
 
-#[cfg(any(feature = "graph-cypher", test))]
 #[link(name = "bcrypt")]
 unsafe extern "system" {
     fn BCryptGenRandom(
@@ -146,7 +144,6 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-#[cfg(any(feature = "graph-cypher", test))]
 pub(crate) fn fill_entropy(output: &mut [u8]) -> io::Result<()> {
     let length = DWORD::try_from(output.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "entropy buffer exceeds DWORD"))?;

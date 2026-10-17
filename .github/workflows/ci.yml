@@ -94,6 +94,63 @@ jobs:
       - name: Exercise every runtime kernel arm
         run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels
 
+  windows:
+    name: test (windows-latest)
+    runs-on: windows-latest
+    env:
+      CARGO_BUILD_JOBS: "3"
+    defaults:
+      run:
+        # Git Bash's link.exe shadows the MSVC linker.
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          targets: x86_64-pc-windows-msvc
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen@0.29.4
+      - name: Build the portable workspace
+        # zeppelin-embed-bench uses Unix-only APIs.
+        # zeppelin-embed-workspace-tests depends on zeppelin-embed-bench.
+        # zeppelin-embed-text depends on macOS-only MLX Metal.
+        # Build graph support through the FFI graph-cypher feature.
+        run: >-
+          cargo build --locked --workspace
+          --exclude zeppelin-embed-bench
+          --exclude zeppelin-embed-workspace-tests
+          --exclude zeppelin-embed-text
+          --features zeppelin-embed-ffi/graph-cypher
+      - name: Test Windows storage and portable snapshots
+        run: >-
+          cargo test --locked -p zeppelin-embed
+          --test windows_durability --test windows_reclamation
+          --test windows_simd_parity --test windows_storage_protocol
+          --test portable_store_fixture --test snapshot_remap
+      - name: Test Windows lock reparse-point refusal
+        run: >-
+          cargo test --locked -p zeppelin-embed --lib
+          lifecycle::lock::windows_tests::ze307_lock_reparse_points_fail_loudly
+          -- --exact --nocapture
+      - name: Qualify Windows FFI headers and native C consumers
+        # Both release-artifact qualifications are ignored by default.
+        run: >-
+          cargo test --locked -p zeppelin-embed-ffi
+          --test ffi_header_windows --test ffi_c_consumer_windows
+          -- --include-ignored --nocapture
+      - name: Test the standalone Windows storage protocol probe
+        run: >-
+          cargo test --locked
+          --manifest-path tools/windows-storage-probe/Cargo.toml --test protocol
+      # tests/windows-electron requires an Electron download and a GUI;
+      # it remains outside CI.
+
   format-compat:
     name: format-compat (macos-14)
     runs-on: macos-14
