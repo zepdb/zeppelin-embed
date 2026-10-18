@@ -1,6 +1,5 @@
 //! Bounded private write admission with read-only base access and no publication.
 use super::catalog::{GraphInterpretation, Symbol, SymbolHighWaters, SymbolKind};
-use super::storage::artifact::ArtifactId;
 use super::*;
 mod bounded;
 mod encode;
@@ -29,9 +28,6 @@ pub struct BaseIdentity {
     pub store: StoreInstanceId,
     /// Admitted published generation.
     pub generation: GraphGeneration,
-    /// Legacy checkpoint artifact used only by the old reclaim/recovery path.
-    /// removed by ZE-346 when the graph WAL and root selector are deleted
-    pub roots: Option<ArtifactId>,
     /// In-memory position of the last graph fold.
     pub fold: FoldMark,
 }

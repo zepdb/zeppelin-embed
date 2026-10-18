@@ -244,12 +244,6 @@ pub fn local_endpoint(item: u32) -> ZeGraphEndpoint {
     e.local_item = item;
     e
 }
-pub fn node_endpoint(id: ZeNodeId) -> ZeGraphEndpoint {
-    let mut e = unused_endpoint();
-    e.kind = 1;
-    e.node = id;
-    e
-}
 pub fn create_node_item(
     ns: ZeGraphRange,
     key: ZeGraphRange,

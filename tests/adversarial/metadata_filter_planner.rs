@@ -106,14 +106,7 @@ pub struct MetadataDirectoryDigestEvidence {
     pub files: Vec<MetadataFileDigestFact>,
 }
 
-impl MetadataDirectoryDigestEvidence {
-    fn empty() -> Self {
-        Self {
-            digest: 0,
-            files: Vec::new(),
-        }
-    }
-}
+impl MetadataDirectoryDigestEvidence {}
 
 /// The directory relationship established before either same-seed leg runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

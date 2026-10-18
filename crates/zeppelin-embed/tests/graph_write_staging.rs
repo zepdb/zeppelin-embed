@@ -14,7 +14,6 @@ impl AdmittedBase for Empty {
             store: StoreInstanceId::new(1).unwrap(),
             generation: GraphGeneration::new(0),
             fold: Default::default(),
-            roots: None,
         }
     }
     fn high_waters(&self) -> HighWaters {
@@ -234,10 +233,10 @@ fn live<'a>(image: &'a CanonicalContents<'a>) -> Live<'a> {
         identity: BaseIdentity {
             store: StoreInstanceId::new(1).unwrap(),
             generation: GraphGeneration::new(7),
-            fold: Default::default(),
-            roots: Some(
-                zeppelin_embed::property_graph::storage::artifact::ArtifactId::new(3).unwrap(),
-            ),
+            fold: zeppelin_embed::property_graph::staging::FoldMark {
+                manifest_generation: 7,
+                ..Default::default()
+            },
         },
         view_override: std::cell::Cell::new(None),
         high: HighWaters {

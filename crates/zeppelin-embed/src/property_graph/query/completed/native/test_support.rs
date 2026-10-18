@@ -55,6 +55,7 @@ struct MaterializeConsumer {
     after_pull: Option<Box<dyn FnMut(usize) -> Result<(), NativeResultError>>>,
 }
 
+#[cfg(test)]
 pub(super) fn materialize_with_source_observer<H>(
     after_pull: H,
 ) -> impl NativeReadConsumer<Result<CompletedGraphResult, RuntimeFailure<NativeResultError>>>

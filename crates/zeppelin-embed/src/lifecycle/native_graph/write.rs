@@ -297,9 +297,7 @@ where
                 store: admitted.base().store,
                 generation,
                 fold: admitted.base().fold,
-                roots: admitted.base().roots,
             },
-            root_envelope: admitted.root_envelope(),
             roots,
             wal_roots: graph,
             sequence,
@@ -511,9 +509,7 @@ where
                 store: admitted.base().store,
                 generation,
                 fold: admitted.base().fold,
-                roots: admitted.base().roots,
             },
-            root_envelope: admitted.root_envelope(),
             roots,
             wal_roots: graph,
             sequence,
@@ -908,7 +904,6 @@ fn checkpoint_manifest_locked(
             graph_absorbed_through: graph_mark,
             envelope_sequence: admitted.sequence(),
         },
-        None,
     )?;
     let remapped = crate::lifecycle::PublishedSnapshot::from_manifest(
         vfs,
@@ -996,7 +991,18 @@ impl std::ops::Deref for ReceiptRegistration {
 /// classified against and, only when it committed, the changed generation.
 pub(crate) struct NativePreparedResult<R> {
     registration: R,
+    #[cfg_attr(
+        not(any(test, feature = "test-seams")),
+        allow(
+            dead_code,
+            reason = "owns materialized core bytes until result handoff"
+        )
+    )]
     core: Vec<u8>,
+    #[cfg_attr(
+        not(any(test, feature = "test-seams")),
+        allow(dead_code, reason = "owns materialized ABI bytes until result handoff")
+    )]
     abi: Vec<u8>,
     _charges: [GraphReservation; 3],
     disposition: BatchDisposition,
@@ -1040,9 +1046,11 @@ impl<R> NativePreparedResult<R> {
     pub(crate) fn into_registration(self) -> R {
         self.registration
     }
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn core_bytes(&self) -> &[u8] {
         &self.core
     }
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn abi_bytes(&self) -> &[u8] {
         &self.abi
     }
@@ -1640,9 +1648,7 @@ where
                 store: admitted.base().store,
                 generation: expected_generation,
                 fold: admitted.base().fold,
-                roots: admitted.base().roots,
             },
-            root_envelope: admitted.root_envelope(),
             roots,
             wal_roots: graph,
             sequence: expected_sequence,
@@ -1969,9 +1975,7 @@ where
                 store: admitted.base().store,
                 generation,
                 fold: admitted.base().fold,
-                roots: admitted.base().roots,
             },
-            root_envelope: admitted.root_envelope(),
             roots,
             wal_roots: graph,
             sequence,
@@ -2014,7 +2018,7 @@ where
         generation,
     ))
 }
-
+#[cfg_attr(not(feature = "allocation-audit"), allow(dead_code))]
 #[derive(Clone, Copy, Default)]
 pub(super) struct NativeCommitAudit {
     allocations: u64,
@@ -2483,6 +2487,7 @@ pub(super) enum CommitStep {
     clippy::too_many_arguments,
     reason = "one commit carries its store, writer, lease, base, batch and controls"
 )]
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) fn commit_staged_batch<'m>(
     store: &crate::lifecycle::Store,
     writer: &mut NativeWriter,
@@ -3321,7 +3326,6 @@ impl crate::lifecycle::Store {
                 graph_absorbed_through: absorbed_through,
                 envelope_sequence: admitted.sequence(),
             },
-            None,
         )?;
         if admitted.sequence() == admitted.base().fold.envelope_sequence {
             // No graph state changed: preserve the already durable inventory
@@ -3427,6 +3431,7 @@ impl crate::lifecycle::Store {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn checkpoint_native_graph(
         &self,
         control: &crate::lifecycle::QueryControl,
@@ -3497,6 +3502,7 @@ impl crate::lifecycle::Store {
         let lease = self.admit_native_read()?;
         Ok(super::NativeMaintenanceAdmission {
             lease,
+            #[cfg(any(test, feature = "test-seams"))]
             serial_fence: self.native_graph.serial_fence()?,
         })
     }

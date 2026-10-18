@@ -14,7 +14,6 @@ impl AdmittedBase for Empty {
             store: StoreInstanceId::new(1).unwrap(),
             generation: GraphGeneration::new(0),
             fold: Default::default(),
-            roots: None,
         }
     }
     fn high_waters(&self) -> HighWaters {
@@ -1146,7 +1145,10 @@ impl<'a> Fixture<'a> {
         Fixture {
             identity: BaseIdentity {
                 generation,
-                roots: Some(ArtifactId::new(50_000 + generation.get() as u128).unwrap()),
+                fold: zeppelin_embed::property_graph::staging::FoldMark {
+                    manifest_generation: generation.get(),
+                    ..Default::default()
+                },
                 ..self.identity
             },
             high: batch.high_waters(),

@@ -1,25 +1,30 @@
 //! Native preparation for one validated singleton search domain.
 
-#![allow(
-    dead_code,
-    reason = "the eager search owner consumes this private preparation seam in ZE-64"
-)]
-
-use super::super::super::eligibility::{Eligibility, EligibleNodeSet};
-use super::super::super::expression::{ExpressionCapacity, ExpressionError, ExpressionFailure};
+#[cfg(any(test, feature = "test-seams"))]
+use super::super::super::eligibility::Eligibility;
+use super::super::super::eligibility::EligibleNodeSet;
+#[cfg(any(test, feature = "test-seams"))]
+use super::super::super::expression::ExpressionCapacity;
+use super::super::super::expression::{ExpressionError, ExpressionFailure};
+#[cfg(any(test, feature = "test-seams"))]
 use super::super::super::plan::{ParameterBinding, SearchRequest};
+#[cfg(any(test, feature = "test-seams"))]
 use super::super::super::relational::{RowOperator, Schema, StorageCapacity};
+#[cfg(any(test, feature = "test-seams"))]
 use super::super::super::resources::RuntimePlan;
+#[cfg(any(test, feature = "test-seams"))]
 use super::super::super::runtime::{ArenaCapacity, PullOperator, PullState};
 use super::super::*;
 
 /// Charged singleton input row and its optional materialized same-view set.
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) struct PreparedEligibility<'v, 'm, 'g> {
     row: RowBatch<'v, 'm, 'g>,
     schema: Schema<'m, 'g>,
     set: Option<EligibleNodeSet<'v, 'm, 'g>>,
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 impl<'v, 'm, 'g> PreparedEligibility<'v, 'm, 'g> {
     pub(super) fn eligibility(&self) -> Eligibility<'_, 'v, 'm, 'g> {
         match &self.set {
@@ -39,6 +44,7 @@ impl<'v, 'm, 'g> PreparedEligibility<'v, 'm, 'g> {
     clippy::too_many_arguments,
     reason = "the admitted plan, native and set capacities remain explicit"
 )]
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) fn prepare<'s, 'r, 'plan, 'v, 'm, 'g>(
     view: &'s GraphReadView<'s, 'v, 'm, 'g>,
     plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,

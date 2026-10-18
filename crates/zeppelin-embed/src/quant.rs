@@ -36,7 +36,6 @@ pub fn take_query_preparation_test_observations() -> QueryPreparationTestObserva
     QUERY_PREPARATIONS.with(|calls| calls.take().unwrap_or_default())
 }
 
-pub(crate) use bits4::{Bit4ControlError, est_dot_bit4_controlled, prepare_bit4_query_controlled};
 pub use bits4::{
     Bit4Factors, Bit4Query, dequantize_bit4, est_dot_bit4, est_dot_bit4_batch, prepare_bit4_query,
     quantize_bit4,

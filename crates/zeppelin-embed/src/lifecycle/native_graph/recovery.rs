@@ -595,7 +595,6 @@ fn validate_inventory_fold_transition(
 pub(super) trait RecoveryRead {
     fn vfs(&self) -> &dyn Vfs;
     fn publication(&self) -> &Arc<super::NativeGraphPublication>;
-    fn lexical(&self) -> crate::fts::tokenizer::TokenizerEpoch;
     fn observe_mapping(&self, path: &Path);
 }
 
@@ -605,9 +604,6 @@ impl RecoveryRead for Store {
     }
     fn publication(&self) -> &Arc<super::NativeGraphPublication> {
         &self.native_graph
-    }
-    fn lexical(&self) -> crate::fts::tokenizer::TokenizerEpoch {
-        self.tokenizer.epoch()
     }
     fn observe_mapping(&self, _: &Path) {}
 }
@@ -637,29 +633,18 @@ fn map_file(
     }
     result
 }
-
-#[derive(Clone, Copy)]
-pub(super) struct CapturedWalCutoff {
-    pub(super) identity: u128,
-    pub(super) first_sequence: u64,
-    pub(super) bytes: usize,
-}
-
 #[allow(
     clippy::large_enum_variant,
     reason = "captured WAL state keeps failure handling allocation-free"
 )]
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) enum CapturedStateVisit<'a> {
     Checkpoint {
-        wal_identity: u128,
         state: CommitState<'a>,
-        complete_bytes: usize,
     },
     Envelope {
-        kind: crate::property_graph::wal::EnvelopeKind,
         state: CommitState<'a>,
         changes: ChangeReader<'a>,
-        complete_bytes: usize,
     },
 }
 
@@ -670,7 +655,6 @@ pub(super) fn visit_captured_state(
     directory: &Path,
     bundle: &super::NativeGraphBundle,
     target_sequence: u64,
-    _exact_wal_cutoff: Option<CapturedWalCutoff>,
     control: &QueryControl,
     mut visit: impl FnMut(CapturedStateVisit<'_>, &mut WalResources<'_>) -> Result<(), NativeGraphError>,
 ) -> Result<(), NativeGraphError> {
@@ -695,14 +679,7 @@ pub(super) fn visit_captured_state(
     if target_sequence < state.sequence {
         state = super::write::commit_state(bundle);
     }
-    visit(
-        CapturedStateVisit::Checkpoint {
-            wal_identity: 0,
-            state,
-            complete_bytes: 0,
-        },
-        &mut resources,
-    )?;
+    visit(CapturedStateVisit::Checkpoint { state }, &mut resources)?;
     if target_sequence == state.sequence {
         return Ok(());
     }
@@ -737,10 +714,8 @@ pub(super) fn visit_captured_state(
                 }
                 visit(
                     CapturedStateVisit::Envelope {
-                        kind: envelope.kind,
                         state: envelope.state,
                         changes: envelope.changes(),
-                        complete_bytes: envelope.complete_bytes,
                     },
                     &mut resources,
                 )?;
@@ -749,7 +724,7 @@ pub(super) fn visit_captured_state(
                 }
                 state = envelope.state;
             }
-            FramedCaptureStep::End(_) => return Err(NativeGraphError::Wal(WalError::Sequence)),
+            FramedCaptureStep::End => return Err(NativeGraphError::Wal(WalError::Sequence)),
         }
     }
     Err(NativeGraphError::Wal(WalError::Sequence))
@@ -1157,42 +1132,20 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         reference: RequiredRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<(), TreeError> {
-        self.validate_protected_reference(reference, false, resources)
-    }
-
-    fn validate_checkpoint_control_reference(
-        &self,
-        reference: RequiredRef,
-        resources: &mut TreeResources<'_>,
-    ) -> Result<(), TreeError> {
-        if reference.object.family != crate::format::FormatFamily::NativeGraphRoot.id()
-            || reference.object.version != 1
-            || reference.block.kind != BlockKind::CheckpointPayload
-            || reference.block.version != 1
-        {
-            return Err(TreeError::Invalid("recovery checkpoint control reference"));
-        }
-        self.validate_protected_reference(reference, true, resources)
+        self.validate_protected_reference(reference, resources)
     }
 
     fn validate_protected_reference(
         &self,
         reference: RequiredRef,
-        allow_checkpoint_serial: bool,
         resources: &mut TreeResources<'_>,
     ) -> Result<(), TreeError> {
-        self.validate_protected_reference_cached(
-            reference,
-            allow_checkpoint_serial,
-            resources,
-            None,
-        )
+        self.validate_protected_reference_cached(reference, resources, None)
     }
 
     fn validate_protected_reference_cached(
         &self,
         reference: RequiredRef,
-        allow_checkpoint_serial: bool,
         resources: &mut TreeResources<'_>,
         mut cache: Option<&mut StorageBuffer<'_, (ArtifactDescriptor, RecoveryMappedArtifact)>>,
     ) -> Result<(), TreeError> {
@@ -1200,7 +1153,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         if reference.object.store != self.expected_store
             || reference.object.generation > self.generation
             || reference.object.serial == 0
-            || (!allow_checkpoint_serial && reference.object.serial > self.creation_serial)
+            || reference.object.serial > self.creation_serial
             || reference.object.bytes as usize > MAX_ARTIFACT_BYTES
             || reference.block.artifact != reference.object.artifact
         {
@@ -1211,10 +1164,6 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             && reference.object.version == 1
         {
             ContainerKind::Object
-        } else if reference.object.family == crate::format::FormatFamily::NativeGraphRoot.id()
-            && reference.object.version == 1
-        {
-            ContainerKind::RootEnvelope
         } else {
             return Err(TreeError::Invalid("recovery protected reference family"));
         };
@@ -1349,6 +1298,7 @@ fn validate_mark_reference(
 /// traversal that dominates the cost.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CapturedTraceDepth {
+    #[cfg(any(test, feature = "test-seams"))]
     Roots,
     Complete,
 }
@@ -1516,6 +1466,7 @@ fn validate_captured_state_reachability<'m>(
     clippy::too_many_arguments,
     reason = "one complete framed change list and completed mark authority"
 )]
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) fn trace_captured_change_references<'m, V>(
     store: &dyn RecoveryRead,
     directory: &Path,
@@ -1556,7 +1507,6 @@ where
                     for required in [intent.protected_roots, intent.completed_mark] {
                         source.validate_protected_reference_cached(
                             required,
-                            false,
                             resources,
                             Some(&mut authenticated),
                         )?;
@@ -1567,7 +1517,6 @@ where
                 Change::ReclaimComplete(completion) => {
                     source.validate_protected_reference_cached(
                         completion.intent,
-                        false,
                         resources,
                         Some(&mut authenticated),
                     )?;
@@ -1578,7 +1527,6 @@ where
             if let Some(required) = required {
                 source.validate_protected_reference_cached(
                     required,
-                    false,
                     resources,
                     Some(&mut authenticated),
                 )?;
@@ -1608,41 +1556,6 @@ where
     }
     Ok(())
 }
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one complete framed change list and completed mark authority"
-)]
-fn validate_captured_change_references<'m>(
-    store: &dyn RecoveryRead,
-    directory: &Path,
-    state: CommitState<'_>,
-    changes: ChangeReader<'_>,
-    wal_resources: &mut WalResources<'_>,
-    memory: &'m StorageMemory<'m>,
-    mark: &mut crate::property_graph::storage::reclaim::DurableRunReader<'_>,
-    io: &impl crate::property_graph::storage::reclaim::SpillIo,
-    candidates: &[ArtifactDescriptor],
-) -> Result<(), NativeGraphError> {
-    let mut resources = TreeResources::for_prepare(
-        memory,
-        crate::property_graph::storage::reclaim::MARK_WORK_LIMIT,
-    )?;
-    let mut visitor = |reference: PhysicalRef, resources: &mut TreeResources<'_>| {
-        validate_mark_reference(mark, io, candidates, reference.artifact, resources)
-    };
-    trace_captured_change_references(
-        store,
-        directory,
-        state,
-        changes,
-        wal_resources,
-        memory,
-        &mut resources,
-        &mut visitor,
-    )
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "one independently reconstructed reclaim authority"
@@ -1688,7 +1601,6 @@ fn validate_complete_reclaim_authority(
                     }
                     source.validate_protected_reference_cached(
                         required,
-                        false,
                         resources,
                         Some(&mut authenticated),
                     )?;
@@ -1712,7 +1624,6 @@ fn validate_complete_reclaim_authority(
                 } => {
                     source.validate_protected_reference_cached(
                         checkpoint,
-                        false,
                         resources,
                         Some(&mut authenticated),
                     )?;
@@ -2955,22 +2866,6 @@ fn stored_keys_equal<S: BlockSource>(
             .compare(right.namespace(), resources)?
             .is_eq()
         && left.key().compare(right.key(), resources)?.is_eq())
-}
-
-fn stored_key_matches<S: BlockSource>(
-    stored: StoredKey<'_, S>,
-    key: ApplicationKey<'_>,
-    resources: &mut TreeResources<'_>,
-) -> Result<bool, TreeError> {
-    Ok(stored.kind() == key.kind()
-        && stored
-            .namespace()
-            .compare_bytes(key.namespace().as_str().as_bytes(), resources)?
-            .is_eq()
-        && stored
-            .key()
-            .compare_bytes(key.key().as_str().as_bytes(), resources)?
-            .is_eq())
 }
 
 fn stored_provenance_equal<S: BlockSource>(
@@ -6258,9 +6153,7 @@ fn install_unified_inner(
                     graph_absorbed_through: graph.graph_absorbed_through,
                     envelope_sequence: checkpoint.sequence,
                 },
-                roots: None,
             },
-            root_envelope: None,
             roots,
             wal_roots: final_state.graph,
             sequence: final_state.sequence,
@@ -6602,7 +6495,6 @@ pub(crate) fn verify_unified(
     struct Reads<'a> {
         vfs: &'a dyn Vfs,
         publication: Arc<super::NativeGraphPublication>,
-        lexical: crate::fts::tokenizer::TokenizerEpoch,
         last_file: RefCell<Option<PathBuf>>,
     }
     impl RecoveryRead for Reads<'_> {
@@ -6611,9 +6503,6 @@ pub(crate) fn verify_unified(
         }
         fn publication(&self) -> &Arc<super::NativeGraphPublication> {
             &self.publication
-        }
-        fn lexical(&self) -> crate::fts::tokenizer::TokenizerEpoch {
-            self.lexical
         }
         fn observe_mapping(&self, path: &Path) {
             *self.last_file.borrow_mut() = Some(path.to_path_buf());
@@ -6688,7 +6577,6 @@ pub(crate) fn verify_unified(
         let reads = Reads {
             vfs,
             publication,
-            lexical: expected.lexical(),
             last_file: RefCell::new(None),
         };
         let control = QueryControl::Cancel(CancelToken::new());

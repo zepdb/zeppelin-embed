@@ -135,7 +135,6 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         r.step(0)?;
         Ok(count)
     }
-    #[allow(dead_code, reason = "used by the crate-private ZE-45 scoped adapter")]
     pub(crate) fn scan_relationships_after<'m, 'g>(
         &self,
         after: Option<RelId>,
@@ -216,7 +215,6 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
     /// Pull from one exact physical range/relationship position. Resume never
     /// replays visible rows from the beginning, and `After` avoids incrementing
     /// `u128::MAX` at a descriptor boundary.
-    #[allow(dead_code, reason = "used by the crate-private ZE-45 scoped adapter")]
     pub(crate) fn expand_from<'m, 'g>(
         &self,
         query: AdjacencyQuery,

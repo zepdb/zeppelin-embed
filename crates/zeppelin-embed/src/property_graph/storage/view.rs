@@ -1,8 +1,4 @@
 //! Private source-bound record leaves shared by native query components.
-#![allow(
-    dead_code,
-    reason = "the scoped native view is intentionally crate-private until ZE-50 consumes it"
-)]
 use super::{
     payload::PayloadRef,
     records::{
@@ -45,11 +41,11 @@ pub(crate) use cursor::{
 #[cfg(feature = "graph-cypher")]
 pub(crate) use mapping::NativeReadonlyMapping;
 #[cfg(feature = "graph-cypher")]
-pub(crate) use preparation_source::{
-    NativeArtifactWindow, NativePreparationCatalog, NativePreparationSource,
-};
+pub(crate) use preparation_source::{NativePreparationCatalog, NativePreparationSource};
+#[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
+pub(crate) use prepared::PreparedGraphFailure;
 #[cfg(feature = "graph-cypher")]
-pub(crate) use prepared::{GraphPreparation, PreparedGraphArtifacts, PreparedGraphFailure};
+pub(crate) use prepared::{GraphPreparation, PreparedGraphArtifacts};
 #[cfg(feature = "graph-cypher")]
 pub(crate) use source::{NativeQuerySource, NativeReadCapability};
 #[cfg(feature = "graph-cypher")]
@@ -317,10 +313,12 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
             .map_err(|error| TreeError::Control(crate::lifecycle::QueryError::Store(error)))
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn sequence(&self) -> u64 {
         self.lease.bundle().sequence()
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn store_instance_id(&self) -> crate::property_graph::StoreInstanceId {
         self.lease.bundle().base().store
     }
@@ -488,6 +486,7 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
             .map(|payload| TextPayloadReader { payload }))
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn vector_payload(
         &self,
         node: NodeId,
@@ -502,6 +501,13 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         Ok(record.record.canonical().stored_vector())
     }
 
+    #[cfg_attr(
+        not(any(test, feature = "test-seams")),
+        allow(
+            dead_code,
+            reason = "planned relationship read API with live native read unit tests"
+        )
+    )]
     pub(crate) fn relationship_cursor(
         &'s self,
         selection: RelationshipTypeSelection<'_>,
@@ -541,6 +547,13 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         cursor::NodeCursor::incident_sources(self.lease, selection, direction, runtime)
     }
 
+    #[cfg_attr(
+        not(any(test, feature = "test-seams")),
+        allow(
+            dead_code,
+            reason = "planned relationship read API with live native read unit tests"
+        )
+    )]
     pub(crate) fn scan_relationships(
         &self,
         cursor: &mut RelCursor<'s, 'm, 'g>,

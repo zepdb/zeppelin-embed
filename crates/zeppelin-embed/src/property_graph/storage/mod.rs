@@ -19,17 +19,14 @@ pub mod stream;
 pub mod records;
 
 mod view;
+#[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
+pub(crate) use view::PreparedGraphFailure;
 #[cfg(feature = "graph-cypher")]
-#[allow(
-    unused_imports,
-    reason = "crate-private ZE-45 interface is consumed by ZE-50 after this dependency lands"
-)]
 pub(crate) use view::{
     CursorState, DirectionSelection, ExpandCursor, GraphPreparation, GraphReadView, LabelSelection,
-    NativeArtifactWindow, NativeCatalog, NativePreparationCatalog, NativePreparationSource,
-    NativeQuerySource, NativeReadCapability, NativeReadonlyMapping, NodeCursor, NodeView,
-    PreparedGraphArtifacts, PreparedGraphFailure, RelView, RelationshipTypeSelection,
-    TextPayloadReader,
+    NativeCatalog, NativePreparationCatalog, NativePreparationSource, NativeQuerySource,
+    NativeReadCapability, NativeReadonlyMapping, NodeCursor, NodeView, PreparedGraphArtifacts,
+    RelView, RelationshipTypeSelection, TextPayloadReader,
 };
 #[cfg(feature = "graph-cypher")]
 pub(crate) use view::{PAGE_MEMO_BYTES, memo_bit};

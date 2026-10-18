@@ -37,60 +37,11 @@ pub mod unified_graph;
 pub mod vamana_graph;
 pub mod vector_execution;
 
-use profiles::profile_for_seed;
-
 use std::sync::{Mutex, OnceLock};
-
-use self::profiles::FaultProfile;
 
 pub(crate) fn feature_process_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RunMode {
-    Deterministic,
-    Chaos,
-    Mixed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SeedAssignment {
-    pub mode: RunMode,
-    pub profile: FaultProfile,
-}
-
-#[must_use]
-pub const fn effective_seed_assignment(
-    mode: RunMode,
-    forced_profile: Option<FaultProfile>,
-    seed: u64,
-) -> SeedAssignment {
-    if let Some(profile) = forced_profile {
-        return SeedAssignment {
-            mode: if matches!(profile, FaultProfile::None) {
-                RunMode::Deterministic
-            } else {
-                RunMode::Chaos
-            },
-            profile,
-        };
-    }
-    match mode {
-        RunMode::Deterministic => SeedAssignment {
-            mode,
-            profile: FaultProfile::None,
-        },
-        RunMode::Chaos => SeedAssignment {
-            mode,
-            profile: FaultProfile::IoErrors,
-        },
-        RunMode::Mixed => SeedAssignment {
-            mode: RunMode::Chaos,
-            profile: profile_for_seed(seed),
-        },
-    }
 }
 
 #[path = "../tooling_seed.rs"]

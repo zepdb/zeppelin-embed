@@ -35,7 +35,6 @@ fn expression_producer_bundle_with_extra_nodes(
         store: identity,
         generation: GraphGeneration::new(0),
         fold: Default::default(),
-        roots: None,
     };
     let document = with_vector.then(|| EmbeddingTower {
         model_id: "ze45-document".into(),
@@ -333,29 +332,15 @@ fn expression_producer_bundle_with_extra_nodes(
         next_serial += 1;
         let catalog =
             write_catalog_with_symbols(directory, catalog_identity, &staged, document.as_ref());
-        let root_identity = ArtifactIdentity {
-            store: identity,
-            artifact: ArtifactId::new(8_002).unwrap(),
-            generation: target_generation,
-            creation_serial: next_serial,
-        };
-        let root_envelope = write_framed_file(
-            directory,
-            ContainerKind::RootEnvelope,
-            root_identity,
-            &[Block {
-                kind: BlockKind::CheckpointPayload,
-                payload: b"controlled-fixture-root",
-            }],
-        );
         NativeGraphBundleInput {
             base: BaseIdentity {
                 store: identity,
                 generation: target_generation,
-                fold: Default::default(),
-                roots: Some(root_identity.artifact),
+                fold: crate::property_graph::staging::FoldMark {
+                    manifest_generation: target_generation.get(),
+                    ..Default::default()
+                },
             },
-            root_envelope: Some(root_envelope),
             roots,
             wal_roots,
             sequence,
@@ -2074,7 +2059,6 @@ impl Ze52Base {
                 store: identity,
                 generation: GraphGeneration::new(0),
                 fold: Default::default(),
-                roots: None,
             },
             high_waters: StageHighWaters {
                 node: (1_u128 << 100) + 8,

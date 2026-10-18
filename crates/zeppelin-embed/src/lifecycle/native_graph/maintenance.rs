@@ -118,24 +118,6 @@ fn emit_protected(
     }
     Ok(())
 }
-
-fn emit_required(
-    class: ProtectedClass,
-    required: crate::property_graph::wal::RequiredRef,
-    protected: &mut ProtectedStreamBuilder<'_>,
-    mark: &mut SpillMark<'_>,
-    writer: &mut spill::NativeSpillWriter<'_, '_>,
-    resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
-) -> Result<(), NativeGraphError> {
-    emit_protected(
-        ProtectedRecord::required(class, required),
-        protected,
-        mark,
-        writer,
-        resources,
-    )
-}
-
 #[derive(Clone, Copy)]
 struct ProofBaseRecords {
     captured: crate::property_graph::wal::RequiredRef,
@@ -445,7 +427,6 @@ struct PendingReclaim<'m> {
     manifest: PendingIntentManifest,
     candidates: StorageBuffer<'m, crate::property_graph::wal::ArtifactDescriptor>,
     partials: StorageBuffer<'m, crate::property_graph::storage::reclaim::PartialTarget>,
-    inventory: StorageBuffer<'m, InventoryChange>,
 }
 
 pub(super) struct ValidatedCompletedReclaim<'m> {
@@ -460,10 +441,6 @@ impl ValidatedCompletedReclaim<'_> {
         self.admitted.token() == lease.token()
             && Arc::ptr_eq(self.admitted.bundle(), lease.bundle())
             && lease.bundle().reclaim() == Some(self.reference)
-    }
-
-    pub(super) const fn reference(&self) -> crate::property_graph::wal::RequiredRef {
-        self.reference
     }
 
     pub(super) const fn manifest(
@@ -598,7 +575,6 @@ fn load_pending_reclaim<'m>(
         manifest,
         candidates,
         partials,
-        inventory,
     })
 }
 

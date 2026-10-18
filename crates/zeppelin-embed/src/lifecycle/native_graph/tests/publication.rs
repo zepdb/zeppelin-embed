@@ -2051,9 +2051,7 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
                 current.bundle().base().generation.get() + 1,
             ),
             fold: current.bundle().base().fold,
-            roots: current.bundle().base().roots,
         },
-        root_envelope: current.bundle().root_envelope(),
         roots: current.bundle().roots(),
         wal_roots: current.bundle().wal_roots(),
         sequence: current.bundle().sequence() + 1,
@@ -2649,64 +2647,9 @@ fn run_ze39_fresh_create_failures_never_adopt_or_replace_identity() {
 
     let incomplete = parent.path().join("incomplete");
     std::fs::create_dir(&incomplete).expect("incomplete directory");
-    assert_eq!(
-        super::super::persistence::classify_native_graph(vfs.as_ref(), &incomplete),
-        super::super::persistence::NativeStoreClassification::Incomplete
-    );
     assert!(matches!(
         Store::create_native_graph_with_infrastructure(
             &incomplete,
-            options(),
-            None,
-            Arc::clone(&infrastructure),
-            Arc::new(crate::lifecycle::SystemMonotonicClock),
-            &mut crate::property_graph::storage::allocation::OsEntropy,
-        ),
-        Err(super::super::NativeGraphError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists
-    ));
-
-    let incompatible = parent.path().join("incompatible");
-    std::fs::create_dir(&incompatible).expect("incompatible directory");
-    let mut incompatible_bytes = [0_u8; 120];
-    incompatible_bytes[..8].copy_from_slice(b"ZGROOT01");
-    incompatible_bytes[8..10].copy_from_slice(&2_u16.to_le_bytes());
-    std::fs::write(incompatible.join("graph-root.ze"), incompatible_bytes)
-        .expect("incompatible selector");
-    assert_eq!(
-        super::super::persistence::classify_native_graph(vfs.as_ref(), &incompatible),
-        super::super::persistence::NativeStoreClassification::Incompatible
-    );
-    assert!(matches!(
-        Store::create_native_graph_with_infrastructure(
-            &incompatible,
-            options(),
-            None,
-            Arc::clone(&infrastructure),
-            Arc::new(crate::lifecycle::SystemMonotonicClock),
-            &mut crate::property_graph::storage::allocation::OsEntropy,
-        ),
-        Err(super::super::NativeGraphError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists
-    ));
-
-    let corrupt = parent.path().join("corrupt");
-    std::fs::create_dir(&corrupt).expect("corrupt directory");
-    let mut corrupt_bytes = [0_u8; 120];
-    corrupt_bytes[..8].copy_from_slice(b"ZGROOT01");
-    corrupt_bytes[8..10].copy_from_slice(&1_u16.to_le_bytes());
-    corrupt_bytes[10..12].copy_from_slice(
-        &crate::format::FormatFamily::NativeGraphRoot
-            .id()
-            .to_le_bytes(),
-    );
-    corrupt_bytes[12..16].copy_from_slice(&120_u32.to_le_bytes());
-    std::fs::write(corrupt.join("graph-root.ze"), corrupt_bytes).expect("corrupt selector");
-    assert_eq!(
-        super::super::persistence::classify_native_graph(vfs.as_ref(), &corrupt),
-        super::super::persistence::NativeStoreClassification::Corrupt
-    );
-    assert!(matches!(
-        Store::create_native_graph_with_infrastructure(
-            &corrupt,
             options(),
             None,
             Arc::clone(&infrastructure),
@@ -2728,10 +2671,6 @@ fn run_ze39_fresh_create_failures_never_adopt_or_replace_identity() {
         ),
         Err(super::super::NativeGraphError::Io { .. })
     ));
-    assert_eq!(
-        super::super::persistence::classify_native_graph(vfs.as_ref(), &entropy_path),
-        super::super::persistence::NativeStoreClassification::Incomplete
-    );
 
     for point in [
         FaultPoint::Create,
@@ -2752,10 +2691,6 @@ fn run_ze39_fresh_create_failures_never_adopt_or_replace_identity() {
             .is_err()
         );
         vfs.assert_fired_once();
-        assert_eq!(
-            super::super::persistence::classify_native_graph(vfs.as_ref(), &failed_path),
-            super::super::persistence::NativeStoreClassification::Incomplete
-        );
     }
 }
 

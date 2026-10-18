@@ -53,18 +53,12 @@ fn raw_name_admission_checks_byte_limit_before_utf8_work() {
 }
 
 #[test]
-fn batch_local_references_are_bounded_and_distinct_from_durable_ids() {
+fn batch_local_references_are_bounded() {
     with_local_refs(|scope| {
         let node = scope.node(0).unwrap();
         let rel = scope.relationship(16_383).unwrap();
         assert_eq!(node.index(), 0);
         assert_eq!(rel.index(), 16_383);
-        assert!(matches!(NodeRef::Local(node), NodeRef::Local(_)));
-        assert!(matches!(RelRef::Local(rel), RelRef::Local(_)));
-        let id = NodeId::new(u128::MAX).unwrap();
-        assert_eq!(NodeRef::Existing(id), NodeRef::Existing(id));
-        let id = RelId::new(u128::MAX).unwrap();
-        assert_eq!(RelRef::Existing(id), RelRef::Existing(id));
         assert_eq!(
             scope.node(16_384),
             Err(DomainError::LocalReferenceOutOfRange)

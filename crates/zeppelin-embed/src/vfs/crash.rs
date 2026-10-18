@@ -229,13 +229,11 @@ struct RecordedVfsFile {
 /// in-memory crash-state materializer. Tests that need real filesystem effects
 /// (for example, a subsequent `mmap`) can therefore assert the same ordered
 /// [`CrashOperation`] stream used by the crash harness.
-#[allow(dead_code)]
 pub struct RecordingVfs<V> {
     inner: V,
     operations: Arc<Mutex<Vec<CrashOperation>>>,
 }
 
-#[allow(dead_code)]
 impl<V> RecordingVfs<V> {
     /// Wraps `inner` with an initially empty operation stream.
     #[must_use]

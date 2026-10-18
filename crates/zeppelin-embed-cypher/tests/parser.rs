@@ -7,11 +7,6 @@
 use zeppelin_embed_cypher::parse;
 
 #[test]
-fn parses_literals_and_expression_precedence() {
-    parse("RETURN -9223372036854775808, 9223372036854775807, .5, 1.2e-3, 'λ', null, true, false, 1+2*3").unwrap();
-}
-
-#[test]
 fn parses_complete_clause_pattern_projection_and_write_inventory() {
     for query in [
         "MATCH (a:A:B {key: $key, x: 1+2})<-[r:R|S {p: true}]-(b), ()--() OPTIONAL MATCH (b)-[rels:T*0..3]->(c) WHERE c.x IS NOT NULL WITH DISTINCT a, collect(DISTINCT r) AS rs ORDER BY a.x DESC SKIP $skip LIMIT 2 WHERE a.x > 0 RETURN a, rs",
@@ -68,7 +63,7 @@ fn precedence_and_chain_operands_are_preserved_in_the_arena() {
 
 #[test]
 fn escapes_full_width_numbers_and_utf8_byte_spans_are_exact() {
-    let query = "// λ\nRETURN `名``x`, '\\u03bb\\U0001F600\\uD83D\\uDE00\\b\\f\\n\\r\\t\\\\\\\"\\\'', -9223372036854775808, 9223372036854775807, 1.2e-3";
+    let query = "// λ\nRETURN `名``x`, '\\u03bb\\U0001F600\\uD83D\\uDE00\\b\\f\\n\\r\\t\\\\\\\"\\\'', -9223372036854775808, 9223372036854775807, 1.2e-3, .5";
     let ast = parse(query).unwrap();
     let name = ast.node(expression(&ast, 0)).unwrap();
     let NodeKind::Variable(id) = name.kind else {
@@ -91,6 +86,10 @@ fn escapes_full_width_numbers_and_utf8_byte_spans_are_exact() {
     assert_eq!(
         ast.node(expression(&ast, 4)).unwrap().kind,
         NodeKind::Float(0.0012)
+    );
+    assert_eq!(
+        ast.node(expression(&ast, 5)).unwrap().kind,
+        NodeKind::Float(0.5)
     );
     let error = parse("RETURN 'λ', ☃").unwrap_err();
     assert_eq!(error.kind, ErrorKind::Unsupported);

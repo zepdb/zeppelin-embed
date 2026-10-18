@@ -37,18 +37,10 @@ pub(super) trait ListArena: std::fmt::Debug {
     fn value(&self, index: usize) -> Option<QueryValue<'_>>;
 }
 impl<'a> QueryList<'a> {
-    #[allow(
-        dead_code,
-        reason = "ZE-145's retained parameter proof is consumed with its later evaluator integration"
-    )]
     pub(super) const fn backing(self) -> Backing<'a> {
         self.values
     }
 
-    #[allow(
-        dead_code,
-        reason = "ZE-145's scratch-list adoption is consumed with its later evaluator integration"
-    )]
     pub(super) fn arena_descriptor(
         self,
         expected: &dyn ListArena,

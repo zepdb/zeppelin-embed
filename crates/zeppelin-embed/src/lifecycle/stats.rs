@@ -195,7 +195,7 @@ impl GraphWorkLedger {
             .saturating_add(other.directory_sync_successes);
     }
 }
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "graph-cypher"), allow(dead_code))]
 #[derive(Clone, Copy)]
 pub(crate) enum AllocationComponent {
     Snapshot,

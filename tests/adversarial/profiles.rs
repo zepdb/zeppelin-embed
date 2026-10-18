@@ -66,11 +66,6 @@ impl FaultProfile {
         }
     }
 
-    #[must_use]
-    pub fn from_env(value: &str) -> Self {
-        Self::from_key(value).unwrap_or_else(|error| panic!("{error}"))
-    }
-
     pub fn from_key(value: &str) -> Result<Self, String> {
         match value {
             "none" => Ok(Self::None),

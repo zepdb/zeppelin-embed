@@ -32,12 +32,14 @@ use crate::lifecycle::native_graph::{NativeMutationConsumer, NativeReadConsumer}
 use crate::lifecycle::{QueryControl, Store};
 use crate::property_graph::GraphName;
 use crate::property_graph::query::expression::ExpressionCapacity;
-use crate::property_graph::query::pattern::{
-    PatternCapacity, SearchAdapter, SearchHit, SearchInvocation,
-};
+use crate::property_graph::query::pattern::{PatternCapacity, SearchAdapter};
+#[cfg(any(test, feature = "test-seams"))]
+use crate::property_graph::query::pattern::{SearchHit, SearchInvocation};
 use crate::property_graph::query::plan::{GraphPlan, ParameterBinding, PlanError};
 use crate::property_graph::query::relational::StorageCapacity;
-use crate::property_graph::query::resources::{QueryArena, QueryInputs, RetentionInventory};
+#[cfg(any(test, feature = "test-seams"))]
+use crate::property_graph::query::resources::QueryArena;
+use crate::property_graph::query::resources::{QueryInputs, RetentionInventory};
 use crate::property_graph::query::runtime::{
     ArenaCapacity, ExecutionCapacity, NativeExecutionError, RuntimeContext, RuntimeLimits,
 };
@@ -206,8 +208,10 @@ pub struct GraphQuery<'q, 'plan, 'facts, 'a> {
 pub struct Executed(());
 
 /// The type of an absent search adapter. It has no values.
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) enum NoSearch {}
 
+#[cfg(any(test, feature = "test-seams"))]
 impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NoSearch {
     fn search<'s>(
         &mut self,
@@ -451,6 +455,7 @@ impl Store {
     ///
     /// A searching read plan invokes `search` once per eager call; a
     /// searching plan without an adapter is refused as an invalid plan.
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn execute_graph_query<S, B>(
         &self,
         control: &QueryControl,

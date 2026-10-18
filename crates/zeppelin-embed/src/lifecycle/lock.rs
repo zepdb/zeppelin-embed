@@ -127,7 +127,6 @@ impl StoreLock {
     /// checked holder count without opening the file or issuing another lock
     /// call. Missing lock files are never created.
     #[cfg(feature = "graph-cypher")]
-    #[allow(dead_code)] // Consumed by the ZE-40 native read-only constructor.
     pub(crate) fn acquire_shared(directory: &Path) -> Result<Self, StoreLockError> {
         Self::shared_named(directory, false, false)
     }
@@ -354,7 +353,6 @@ fn lock_exclusive(file: &File) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-#[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn lock_shared(file: &File) -> std::io::Result<()> {
     let mut lock = unsafe {
         // SAFETY: all-zero is a valid `flock` value before named fields are set.
@@ -391,13 +389,11 @@ fn lock_shared(file: &File) -> std::io::Result<()> {
 /// a permission failure stays a permission failure and is never reported as
 /// contention.
 #[cfg(windows)]
-#[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn lock_shared(file: &File) -> std::io::Result<()> {
     crate::sys::windows::lock_file_shared(file)
 }
 
 #[cfg(not(any(unix, windows)))]
-#[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn lock_shared(_: &File) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,

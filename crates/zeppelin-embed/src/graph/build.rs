@@ -7,16 +7,13 @@ use xxhash_rust::xxh3::xxh3_64;
 use crate::graph::GraphParams;
 use crate::graph::block::{
     GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeError, GraphNodeLayout,
-    NODE_BLOCK_TRAILER_LEN, encode_node_blocks_controlled,
+    NODE_BLOCK_TRAILER_LEN, encode_node_blocks_with_refinement_passes,
 };
 use crate::lifecycle::QueryCancellation;
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::lifecycle::stats::{AccountedCounter, Accounting, AllocationComponent};
 use crate::lifecycle::{QueryControl, SnapshotLease, Store, StoreError};
-use crate::quant::{
-    Bit4ControlError, Bit4Factors, QuantError, est_dot_bit4_controlled,
-    prepare_bit4_query_controlled,
-};
+use crate::quant::{Bit4Factors, QuantError, est_dot_bit4, prepare_bit4_query};
 use crate::scan::ScanError;
 use crate::segment::layout::RegionKind;
 use crate::segment::reader::SegmentReader;
@@ -756,139 +753,6 @@ impl<'a> SegmentVectors<'a> {
     }
 }
 
-struct BuildControl<'a> {
-    poll: Option<&'a mut dyn FnMut(u64) -> bool>,
-    memory: Option<&'a mut dyn FnMut(BuildMemoryEvent) -> bool>,
-}
-
-fn reserve_vec<T>(
-    values: &mut Vec<T>,
-    capacity: usize,
-    label: &'static str,
-    control: &mut BuildControl<'_>,
-) -> Result<usize, GraphBuildError> {
-    let requested = capacity
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| GraphBuildError::Geometry(format!("{label} allocation overflow")))?;
-    control.acquire(requested)?;
-    #[cfg(feature = "allocation-audit")]
-    let allocation = crate::allocation_audit::attributed(|| values.try_reserve_exact(capacity));
-    #[cfg(not(feature = "allocation-audit"))]
-    let allocation = values.try_reserve_exact(capacity);
-    allocation.map_err(|_| {
-        GraphBuildError::Store(StoreError::AllocationFailed {
-            needed: requested as u64,
-            component: label,
-        })
-    })?;
-    let actual = values
-        .capacity()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| GraphBuildError::Geometry(format!("{label} capacity overflow")))?;
-    control.reconcile(requested, actual)?;
-    Ok(actual)
-}
-
-fn resize_vec_controlled<T: Clone>(
-    values: &mut Vec<T>,
-    length: usize,
-    value: T,
-    label: &str,
-    control: &mut BuildControl<'_>,
-) -> Result<(), GraphBuildError> {
-    if length > values.capacity() {
-        return Err(GraphBuildError::Geometry(format!(
-            "{label} fixed capacity exhausted"
-        )));
-    }
-    while values.len() < length {
-        let count = (length - values.len()).min(256);
-        control.step(count as u64)?;
-        values.resize(values.len() + count, value.clone());
-    }
-    Ok(())
-}
-
-fn fill_controlled<T: Clone>(
-    values: &mut [T],
-    value: T,
-    control: &mut BuildControl<'_>,
-) -> Result<(), GraphBuildError> {
-    for chunk in values.chunks_mut(256) {
-        control.step(chunk.len() as u64)?;
-        chunk.fill(value.clone());
-    }
-    Ok(())
-}
-
-#[allow(
-    dead_code,
-    reason = "shared segment build accounting event shape is independent of graph retrieval"
-)]
-#[derive(Clone, Copy)]
-pub(crate) enum BuildMemoryEvent {
-    Acquire(usize),
-    Reconcile { requested: usize, actual: usize },
-    Release(usize),
-}
-
-impl BuildControl<'_> {
-    fn disabled() -> Self {
-        Self {
-            poll: None,
-            memory: None,
-        }
-    }
-
-    fn step(&mut self, units: u64) -> Result<(), GraphBuildError> {
-        if self.poll.as_mut().is_some_and(|poll| !poll(units)) {
-            return Err(GraphBuildError::Geometry(
-                "native graph control interrupted construction".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn acquire(&mut self, bytes: usize) -> Result<(), GraphBuildError> {
-        if self
-            .memory
-            .as_mut()
-            .is_some_and(|memory| !memory(BuildMemoryEvent::Acquire(bytes)))
-        {
-            return Err(GraphBuildError::Geometry(
-                "native graph memory admission failed".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn reconcile(&mut self, requested: usize, actual: usize) -> Result<(), GraphBuildError> {
-        if self
-            .memory
-            .as_mut()
-            .is_some_and(|memory| !memory(BuildMemoryEvent::Reconcile { requested, actual }))
-        {
-            return Err(GraphBuildError::Geometry(
-                "native graph memory reconciliation failed".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn release(&mut self, bytes: usize) -> Result<(), GraphBuildError> {
-        if self
-            .memory
-            .as_mut()
-            .is_some_and(|memory| !memory(BuildMemoryEvent::Release(bytes)))
-        {
-            return Err(GraphBuildError::Geometry(
-                "native graph memory release failed".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-}
-
 struct Adjacency {
     slots: Vec<u32>,
     degrees: Vec<u8>,
@@ -897,25 +761,45 @@ struct Adjacency {
 }
 
 impl Adjacency {
-    #[cfg(test)]
     fn new(node_count: u32, r_max: u8) -> Result<Self, GraphBuildError> {
-        Self::new_controlled(node_count, r_max, &mut BuildControl::disabled())
-    }
-
-    fn new_controlled(
-        node_count: u32,
-        r_max: u8,
-        control: &mut BuildControl<'_>,
-    ) -> Result<Self, GraphBuildError> {
         let slot_count = (node_count as usize)
             .checked_mul(usize::from(r_max))
             .ok_or_else(|| GraphBuildError::Geometry("adjacency size overflow".to_owned()))?;
         let mut slots = Vec::new();
-        reserve_vec(&mut slots, slot_count, "adjacency", control)?;
-        resize_vec_controlled(&mut slots, slot_count, u32::MAX, "adjacency", control)?;
+
+        let capacity = slot_count;
+        let requested = capacity
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or_else(|| GraphBuildError::Geometry("adjacency allocation overflow".to_owned()))?;
+        #[cfg(feature = "allocation-audit")]
+        let allocation = crate::allocation_audit::attributed(|| slots.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let allocation = slots.try_reserve_exact(capacity);
+        allocation.map_err(|_| {
+            GraphBuildError::Store(StoreError::AllocationFailed {
+                needed: requested as u64,
+                component: "adjacency",
+            })
+        })?;
+        slots.resize(slot_count, u32::MAX);
         let mut degrees = Vec::new();
-        reserve_vec(&mut degrees, node_count as usize, "degree", control)?;
-        resize_vec_controlled(&mut degrees, node_count as usize, 0, "degree", control)?;
+
+        let capacity = node_count as usize;
+        let requested = capacity
+            .checked_mul(std::mem::size_of::<u8>())
+            .ok_or_else(|| GraphBuildError::Geometry("degree allocation overflow".to_owned()))?;
+        #[cfg(feature = "allocation-audit")]
+        let allocation =
+            crate::allocation_audit::attributed(|| degrees.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let allocation = degrees.try_reserve_exact(capacity);
+        allocation.map_err(|_| {
+            GraphBuildError::Store(StoreError::AllocationFailed {
+                needed: requested as u64,
+                component: "degree",
+            })
+        })?;
+        degrees.resize(node_count as usize, 0);
         Ok(Self {
             slots,
             degrees,
@@ -1060,22 +944,6 @@ impl BuildState {
         seed: u64,
         accounting: Option<&std::sync::Arc<Accounting>>,
     ) -> Result<Self, GraphBuildError> {
-        Self::new_controlled(
-            vectors,
-            params,
-            seed,
-            accounting,
-            &mut BuildControl::disabled(),
-        )
-    }
-
-    fn new_controlled(
-        vectors: &SegmentVectors<'_>,
-        params: GraphParams,
-        seed: u64,
-        accounting: Option<&std::sync::Arc<Accounting>>,
-        control: &mut BuildControl<'_>,
-    ) -> Result<Self, GraphBuildError> {
         let mut memory = match accounting {
             Some(accounting) => Some(AccountedCounter::new(
                 accounting,
@@ -1088,53 +956,71 @@ impl BuildState {
         }
         let mut random = SplitMix64::new(seed);
         let mut order = Vec::new();
-        reserve_vec(
-            &mut order,
-            vectors.node_count as usize,
-            "build order",
-            control,
-        )?;
+
+        let capacity = vectors.node_count as usize;
+        let requested = capacity
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or_else(|| {
+                GraphBuildError::Geometry("build order allocation overflow".to_owned())
+            })?;
+        #[cfg(feature = "allocation-audit")]
+        let allocation = crate::allocation_audit::attributed(|| order.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let allocation = order.try_reserve_exact(capacity);
+        allocation.map_err(|_| {
+            GraphBuildError::Store(StoreError::AllocationFailed {
+                needed: requested as u64,
+                component: "build order",
+            })
+        })?;
         for node in 0..vectors.node_count {
-            control.step(1)?;
             order.push(node);
         }
-        shuffle_controlled(&mut order, &mut random, control)?;
-        let entries = refined_entry_points(vectors, &order, control)?;
-        move_entries_to_front(&mut order, &entries, control)?;
+        shuffle(&mut order, &mut random)?;
+        let entries = refined_entry_points(vectors, &order)?;
+        move_entries_to_front(&mut order, &entries)?;
         let mut inserted = Vec::new();
-        reserve_vec(
-            &mut inserted,
-            vectors.node_count as usize,
-            "inserted",
-            control,
-        )?;
-        resize_vec_controlled(
-            &mut inserted,
-            vectors.node_count as usize,
-            0,
-            "inserted",
-            control,
-        )?;
+
+        let capacity = vectors.node_count as usize;
+        let requested = capacity
+            .checked_mul(std::mem::size_of::<u8>())
+            .ok_or_else(|| GraphBuildError::Geometry("inserted allocation overflow".to_owned()))?;
+        #[cfg(feature = "allocation-audit")]
+        let allocation =
+            crate::allocation_audit::attributed(|| inserted.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let allocation = inserted.try_reserve_exact(capacity);
+        allocation.map_err(|_| {
+            GraphBuildError::Store(StoreError::AllocationFailed {
+                needed: requested as u64,
+                component: "inserted",
+            })
+        })?;
+        inserted.resize(vectors.node_count as usize, 0);
         let mut visited = Vec::new();
-        reserve_vec(
-            &mut visited,
-            vectors.node_count as usize,
-            "visited",
-            control,
-        )?;
-        resize_vec_controlled(
-            &mut visited,
-            vectors.node_count as usize,
-            0,
-            "visited",
-            control,
-        )?;
+
+        let capacity = vectors.node_count as usize;
+        let requested = capacity
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or_else(|| GraphBuildError::Geometry("visited allocation overflow".to_owned()))?;
+        #[cfg(feature = "allocation-audit")]
+        let allocation =
+            crate::allocation_audit::attributed(|| visited.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let allocation = visited.try_reserve_exact(capacity);
+        allocation.map_err(|_| {
+            GraphBuildError::Store(StoreError::AllocationFailed {
+                needed: requested as u64,
+                component: "visited",
+            })
+        })?;
+        visited.resize(vectors.node_count as usize, 0);
         Ok(Self {
             phase: BuildPhase::Build,
             next_index: 0,
             order,
             entries,
-            adjacency: Adjacency::new_controlled(vectors.node_count, params.r_max(), control)?,
+            adjacency: Adjacency::new(vectors.node_count, params.r_max())?,
             inserted,
             visited,
             visit_epoch: 0,
@@ -1153,25 +1039,6 @@ impl BuildState {
         seed: u64,
         passes: GraphBuildPasses,
         cancellation: Option<&QueryCancellation<'_>>,
-    ) -> Result<bool, GraphBuildError> {
-        self.advance_batch_controlled(
-            vectors,
-            params,
-            seed,
-            passes,
-            cancellation,
-            &mut BuildControl::disabled(),
-        )
-    }
-
-    fn advance_batch_controlled(
-        &mut self,
-        vectors: &SegmentVectors<'_>,
-        params: GraphParams,
-        seed: u64,
-        passes: GraphBuildPasses,
-        cancellation: Option<&QueryCancellation<'_>>,
-        control: &mut BuildControl<'_>,
     ) -> Result<bool, GraphBuildError> {
         if self.phase == BuildPhase::Complete {
             return Ok(true);
@@ -1195,7 +1062,6 @@ impl BuildState {
             BuildPhase::Complete => seed,
         };
         for position in self.next_index..end {
-            control.step(1)?;
             if position.is_multiple_of(CANCELLATION_CHECK_ROWS)
                 && let Some(cancellation) = cancellation
             {
@@ -1226,7 +1092,6 @@ impl BuildState {
                 &mut self.inserted,
                 &mut self.visited,
                 &mut self.visit_epoch,
-                control,
             )?;
         }
         self.next_index = end;
@@ -1235,7 +1100,7 @@ impl BuildState {
                 (BuildPhase::Build, GraphBuildPasses::Two) => {
                     self.phase = BuildPhase::Refine;
                     self.next_index = 0;
-                    fill_controlled(&mut self.inserted, 1, control)?;
+                    self.inserted.fill(1);
                 }
                 (BuildPhase::Build, GraphBuildPasses::One) | (BuildPhase::Refine, _) => {
                     self.phase = BuildPhase::Complete;
@@ -1862,7 +1727,6 @@ fn process_node(
     inserted: &mut [u8],
     visited: &mut [u32],
     visit_epoch: &mut u32,
-    control: &mut BuildControl<'_>,
 ) -> Result<(), GraphBuildError> {
     vectors.validate_node(node_id)?;
     let candidates = search_candidates(
@@ -1875,26 +1739,29 @@ fn process_node(
         seed,
         visited,
         visit_epoch,
-        control,
     )?;
-    let candidate_bytes = candidates
-        .capacity()
-        .checked_mul(std::mem::size_of::<ScoredNode>())
-        .ok_or_else(|| GraphBuildError::Geometry("candidate capacity overflow".to_owned()))?;
     let mut candidate_ids = Vec::new();
-    let candidate_id_bytes = reserve_vec(
-        &mut candidate_ids,
-        candidates
-            .len()
-            .saturating_add(adjacency.neighbors(node_id)?.len()),
-        "candidate id",
-        control,
-    )?;
+
+    let capacity = candidates
+        .len()
+        .saturating_add(adjacency.neighbors(node_id)?.len());
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| GraphBuildError::Geometry("candidate id allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation =
+        crate::allocation_audit::attributed(|| candidate_ids.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = candidate_ids.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "candidate id",
+        })
+    })?;
     for candidate in candidates {
-        control.step(1)?;
         candidate_ids.push(candidate.node_id);
     }
-    control.release(candidate_bytes)?;
     candidate_ids.extend_from_slice(adjacency.neighbors(node_id)?);
     let pruned = robust_prune(
         vectors,
@@ -1902,23 +1769,16 @@ fn process_node(
         &candidate_ids,
         alpha,
         usize::from(params.r_target()),
-        control,
     )?;
     drop(candidate_ids);
-    control.release(candidate_id_bytes)?;
     adjacency.set_neighbors(node_id, &pruned)?;
     let node = vectors.validate_node(node_id)?;
     let inserted_node = inserted.get_mut(node).ok_or_else(|| {
         GraphBuildError::Geometry(format!("inserted marker {node_id} is unavailable"))
     })?;
     *inserted_node = 1;
-    add_reciprocal_edges(vectors, adjacency, node_id, &pruned, params, alpha, control)?;
-    let pruned_bytes = pruned
-        .capacity()
-        .checked_mul(std::mem::size_of::<u32>())
-        .ok_or_else(|| GraphBuildError::Geometry("pruned capacity overflow".to_owned()))?;
+    add_reciprocal_edges(vectors, adjacency, node_id, &pruned, params, alpha)?;
     drop(pruned);
-    control.release(pruned_bytes)?;
     Ok(())
 }
 
@@ -1933,52 +1793,65 @@ fn search_candidates(
     seed: u64,
     visited: &mut [u32],
     visit_epoch: &mut u32,
-    control: &mut BuildControl<'_>,
 ) -> Result<Vec<ScoredNode>, GraphBuildError> {
     let query = vectors.f32_row(query_id)?;
     let mut query_norm_squared = 0.0_f64;
     for chunk in query.chunks(256) {
-        control.step(1)?;
         for value in chunk {
             query_norm_squared += f64::from(*value) * f64::from(*value);
         }
     }
-    let query_requested = query
-        .len()
-        .checked_mul(2)
-        .ok_or_else(|| GraphBuildError::Geometry("query allocation overflow".to_owned()))?;
-    control.acquire(query_requested)?;
-    let (prepared, query_peak) =
-        prepare_bit4_query_controlled(query, seed ^ u64::from(query_id), &mut |units| {
-            control.step(units)
-        })
-        .map_err(|error| match error {
-            Bit4ControlError::Quant(error) => GraphBuildError::Quant(error),
-            Bit4ControlError::Memory => GraphBuildError::Store(StoreError::AllocationFailed {
+
+    let prepared =
+        prepare_bit4_query(query, seed ^ u64::from(query_id)).map_err(|error| match error {
+            QuantError::Allocation => GraphBuildError::Store(StoreError::AllocationFailed {
                 needed: query.len() as u64,
                 component: "graph query codes",
             }),
-            Bit4ControlError::Control(error) => error,
+            error => GraphBuildError::Quant(error),
         })?;
-    control.reconcile(query_requested, query_peak)?;
-    let query_bytes = prepared.resident_bytes();
-    control.release(query_peak.checked_sub(query_bytes).ok_or_else(|| {
-        GraphBuildError::Geometry("query peak accounting underflow".to_owned())
-    })?)?;
     *visit_epoch = visit_epoch.wrapping_add(1);
     if *visit_epoch == 0 {
-        fill_controlled(visited, 0, control)?;
+        visited.fill(0);
         *visit_epoch = 1;
     }
     let epoch = *visit_epoch;
     let mut result = Vec::new();
-    let _result_bytes = reserve_vec(&mut result, width.saturating_add(1), "result", control)?;
+
+    let capacity = width.saturating_add(1);
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<ScoredNode>())
+        .ok_or_else(|| GraphBuildError::Geometry("result allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation = crate::allocation_audit::attributed(|| result.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = result.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "result",
+        })
+    })?;
     let frontier_capacity = vectors.node_count as usize;
     let mut frontier_slots = Vec::new();
-    let frontier_bytes = reserve_vec(&mut frontier_slots, frontier_capacity, "frontier", control)?;
+
+    let capacity = frontier_capacity;
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<BestFirst>())
+        .ok_or_else(|| GraphBuildError::Geometry("frontier allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation =
+        crate::allocation_audit::attributed(|| frontier_slots.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = frontier_slots.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "frontier",
+        })
+    })?;
     let mut frontier = std::collections::BinaryHeap::from(frontier_slots);
     for &entry in entries {
-        control.step(1)?;
         let entry_index = vectors.validate_node(entry)?;
         if entry == query_id
             || inserted.get(entry_index).copied() != Some(1)
@@ -1989,24 +1862,23 @@ fn search_candidates(
         if let Some(marker) = visited.get_mut(entry_index) {
             *marker = epoch;
         }
-        let scored = score_node(vectors, &prepared, query_norm_squared, entry, control)?;
-        insert_result(&mut result, scored, width, control)?;
-        push_frontier(&mut frontier, scored, control)?;
+        let scored = score_node(vectors, &prepared, query_norm_squared, entry)?;
+        insert_result(&mut result, scored, width)?;
+        push_frontier(&mut frontier, scored)?;
     }
     if frontier.is_empty()
         && let Some(start) = inserted.iter().position(|present| *present == 1)
     {
         let start = u32::try_from(start)
             .map_err(|_| GraphBuildError::Geometry("inserted start exceeds u32".to_owned()))?;
-        let scored = score_node(vectors, &prepared, query_norm_squared, start, control)?;
+        let scored = score_node(vectors, &prepared, query_norm_squared, start)?;
         if let Some(marker) = visited.get_mut(start as usize) {
             *marker = epoch;
         }
-        insert_result(&mut result, scored, width, control)?;
-        push_frontier(&mut frontier, scored, control)?;
+        insert_result(&mut result, scored, width)?;
+        push_frontier(&mut frontier, scored)?;
     }
     while !frontier.is_empty() {
-        control.step(1)?;
         let Some(BestFirst(candidate)) = frontier.pop() else {
             break;
         };
@@ -2015,7 +1887,6 @@ fn search_candidates(
             break;
         }
         for &neighbor in adjacency.neighbors(candidate.node_id)? {
-            control.step(1)?;
             let neighbor_index = vectors.validate_node(neighbor)?;
             if neighbor == query_id
                 || inserted.get(neighbor_index).copied() != Some(1)
@@ -2026,21 +1897,19 @@ fn search_candidates(
             if let Some(marker) = visited.get_mut(neighbor_index) {
                 *marker = epoch;
             }
-            let scored = score_node(vectors, &prepared, query_norm_squared, neighbor, control)?;
+            let scored = score_node(vectors, &prepared, query_norm_squared, neighbor)?;
             let qualifies = result.len() < width
                 || result
                     .last()
                     .is_some_and(|current_worst| scored.distance < current_worst.distance);
             if qualifies {
-                insert_result(&mut result, scored, width, control)?;
-                push_frontier(&mut frontier, scored, control)?;
+                insert_result(&mut result, scored, width)?;
+                push_frontier(&mut frontier, scored)?;
             }
         }
     }
     drop(frontier);
-    control.release(frontier_bytes)?;
     drop(prepared);
-    control.release(query_bytes)?;
     Ok(result)
 }
 
@@ -2049,22 +1918,10 @@ fn score_node(
     query: &crate::quant::Bit4Query,
     query_norm_squared: f64,
     node_id: u32,
-    control: &mut BuildControl<'_>,
 ) -> Result<ScoredNode, GraphBuildError> {
     vectors.validate_node(node_id)?;
     let factors = vectors.factor(node_id)?;
-    let dot = f64::from(
-        est_dot_bit4_controlled(query, vectors.code_row(node_id)?, factors, &mut |units| {
-            control.step(units)
-        })
-        .map_err(|error| match error {
-            Bit4ControlError::Quant(error) => GraphBuildError::Quant(error),
-            Bit4ControlError::Memory => {
-                GraphBuildError::Geometry("controlled Bit4 score overflow".to_owned())
-            }
-            Bit4ControlError::Control(error) => error,
-        })?,
-    );
+    let dot = f64::from(est_dot_bit4(query, vectors.code_row(node_id)?, factors)?);
     let norm = factors.norm();
     Ok(ScoredNode {
         node_id,
@@ -2101,9 +1958,7 @@ impl Ord for BestFirst {
 fn push_frontier(
     frontier: &mut std::collections::BinaryHeap<BestFirst>,
     node: ScoredNode,
-    control: &mut BuildControl<'_>,
 ) -> Result<(), GraphBuildError> {
-    control.step(1)?;
     if frontier.len() == frontier.capacity() {
         return Err(GraphBuildError::Geometry(
             "frontier fixed capacity exhausted".to_owned(),
@@ -2122,9 +1977,7 @@ fn insert_result(
     result: &mut Vec<ScoredNode>,
     node: ScoredNode,
     width: usize,
-    control: &mut BuildControl<'_>,
 ) -> Result<(), GraphBuildError> {
-    control.step(1)?;
     if result.len() == result.capacity() {
         return Err(GraphBuildError::Geometry(
             "result fixed capacity exhausted".to_owned(),
@@ -2141,14 +1994,12 @@ fn insert_result(
 fn sort_scored(
     values: &mut [ScoredNode],
     compare: fn(&ScoredNode, &ScoredNode) -> std::cmp::Ordering,
-    control: &mut BuildControl<'_>,
 ) -> Result<(), GraphBuildError> {
     fn sift(
         values: &mut [ScoredNode],
         mut root: usize,
         end: usize,
         compare: fn(&ScoredNode, &ScoredNode) -> std::cmp::Ordering,
-        control: &mut BuildControl<'_>,
     ) -> Result<(), GraphBuildError> {
         loop {
             let child = root
@@ -2159,9 +2010,8 @@ fn sort_scored(
                 return Ok(());
             }
             let mut selected = child;
-            if child + 1 < end {
-                control.step(1)?;
-                if compare(
+            if child + 1 < end
+                && compare(
                     values.get(child).ok_or_else(|| {
                         GraphBuildError::Geometry("sort child unavailable".to_owned())
                     })?,
@@ -2170,11 +2020,9 @@ fn sort_scored(
                     })?,
                 )
                 .is_lt()
-                {
-                    selected = child + 1;
-                }
+            {
+                selected = child + 1;
             }
-            control.step(1)?;
             if !compare(
                 values
                     .get(root)
@@ -2192,12 +2040,11 @@ fn sort_scored(
         }
     }
     for root in (0..values.len() / 2).rev() {
-        sift(values, root, values.len(), compare, control)?;
+        sift(values, root, values.len(), compare)?;
     }
     for end in (1..values.len()).rev() {
-        control.step(1)?;
         values.swap(0, end);
-        sift(values, 0, end, compare, control)?;
+        sift(values, 0, end, compare)?;
     }
     Ok(())
 }
@@ -2218,9 +2065,8 @@ fn robust_prune(
     candidates: &[u32],
     alpha: f32,
     target: usize,
-    control: &mut BuildControl<'_>,
 ) -> Result<Vec<u32>, GraphBuildError> {
-    robust_prune_rows_controlled(
+    robust_prune_rows(
         vectors.rescore,
         vectors.dimensions,
         vectors.node_count,
@@ -2228,11 +2074,9 @@ fn robust_prune(
         candidates,
         alpha,
         target,
-        control,
     )
 }
-
-/// Applies the production alpha-prune rule to exact row-major vectors.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn robust_prune_rows(
     rescore: &[f32],
     dimensions: usize,
@@ -2242,57 +2086,73 @@ pub(crate) fn robust_prune_rows(
     alpha: f32,
     target: usize,
 ) -> Result<Vec<u32>, GraphBuildError> {
-    robust_prune_rows_controlled(
-        rescore,
-        dimensions,
-        node_count,
-        owner,
-        candidates,
-        alpha,
-        target,
-        &mut BuildControl::disabled(),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn robust_prune_rows_controlled(
-    rescore: &[f32],
-    dimensions: usize,
-    node_count: u32,
-    owner: u32,
-    candidates: &[u32],
-    alpha: f32,
-    target: usize,
-    control: &mut BuildControl<'_>,
-) -> Result<Vec<u32>, GraphBuildError> {
     validate_exact_rows(rescore, dimensions, node_count)?;
     validate_exact_node(owner, node_count)?;
     let mut remaining = Vec::new();
-    let remaining_bytes = reserve_vec(&mut remaining, candidates.len(), "prune", control)?;
+
+    let capacity = candidates.len();
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| GraphBuildError::Geometry("prune allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation = crate::allocation_audit::attributed(|| remaining.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = remaining.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "prune",
+        })
+    })?;
     for &candidate in candidates {
-        control.step(1)?;
         validate_exact_node(candidate, node_count)?;
         if candidate != owner && !remaining.contains(&candidate) {
             remaining.push(candidate);
         }
     }
     let mut owner_distances = Vec::new();
-    let distance_bytes = reserve_vec(&mut owner_distances, remaining.len(), "distance", control)?;
+
+    let capacity = remaining.len();
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<ScoredNode>())
+        .ok_or_else(|| GraphBuildError::Geometry("distance allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation =
+        crate::allocation_audit::attributed(|| owner_distances.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = owner_distances.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "distance",
+        })
+    })?;
     for candidate in remaining {
         owner_distances.push(ScoredNode {
             node_id: candidate,
-            distance: exact_row_distance_controlled(
-                rescore, dimensions, owner, candidate, control,
-            )?,
+            distance: exact_row_distance(rescore, dimensions, owner, candidate)?,
         });
     }
-    control.release(remaining_bytes)?;
-    sort_scored(&mut owner_distances, scored_best_first, control)?;
+
+    sort_scored(&mut owner_distances, scored_best_first)?;
     let mut selected = Vec::new();
-    reserve_vec(&mut selected, target, "selected", control)?;
+
+    let capacity = target;
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| GraphBuildError::Geometry("selected allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation = crate::allocation_audit::attributed(|| selected.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = selected.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "selected",
+        })
+    })?;
     let alpha_squared = f64::from(alpha) * f64::from(alpha);
     while selected.len() < target {
-        control.step(1)?;
         let Some(best) = owner_distances.first().copied() else {
             break;
         };
@@ -2305,13 +2165,8 @@ fn robust_prune_rows_controlled(
             let keep = if candidate.node_id == best.node_id {
                 false
             } else {
-                let between = exact_row_distance_controlled(
-                    rescore,
-                    dimensions,
-                    best.node_id,
-                    candidate.node_id,
-                    control,
-                )?;
+                let between =
+                    exact_row_distance(rescore, dimensions, best.node_id, candidate.node_id)?;
                 alpha_squared * between > candidate.distance
             };
             if keep {
@@ -2322,7 +2177,6 @@ fn robust_prune_rows_controlled(
         }
     }
     drop(owner_distances);
-    control.release(distance_bytes)?;
     Ok(selected)
 }
 
@@ -2358,12 +2212,11 @@ fn validate_exact_node(node_id: u32, node_count: u32) -> Result<(), GraphBuildEr
     Ok(())
 }
 
-fn exact_row_distance_controlled(
+fn exact_row_distance(
     rescore: &[f32],
     dimensions: usize,
     left: u32,
     right: u32,
-    control: &mut BuildControl<'_>,
 ) -> Result<f64, GraphBuildError> {
     let row = |node_id: u32| {
         let start = (node_id as usize)
@@ -2378,7 +2231,6 @@ fn exact_row_distance_controlled(
     };
     let mut sum = 0.0;
     for (left_chunk, right_chunk) in row(left)?.chunks(256).zip(row(right)?.chunks(256)) {
-        control.step(1)?;
         for (left, right) in left_chunk.iter().zip(right_chunk) {
             let difference = f64::from(*left) - f64::from(*right);
             sum += difference * difference;
@@ -2394,32 +2246,39 @@ fn add_reciprocal_edges(
     neighbors: &[u32],
     params: GraphParams,
     alpha: f32,
-    control: &mut BuildControl<'_>,
 ) -> Result<(), GraphBuildError> {
     for &neighbor in neighbors {
-        control.step(1)?;
         vectors.validate_node(neighbor)?;
         let source = adjacency.neighbors(neighbor)?;
         let mut existing = Vec::new();
-        let existing_bytes = reserve_vec(
-            &mut existing,
-            source.len().saturating_add(1),
-            "reciprocal",
-            control,
-        )?;
+
+        let capacity = source.len().saturating_add(1);
+        let requested = capacity
+            .checked_mul(std::mem::size_of::<u32>())
+            .ok_or_else(|| {
+                GraphBuildError::Geometry("reciprocal allocation overflow".to_owned())
+            })?;
+        #[cfg(feature = "allocation-audit")]
+        let allocation =
+            crate::allocation_audit::attributed(|| existing.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let allocation = existing.try_reserve_exact(capacity);
+        allocation.map_err(|_| {
+            GraphBuildError::Store(StoreError::AllocationFailed {
+                needed: requested as u64,
+                component: "reciprocal",
+            })
+        })?;
         existing.extend_from_slice(source);
         if existing.contains(&owner) {
             drop(existing);
-            control.release(existing_bytes)?;
             continue;
         }
-        let mut separately_allocated = false;
         let updated = if existing.len() < usize::from(params.r_max()) {
             let mut updated = existing;
             updated.push(owner);
             updated
         } else {
-            separately_allocated = true;
             let mut candidates = existing;
             candidates.push(owner);
             robust_prune(
@@ -2428,19 +2287,10 @@ fn add_reciprocal_edges(
                 &candidates,
                 alpha,
                 usize::from(params.r_target()),
-                control,
             )?
         };
         adjacency.set_neighbors(neighbor, &updated)?;
-        let updated_bytes = updated
-            .capacity()
-            .checked_mul(std::mem::size_of::<u32>())
-            .ok_or_else(|| GraphBuildError::Geometry("reciprocal capacity overflow".to_owned()))?;
         drop(updated);
-        control.release(existing_bytes)?;
-        if separately_allocated {
-            control.release(updated_bytes)?;
-        }
     }
     Ok(())
 }
@@ -2448,54 +2298,74 @@ fn add_reciprocal_edges(
 fn refined_entry_points(
     vectors: &SegmentVectors<'_>,
     shuffled: &[u32],
-    control: &mut BuildControl<'_>,
 ) -> Result<Vec<u32>, GraphBuildError> {
     let sample = shuffled
         .get(..shuffled.len().min(MEDOID_SAMPLE_ROWS))
         .ok_or_else(|| GraphBuildError::Geometry("medoid sample is unavailable".to_owned()))?;
     let mut medoid_scores = Vec::new();
-    let medoid_bytes = reserve_vec(&mut medoid_scores, sample.len(), "medoid", control)?;
+
+    let capacity = sample.len();
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<ScoredNode>())
+        .ok_or_else(|| GraphBuildError::Geometry("medoid allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation =
+        crate::allocation_audit::attributed(|| medoid_scores.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = medoid_scores.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "medoid",
+        })
+    })?;
     for candidate in sample {
         let mut distance = 0.0;
         for other in sample {
-            distance += exact_row_distance_controlled(
-                vectors.rescore,
-                vectors.dimensions,
-                *candidate,
-                *other,
-                control,
-            )?;
+            distance +=
+                exact_row_distance(vectors.rescore, vectors.dimensions, *candidate, *other)?;
         }
         medoid_scores.push(ScoredNode {
             node_id: *candidate,
             distance,
         });
     }
-    sort_scored(&mut medoid_scores, scored_best_first, control)?;
+    sort_scored(&mut medoid_scores, scored_best_first)?;
     let medoid = medoid_scores
         .first()
         .map(|node| node.node_id)
         .ok_or_else(|| GraphBuildError::Geometry("medoid sample contains no rows".to_owned()))?;
     drop(medoid_scores);
-    control.release(medoid_bytes)?;
     let mut entries = Vec::new();
-    reserve_vec(&mut entries, ENTRY_POINT_COUNT, "entry", control)?;
+
+    let capacity = ENTRY_POINT_COUNT;
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| GraphBuildError::Geometry("entry allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation = crate::allocation_audit::attributed(|| entries.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = entries.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "entry",
+        })
+    })?;
     entries.push(medoid);
     while entries.len() < ENTRY_POINT_COUNT && entries.len() < sample.len() {
         let mut farthest = None::<ScoredNode>;
         for &candidate in sample {
-            control.step(1)?;
             if entries.contains(&candidate) {
                 continue;
             }
             let mut nearest = f64::INFINITY;
             for entry in &entries {
-                nearest = nearest.min(exact_row_distance_controlled(
+                nearest = nearest.min(exact_row_distance(
                     vectors.rescore,
                     vectors.dimensions,
                     candidate,
                     *entry,
-                    control,
                 )?);
             }
             let scored = ScoredNode {
@@ -2517,30 +2387,19 @@ fn refined_entry_points(
     Ok(entries)
 }
 
-fn move_entries_to_front(
-    order: &mut Vec<u32>,
-    entries: &[u32],
-    control: &mut BuildControl<'_>,
-) -> Result<(), GraphBuildError> {
+fn move_entries_to_front(order: &mut Vec<u32>, entries: &[u32]) -> Result<(), GraphBuildError> {
     let mut index = 0;
     while index < order.len() {
-        control.step(1)?;
         let node = *order
             .get(index)
             .ok_or_else(|| GraphBuildError::Geometry("build order row unavailable".to_owned()))?;
         if entries.contains(&node) {
-            for _ in 0..order.len().saturating_sub(index).div_ceil(256) {
-                control.step(1)?;
-            }
             order.remove(index);
         } else {
             index += 1;
         }
     }
     for &entry in entries.iter().rev() {
-        for _ in 0..order.len().div_ceil(256) {
-            control.step(1)?;
-        }
         order.insert(0, entry);
     }
     Ok(())
@@ -2551,25 +2410,7 @@ fn encode_artifact(
     params: GraphParams,
     entries: &[u32],
     adjacency: &Adjacency,
-    memory: Option<AccountedCounter>,
-) -> Result<GraphBuildArtifact, GraphBuildError> {
-    encode_artifact_controlled(
-        vectors,
-        params,
-        entries,
-        adjacency,
-        memory,
-        &mut BuildControl::disabled(),
-    )
-}
-
-fn encode_artifact_controlled(
-    vectors: &SegmentVectors<'_>,
-    params: GraphParams,
-    entries: &[u32],
-    adjacency: &Adjacency,
     mut memory: Option<AccountedCounter>,
-    control: &mut BuildControl<'_>,
 ) -> Result<GraphBuildArtifact, GraphBuildError> {
     let dimensions = u32::try_from(vectors.dimensions)
         .map_err(|_| GraphBuildError::Geometry("dimensions exceed u32".to_owned()))?;
@@ -2605,10 +2446,24 @@ fn encode_artifact_controlled(
         charge.set(peak)?;
     }
     let mut padded_codes = Vec::new();
-    let padded_bytes = reserve_vec(&mut padded_codes, padded_length, "padded code", control)?;
-    resize_vec_controlled(&mut padded_codes, padded_length, 0, "padded code", control)?;
+
+    let capacity = padded_length;
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<u8>())
+        .ok_or_else(|| GraphBuildError::Geometry("padded code allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation =
+        crate::allocation_audit::attributed(|| padded_codes.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = padded_codes.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "padded code",
+        })
+    })?;
+    padded_codes.resize(padded_length, 0);
     for node_id in 0..vectors.node_count {
-        control.step(1)?;
         let source = vectors.code_row(node_id)?;
         let start = (node_id as usize)
             .checked_mul(padded_row_bytes)
@@ -2620,19 +2475,26 @@ fn encode_artifact_controlled(
             GraphBuildError::Geometry(format!("padded code row {node_id} is unavailable"))
         })?;
         for (output, input) in destination.chunks_mut(256).zip(source.chunks(256)) {
-            control.step(input.len() as u64)?;
             output.copy_from_slice(input);
         }
     }
     let mut nodes = Vec::new();
-    let nodes_bytes = reserve_vec(
-        &mut nodes,
-        vectors.node_count as usize,
-        "node input",
-        control,
-    )?;
+
+    let capacity = vectors.node_count as usize;
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<GraphNodeBlockInput<'_>>())
+        .ok_or_else(|| GraphBuildError::Geometry("node input allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation = crate::allocation_audit::attributed(|| nodes.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = nodes.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "node input",
+        })
+    })?;
     for node_id in 0..vectors.node_count {
-        control.step(1)?;
         let start = (node_id as usize)
             .checked_mul(padded_row_bytes)
             .ok_or_else(|| GraphBuildError::Geometry("encoded code offset overflow".to_owned()))?;
@@ -2649,27 +2511,37 @@ fn encode_artifact_controlled(
             neighbors: adjacency.neighbors(node_id)?,
         });
     }
-    control.acquire(encoded_length)?;
-    let encoded = encode_node_blocks_controlled(
+
+    let encoded = encode_node_blocks_with_refinement_passes(
         GraphNodeBlockBuild {
             layout,
             nodes: &nodes,
         },
         crate::graph::refine::RefinementPasses::default(),
-        &mut |units| control.step(units).is_ok(),
     )?;
-    control.reconcile(encoded_length, encoded.resident_bytes())?;
     let encoded_region = encoded.into_bytes();
     let mut entry_points = Vec::new();
-    reserve_vec(&mut entry_points, entries.len(), "entry copy", control)?;
+
+    let capacity = entries.len();
+    let requested = capacity
+        .checked_mul(std::mem::size_of::<u32>())
+        .ok_or_else(|| GraphBuildError::Geometry("entry copy allocation overflow".to_owned()))?;
+    #[cfg(feature = "allocation-audit")]
+    let allocation =
+        crate::allocation_audit::attributed(|| entry_points.try_reserve_exact(capacity));
+    #[cfg(not(feature = "allocation-audit"))]
+    let allocation = entry_points.try_reserve_exact(capacity);
+    allocation.map_err(|_| {
+        GraphBuildError::Store(StoreError::AllocationFailed {
+            needed: requested as u64,
+            component: "entry copy",
+        })
+    })?;
     for chunk in entries.chunks(256) {
-        control.step(chunk.len() as u64)?;
         entry_points.extend_from_slice(chunk);
     }
     drop(nodes);
-    control.release(nodes_bytes)?;
     drop(padded_codes);
-    control.release(padded_bytes)?;
     if let Some(charge) = memory.as_mut() {
         let retained = encoded_region
             .capacity()
@@ -2692,13 +2564,8 @@ fn encode_artifact_controlled(
     })
 }
 
-fn shuffle_controlled(
-    values: &mut [u32],
-    random: &mut SplitMix64,
-    control: &mut BuildControl<'_>,
-) -> Result<(), GraphBuildError> {
+fn shuffle(values: &mut [u32], random: &mut SplitMix64) -> Result<(), GraphBuildError> {
     for upper in (1..values.len()).rev() {
-        control.step(1)?;
         let modulus = u64::try_from(upper + 1)
             .map_err(|_| GraphBuildError::Geometry("shuffle width exceeds u64".to_owned()))?;
         let selected = usize::try_from(random.next_u64() % modulus)
@@ -3367,7 +3234,7 @@ mod tests {
             .expect("second deterministic build");
         assert_eq!(first.encoded_region(), second.encoded_region());
 
-        // Preserve the original sequential f64 sum across polling boundaries.
+        // Preserve the original sequential f64 sum.
         // At 2^54 each following squared unit rounds away individually.
         let dimensions = 513;
         let mut rescore = vec![1.0_f32; dimensions * 2];
@@ -3384,14 +3251,8 @@ mod tests {
         }
         let vectors = SegmentVectors::from_native(dimensions, &codes, &factors, &rescore)
             .expect("513D arithmetic fixture geometry");
-        let exact = super::exact_row_distance_controlled(
-            &rescore,
-            dimensions,
-            0,
-            1,
-            &mut super::BuildControl::disabled(),
-        )
-        .expect("controlled exact row distance");
+        let exact =
+            super::exact_row_distance(&rescore, dimensions, 0, 1).expect("exact row distance");
         let adjacency = Adjacency::new(2, 1).expect("two-row arithmetic adjacency");
         let candidates = super::search_candidates(
             &vectors,
@@ -3403,9 +3264,8 @@ mod tests {
             seed,
             &mut [0; 2],
             &mut 0,
-            &mut super::BuildControl::disabled(),
         )
-        .expect("controlled candidate search");
+        .expect("candidate search");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].node_id, 1);
         assert_eq!(
@@ -3419,7 +3279,6 @@ mod tests {
             for ordinal in [1, 2] {
                 let mut visited = [0; 2];
                 let mut visit_epoch = 0;
-                let mut control = super::BuildControl::disabled();
                 let (result, fires) =
                     crate::allocation_audit::fail_attributed_allocation(ordinal, || {
                         super::search_candidates(
@@ -3432,7 +3291,6 @@ mod tests {
                             seed,
                             &mut visited,
                             &mut visit_epoch,
-                            &mut control,
                         )
                     });
                 allocation_observations.push((
@@ -3460,7 +3318,6 @@ mod tests {
                 seed,
                 &mut [0; 2],
                 &mut 0,
-                &mut super::BuildControl::disabled(),
             )
             .expect("restored query allocation control");
             assert_eq!(restored.len(), 1);

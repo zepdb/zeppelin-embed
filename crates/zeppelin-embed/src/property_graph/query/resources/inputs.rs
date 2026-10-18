@@ -373,10 +373,6 @@ impl<'p, 'plan, 'facts> RuntimePlan<'p, 'plan, 'facts, '_, '_, '_> {
     pub(crate) fn belongs_to(&self, memory: &QueryMemory<'_>) -> bool {
         std::ptr::eq(self.inputs._backing.memory, memory)
     }
-    #[allow(
-        dead_code,
-        reason = "ZE-145's parameter proof is consumed with its later evaluator integration"
-    )]
     pub(crate) fn validate_parameter_inputs(
         &self,
         bindings: &[ParameterBinding<'_>],
@@ -401,10 +397,6 @@ impl<'p, 'plan, 'facts> RuntimePlan<'p, 'plan, 'facts, '_, '_, '_> {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "ZE-145's recursive parameter proof is consumed with its later evaluator integration"
-)]
 fn verify_parameter_value(
     inputs: &QueryInputs<'_, '_, '_>,
     value: QueryValue<'_>,

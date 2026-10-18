@@ -40,6 +40,13 @@ pub(crate) enum DirectionSelection {
     Undirected,
 }
 
+#[cfg_attr(
+    not(any(test, feature = "test-seams")),
+    allow(
+        dead_code,
+        reason = "planned relationship read API with live native read unit tests"
+    )
+)]
 pub(crate) struct RelCursor<'view, 'm, 'g> {
     view_token: u64,
     runtime: RuntimeInstanceId,
@@ -634,6 +641,13 @@ fn retained_types<'m, 'g>(
     }
 }
 
+#[cfg_attr(
+    not(any(test, feature = "test-seams")),
+    allow(
+        dead_code,
+        reason = "planned relationship read API with live native read unit tests"
+    )
+)]
 impl<'view, 'm, 'g> RelCursor<'view, 'm, 'g> {
     pub(super) fn new<'lease>(
         lease: &NativeReadLease,

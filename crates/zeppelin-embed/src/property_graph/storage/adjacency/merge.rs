@@ -159,7 +159,7 @@ pub fn merge<'a, E>(
         watermark: cutoff,
     })
 }
-
+#[cfg(any(test, feature = "test-seams"))]
 #[cfg(any(test, feature = "test-seams"))]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 pub(crate) fn exact_split_fixture() {

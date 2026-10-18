@@ -273,7 +273,7 @@ fn grouped_and_empty_global_aggregates_skip_null_and_keep_ordered_collect() {
 #[test]
 fn eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates() {
     use zeppelin_embed::property_graph::NodeId;
-    use zeppelin_embed::property_graph::query::eligibility::{Eligibility, EligibleNodeSet};
+    use zeppelin_embed::property_graph::query::eligibility::EligibleNodeSet;
     fixture(|context| {
         let view = context.view();
         let low = NodeId::new(7).expect("id");
@@ -291,9 +291,7 @@ fn eligible_set_is_full_width_same_view_and_caps_materialized_ids_not_duplicates
             QueryError::ForeignView
         );
         assert!(EligibleNodeSet::build(context, 1, [foreign.node(low)]).is_err());
-        let empty = EligibleNodeSet::build(context, 0, []).expect("empty set");
-        assert!(matches!(Eligibility::Set(&empty), Eligibility::Set(_)));
-        assert!(matches!(Eligibility::AllIndexed, Eligibility::AllIndexed));
+        EligibleNodeSet::build(context, 0, []).expect("empty set");
         assert!(EligibleNodeSet::build(context, 1, [QueryValue::Null]).is_err());
         let before = context.counters().get(WorkKind::EligibilityEntries);
         let repeated =

@@ -104,7 +104,7 @@ fn trace_payload<V: TraceReferenceVisitor>(
         index = index.checked_add(1).ok_or(TreeError::Work)?;
     }
 }
-
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn trace_payload_references<V: TraceReferenceVisitor>(
     payload: PayloadRef,
     source: &impl BlockSource,

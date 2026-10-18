@@ -464,83 +464,6 @@ fn durable_proof_for_lease(
     drop(capture);
     (records, artifacts)
 }
-
-fn maintenance_allocations(
-    store: &Store,
-    lease: &super::super::NativeReadLease,
-    node: crate::property_graph::NodeId,
-) -> Vec<ArtifactDescriptor> {
-    let generation = lease.bundle().base().generation;
-    let record_artifact = record_physical_for_lease(store, lease, node)
-        .reference()
-        .artifact;
-    let complete = complete_inventory_union_for_lease(store, lease);
-    let mut matching_pack = complete
-        .iter()
-        .filter(|change| change.object.artifact == record_artifact);
-    let pack = matching_pack
-        .next()
-        .expect("current relocated pack descriptor")
-        .object;
-    assert!(
-        matching_pack.next().is_none(),
-        "duplicate relocated pack descriptor"
-    );
-    assert_eq!(pack.generation, generation);
-
-    let mut matching_manifest = lease
-        .bundle()
-        .prepared_inventories()
-        .iter()
-        .copied()
-        .filter(|required| required.object.generation == generation);
-    let manifest = matching_manifest
-        .next()
-        .expect("current maintenance manifest");
-    assert!(
-        matching_manifest.next().is_none(),
-        "multiple current-generation maintenance manifests"
-    );
-    assert!(
-        prepared_manifest_for_lease(store, lease, manifest)
-            .iter()
-            .any(|change| change.object == pack),
-        "maintenance manifest does not authenticate relocated pack"
-    );
-    assert_ne!(pack, manifest.object);
-    // A maintenance manifest now authenticates multiple lifetime objects.
-    // Preserve exact accounting of every allocation, not just the record pack.
-    let authenticated = prepared_manifest_for_lease(store, lease, manifest);
-    let mut allocations: Vec<_> = complete
-        .iter()
-        .filter(|change| change.object.generation == generation)
-        .map(|change| change.object)
-        .collect();
-    allocations.sort_unstable_by_key(|object| object.artifact);
-    let mut expected: Vec<_> = authenticated.iter().map(|change| change.object).collect();
-    expected.sort_unstable_by_key(|object| object.artifact);
-    assert_eq!(allocations, expected, "unaccounted maintenance allocation");
-    allocations
-}
-
-fn assert_semantic_snapshot_advanced(
-    before: &super::publication::GenerationSnapshot,
-    after: &super::publication::GenerationSnapshot,
-) {
-    assert_eq!(after.generation, before.generation + 2);
-    assert_eq!(after.revision, before.revision);
-    assert_eq!(after.original_generation, before.original_generation);
-    assert_eq!(after.canonical, before.canonical);
-    assert_eq!(after.text, before.text);
-    assert_eq!(after.vector, before.vector);
-    assert_eq!(after.old_relationship, before.old_relationship);
-    assert_eq!(after.new_relationship, before.new_relationship);
-    assert_eq!(after.out, before.out);
-    assert_eq!(after.incoming, before.incoming);
-    assert_eq!(after.sparse_text, before.sparse_text);
-    assert_eq!(after.sparse_vector, before.sparse_vector);
-}
-
 #[test]
 fn ze46_real_consolidation_preserves_exact_state_and_reopens() {
     run_ze46_real_consolidation_preserves_exact_state_and_reopens();
@@ -1337,10 +1260,7 @@ fn run_ze260_maintenance_emits_each_tree_root_once_per_call() {
             continue;
         }
         let family = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
-        if family == 18 {
-            artifact::decode(ContainerKind::RootEnvelope, None, &bytes).unwrap();
-            continue;
-        }
+        assert_eq!(family, 17, "{name:?} is not a native graph object");
         let frame = artifact::decode(ContainerKind::Object, None, &bytes).unwrap();
         if frame.identity().generation != report.generation {
             continue;
@@ -2991,11 +2911,7 @@ fn run_ze46_orphan_adoption_waits_for_a_quiescent_history() {
     commit_maintenance(&store).unwrap();
     let current = store.admit_native_read().unwrap();
     let (manifest, candidates) = pending_reclaim_proof_for_lease(&store, &current);
-    assert!(
-        candidates
-            .iter()
-            .all(|candidate| matches!(candidate.family, 17..=19))
-    );
+    assert!(candidates.iter().all(|candidate| candidate.family == 17));
     assert_eq!(manifest.binding.sequence, before.envelope_sequence);
     assert_eq!(current.bundle().base().fold, before);
     super::super::recovery::validate_reclaim_proof_for_test(
@@ -3045,11 +2961,7 @@ pub(super) fn reclaim_candidate_path(
     directory: &Path,
     candidate: &ArtifactDescriptor,
 ) -> std::path::PathBuf {
-    if candidate.family == 19 {
-        directory.join(format!("graph-wal-{:032x}.ze", candidate.artifact.get()))
-    } else {
-        crate::property_graph::storage::allocation::artifact_path(directory, candidate.artifact)
-    }
+    crate::property_graph::storage::allocation::artifact_path(directory, candidate.artifact)
 }
 
 /// Every artifact the rooted pending intent authorizes an unlink for: the
@@ -4751,7 +4663,7 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
     }
     let candidates = pending_reclaim_candidates_or_empty_root(&store, &current);
     assert!(candidates.iter().all(|candidate| {
-        matches!(candidate.family, 17..=19)
+        candidate.family == 17
             && protected_allocations
                 .iter()
                 .all(|change| change.object != *candidate)
@@ -5249,7 +5161,6 @@ fn ze163_witness_report(store: &Store, lease: &super::super::NativeReadLease) ->
         bundle.directory(),
         bundle,
         bundle.sequence(),
-        None,
         &control,
         |visit, wal_resources| {
             let (state, changes, is_checkpoint) = match visit {
@@ -6710,8 +6621,7 @@ fn ze186_reader_graph_only_artifact_survives_reclaim() {
                 .map(|r| r.object.artifact),
         );
     }
-    // At each target checkpoint, history emits only its WAL identity:
-    // the complete graph retrace is skipped at the target sequence.
+    // At each target checkpoint, history emits its manifest checkpoint state.
     for lease in [&reader, &current] {
         let mut checkpoints = 0;
         super::super::recovery::visit_captured_state(
@@ -6719,18 +6629,12 @@ fn ze186_reader_graph_only_artifact_survives_reclaim() {
             &path,
             lease.bundle(),
             lease.bundle().sequence(),
-            None,
             &control,
             |visit, _| {
                 match visit {
-                    super::super::recovery::CapturedStateVisit::Checkpoint {
-                        state,
-                        wal_identity,
-                        ..
-                    } => {
+                    super::super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
                         assert_eq!(state.sequence, lease.bundle().sequence());
                         checkpoints += 1;
-                        assert_eq!(wal_identity, 0, "the outer WAL has no artifact identity");
                     }
                     super::super::recovery::CapturedStateVisit::Envelope { .. } => {
                         panic!("unexpected history envelope")
@@ -7579,7 +7483,6 @@ fn ze166_both_live_missing_relationship_is_corruption() {
     wal_roots.slots[1] = None;
     let input = super::super::NativeGraphBundleInput {
         base: bundle.base(),
-        root_envelope: bundle.root_envelope(),
         roots,
         wal_roots,
         sequence: bundle.sequence(),

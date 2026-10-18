@@ -1,10 +1,5 @@
 //! Writes-owned native graph admission and retained-root registration.
 
-#![allow(
-    dead_code,
-    reason = "the admitted read seam is intentionally crate-private until ZE-50 consumes it"
-)]
-
 use super::{Store, StoreError, StoreState};
 use crate::epoch::EmbeddingTower;
 use crate::format::FormatFamily;
@@ -198,8 +193,6 @@ pub(crate) trait NativeReadConsumer<T> {
 /// the same value through the controlled installer; it has no publish method.
 pub(crate) struct NativeGraphBundleInput {
     pub(crate) base: BaseIdentity,
-    // removed by ZE-346 when the graph WAL and root selector are deleted
-    pub(crate) root_envelope: Option<RequiredRef>,
     pub(crate) roots: GraphRoots,
     pub(crate) wal_roots: WalGraphRoots,
     pub(crate) sequence: u64,
@@ -218,9 +211,6 @@ pub(crate) struct NativeGraphBundleInput {
 /// replacement bundle.
 pub(crate) struct NativeGraphBundle {
     base: BaseIdentity,
-    // Legacy reclaim/recovery locator, never part of bundle identity.
-    // removed by ZE-346 when the graph WAL and root selector are deleted
-    root_envelope: Option<RequiredRef>,
     roots: GraphRoots,
     wal_roots: WalGraphRoots,
     sequence: u64,
@@ -274,7 +264,6 @@ impl NativeGraphBundle {
         directory.push(&store.directory);
         let NativeGraphBundleInput {
             base,
-            root_envelope,
             roots,
             wal_roots,
             sequence,
@@ -289,7 +278,6 @@ impl NativeGraphBundle {
         } = input;
         Ok(Arc::new(Self {
             base,
-            root_envelope,
             roots,
             wal_roots,
             sequence,
@@ -370,7 +358,6 @@ impl NativeGraphBundle {
         directory.push(&store.directory);
         Ok(Arc::new(Self {
             base: input.base,
-            root_envelope: input.root_envelope,
             roots: input.roots,
             wal_roots: input.wal_roots,
             sequence: input.sequence,
@@ -393,7 +380,6 @@ impl NativeGraphBundle {
         resources: &GraphResources,
         admitted: &Arc<Self>,
         fold: FoldMark,
-        root_envelope: Option<RequiredRef>,
     ) -> Result<Arc<Self>, NativeGraphError> {
         if fold.manifest_generation < admitted.base.generation.get()
             || fold.envelope_sequence != admitted.sequence
@@ -408,9 +394,7 @@ impl NativeGraphBundle {
                     store: admitted.base.store,
                     generation: admitted.base.generation,
                     fold,
-                    roots: root_envelope.map(|root| root.object.artifact),
                 },
-                root_envelope,
                 roots: admitted.roots,
                 wal_roots: admitted.wal_roots,
                 sequence: admitted.sequence,
@@ -432,10 +416,6 @@ impl NativeGraphBundle {
 
     fn needs_fold_before_retirement(&self) -> bool {
         self.base.fold.envelope_sequence != self.sequence
-    }
-
-    pub(crate) const fn root_envelope(&self) -> Option<RequiredRef> {
-        self.root_envelope
     }
 
     pub(crate) const fn roots(&self) -> GraphRoots {
@@ -490,9 +470,9 @@ impl NativeGraphBundle {
         self.vfs.as_ref()
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     fn contains(&self, reference: RequiredRef) -> bool {
-        self.root_envelope == Some(reference)
-            || self.catalog == reference
+        self.catalog == reference
             || self.vector == Some(reference)
             || self.text == Some(reference)
             || self.reclaim == Some(reference)
@@ -511,17 +491,6 @@ impl NativeGraphBundle {
             .chain(self.reclaim)
             .chain(self.prepared_inventories.iter().copied())
             .find(|required| required.block == reference)
-    }
-
-    pub(super) fn protected_references(&self) -> [Option<RequiredRef>; 13] {
-        let mut output = [None; 13];
-        output[0] = self.root_envelope;
-        output[1..9].copy_from_slice(&self.wal_roots.slots);
-        output[9] = Some(self.catalog);
-        output[10] = self.vector;
-        output[11] = self.text;
-        output[12] = self.reclaim;
-        output
     }
 }
 
@@ -553,29 +522,9 @@ fn bundle_owned_bytes(
 
 fn validate_bundle(input: &NativeGraphBundleInput) -> Result<(), NativeGraphError> {
     let base = input.base;
-    if let Some(root) = input.root_envelope {
-        if root.object.store != base.store
-            || root.object.family != 18
-            || root.object.version != 1
-            || root.block.kind != BlockKind::CheckpointPayload
-            || root.block.version != 1
-            || root.block.artifact != root.object.artifact
-            || root.object.generation > base.generation
-            || base.roots != Some(root.object.artifact)
-        {
-            return Err(NativeGraphError::Invalid(
-                "legacy checkpoint reference identity",
-            ));
-        }
-    } else if base.roots.is_some() {
-        return Err(NativeGraphError::Invalid(
-            "unified bundle has a legacy root identity",
-        ));
-    }
     if base.store != input.roots.store()
         || base.generation != input.roots.generation()
-        || (input.root_envelope.is_none()
-            && base.fold.envelope_sequence == input.sequence
+        || (base.fold.envelope_sequence == input.sequence
             && base.fold.manifest_generation < base.generation.get())
         || base.fold.envelope_sequence > input.sequence
     {
@@ -1183,23 +1132,6 @@ impl NativeGraphPublication {
         }
         state.current = Some(bundle);
         Ok(())
-    }
-
-    fn is_current_at_serial(
-        &self,
-        bundle: &Arc<NativeGraphBundle>,
-        serial_fence: u64,
-    ) -> Result<bool, NativeGraphError> {
-        let state = self.state.lock().map_err(|_| {
-            NativeGraphError::Store(StoreError::Synchronization {
-                component: "native graph publication",
-            })
-        })?;
-        Ok(state.creation_serial_fence == serial_fence
-            && state
-                .current
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, bundle)))
     }
 
     fn is_current_bundle(&self, bundle: &Arc<NativeGraphBundle>) -> Result<bool, NativeGraphError> {
@@ -2208,6 +2140,7 @@ pub(crate) struct NativeProtectedSpill {
 
 pub(crate) struct NativeMaintenanceAdmission {
     lease: NativeReadLease,
+    #[cfg(any(test, feature = "test-seams"))]
     serial_fence: u64,
 }
 
@@ -2217,14 +2150,17 @@ pub(crate) struct NativeProtectedWal {
 }
 
 impl NativeProtectedRoots {
+    #[cfg(any(test, feature = "test-seams"))]
     fn contains(&self, reference: RequiredRef) -> bool {
         self.bundles.iter().any(|bundle| bundle.contains(reference))
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     fn bundle_count(&self) -> usize {
         self.bundles.len()
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     fn contains_prepared(&self, object: ArtifactDescriptor) -> bool {
         self.prepared.contains(&object)
     }
@@ -2261,6 +2197,7 @@ impl NativeProtectedRoots {
         })
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn leases(&self) -> &[NativeReadLease] {
         &self.leases
     }
@@ -2310,14 +2247,6 @@ impl Store {
                 component: "native graph writer",
             })
     }
-
-    #[cfg(any(test, feature = "test-seams"))]
-    pub(crate) fn fail_next_native_graph_publication_for_test(&self) {
-        self.native_graph
-            .fail_next_publication
-            .store(true, Ordering::Release);
-    }
-
     #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn install_native_graph_for_test(
         &self,
@@ -2458,7 +2387,6 @@ pub(crate) mod tests {
     }
     #[cfg(all(test, feature = "graph-cypher"))]
     mod relationship_speed;
-    mod retrieval;
     pub(crate) mod seal;
     pub(crate) mod storage_faults;
     mod text_lifecycle;
@@ -2701,13 +2629,6 @@ pub(crate) mod tests {
 
     fn bundle(store: StoreInstanceId, generation: u64, artifact: u128) -> NativeGraphBundleInput {
         let generation = GraphGeneration::new(generation);
-        let root_envelope = required(
-            store,
-            generation,
-            artifact,
-            BlockKind::CheckpointPayload,
-            ContainerKind::RootEnvelope,
-        );
         let catalog = required(
             store,
             generation,
@@ -2719,10 +2640,11 @@ pub(crate) mod tests {
             base: BaseIdentity {
                 store,
                 generation,
-                fold: Default::default(),
-                roots: Some(root_envelope.object.artifact),
+                fold: crate::property_graph::staging::FoldMark {
+                    manifest_generation: generation.get(),
+                    ..Default::default()
+                },
             },
-            root_envelope: Some(root_envelope),
             roots: GraphRoots::from_references(store, generation, [None; 8]).unwrap(),
             wal_roots: WalGraphRoots::default(),
             sequence: generation.get(),
@@ -2741,65 +2663,6 @@ pub(crate) mod tests {
     mod bundle {
         use super::*;
         use crate::property_graph::staging::FoldMark;
-
-        #[test]
-        fn legacy_checkpoint_reference_is_checked_until_ze346() {
-            let store = StoreInstanceId::new(123).unwrap();
-            let mutations: [fn(&mut NativeGraphBundleInput); 5] = [
-                |input| input.root_envelope.as_mut().unwrap().object.family = 17,
-                |input| input.root_envelope.as_mut().unwrap().object.version = 2,
-                |input| {
-                    input.root_envelope.as_mut().unwrap().block.kind = BlockKind::CommitParticipant
-                },
-                |input| {
-                    input.root_envelope.as_mut().unwrap().object.generation =
-                        GraphGeneration::new(8)
-                },
-                |input| input.base.roots = None,
-            ];
-            for mutate in mutations {
-                let mut input = super::bundle(store, 7, 11);
-                mutate(&mut input);
-                assert!(
-                    validate_bundle(&input).is_err(),
-                    "malformed legacy control reference"
-                );
-            }
-        }
-
-        #[test]
-        fn retire_detects_a_fold_without_a_root_reference() {
-            let directory = tempfile::tempdir().unwrap();
-            let store = Store::open(
-                directory.path(),
-                OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
-            )
-            .unwrap();
-            let resources = GraphResources::from_store(&store).unwrap();
-            let identity = StoreInstanceId::new(123).unwrap();
-            let mut admitted =
-                NativeGraphBundle::install(&store, &resources, super::bundle(identity, 7, 11))
-                    .unwrap();
-            let bundle = Arc::get_mut(&mut admitted).unwrap();
-            bundle.base.roots = None;
-            // The legacy locator misleadingly names this generation. It cannot
-            // establish that the current envelope has been folded.
-            assert!(bundle.needs_fold_before_retirement());
-            bundle.base.fold = FoldMark {
-                manifest_generation: 7,
-                graph_absorbed_through: 7,
-                envelope_sequence: 7,
-            };
-            // Make the legacy locator misleadingly older after the fold.
-            bundle.root_envelope.as_mut().unwrap().object.generation = GraphGeneration::new(0);
-            assert!(!bundle.needs_fold_before_retirement());
-            let mut legacy_copy = bundle.base();
-            legacy_copy.roots = Some(ArtifactId::new(999).unwrap());
-            assert_eq!(legacy_copy, bundle.base());
-            legacy_copy.fold.envelope_sequence = 6;
-            assert_ne!(legacy_copy, bundle.base());
-        }
-
         #[test]
         fn a_fold_changes_the_fold_mark_and_nothing_else() {
             let directory = tempfile::tempdir().unwrap();
@@ -2864,13 +2727,6 @@ pub(crate) mod tests {
                 creation_serial: 101,
             };
             let admitted = NativeGraphBundle::install(&store, &resources, input).unwrap();
-            let legacy_root = required(
-                identity,
-                GraphGeneration::new(7),
-                21,
-                BlockKind::CheckpointPayload,
-                ContainerKind::RootEnvelope,
-            );
             let folded = NativeGraphBundle::fold_transition(
                 &store,
                 &resources,
@@ -2880,7 +2736,6 @@ pub(crate) mod tests {
                     graph_absorbed_through: 7,
                     envelope_sequence: 7,
                 },
-                Some(legacy_root),
             )
             .unwrap();
             assert_eq!(
@@ -3643,21 +3498,6 @@ pub(crate) mod tests {
             },
             ..StageHighWaters::default()
         };
-        let initial_root_identity = ArtifactIdentity {
-            store: identity,
-            artifact: ArtifactId::new(998).unwrap(),
-            generation: initial_generation,
-            creation_serial: 1,
-        };
-        let initial_root = write_framed_file(
-            directory,
-            ContainerKind::RootEnvelope,
-            initial_root_identity,
-            &[Block {
-                kind: BlockKind::CheckpointPayload,
-                payload: b"controlled-fixture-initial-root",
-            }],
-        );
         let initial_catalog = write_complete_sparse_catalog(
             directory,
             ArtifactIdentity {
@@ -3676,9 +3516,7 @@ pub(crate) mod tests {
                     store: identity,
                     generation: initial_generation,
                     fold: Default::default(),
-                    roots: Some(initial_root_identity.artifact),
                 },
-                root_envelope: Some(initial_root),
                 roots: GraphRoots::from_references(identity, initial_generation, [None; 8])
                     .unwrap(),
                 wal_roots: WalGraphRoots::default(),
@@ -3885,29 +3723,15 @@ pub(crate) mod tests {
             };
             let catalog =
                 write_catalog_with_symbols(directory, catalog_identity, &staged, document.as_ref());
-            let root_identity = ArtifactIdentity {
-                store: identity,
-                artifact: ArtifactId::new(8_002).unwrap(),
-                generation: target_generation,
-                creation_serial: max_serial + 2,
-            };
-            let root_envelope = write_framed_file(
-                directory,
-                ContainerKind::RootEnvelope,
-                root_identity,
-                &[Block {
-                    kind: BlockKind::CheckpointPayload,
-                    payload: b"controlled-fixture-root",
-                }],
-            );
             NativeGraphBundleInput {
                 base: BaseIdentity {
                     store: identity,
                     generation: target_generation,
-                    fold: Default::default(),
-                    roots: Some(root_identity.artifact),
+                    fold: crate::property_graph::staging::FoldMark {
+                        manifest_generation: target_generation.get(),
+                        ..Default::default()
+                    },
                 },
-                root_envelope: Some(root_envelope),
                 roots,
                 wal_roots,
                 sequence,
@@ -3924,7 +3748,7 @@ pub(crate) mod tests {
                         staged.high_waters().symbols.property,
                         staged.high_waters().symbols.namespace,
                     ],
-                    creation_serial: root_identity.creation_serial,
+                    creation_serial: max_serial + 2,
                 },
                 prepared_inventories: Vec::new(),
                 lexical: TokenizerEpoch::of(&TokenizerConfig::text_default()),
@@ -3967,7 +3791,6 @@ pub(crate) mod tests {
         let bundle = lease.bundle();
         NativeGraphBundleInput {
             base: bundle.base(),
-            root_envelope: Some(bundle.root_envelope().unwrap()),
             roots: bundle.roots(),
             wal_roots: bundle.wal_roots(),
             sequence: bundle.sequence(),
@@ -4134,30 +3957,15 @@ pub(crate) mod tests {
             &staged,
             admitted.document.as_ref(),
         );
-        let root_identity = ArtifactIdentity {
-            store: admitted.base.store,
-            artifact: ArtifactId::new(50_000_u128 + generation_number as u128 * 100_000 + 99_999)
-                .unwrap(),
-            generation,
-            creation_serial: max_serial + 2,
-        };
-        let root_envelope = write_framed_file(
-            directory,
-            ContainerKind::RootEnvelope,
-            root_identity,
-            &[Block {
-                kind: BlockKind::CheckpointPayload,
-                payload: b"controlled-incremental-root",
-            }],
-        );
         let result = NativeGraphBundleInput {
             base: BaseIdentity {
                 store: admitted.base.store,
                 generation,
-                fold: Default::default(),
-                roots: Some(root_identity.artifact),
+                fold: crate::property_graph::staging::FoldMark {
+                    manifest_generation: generation.get(),
+                    ..Default::default()
+                },
             },
-            root_envelope: Some(root_envelope),
             roots,
             wal_roots,
             sequence,
@@ -4174,7 +3982,7 @@ pub(crate) mod tests {
                     staged.high_waters().symbols.property,
                     staged.high_waters().symbols.namespace,
                 ],
-                creation_serial: root_identity.creation_serial,
+                creation_serial: max_serial + 2,
             },
             prepared_inventories: admitted.prepared_inventories.clone(),
             lexical: admitted.lexical,
@@ -4313,29 +4121,15 @@ pub(crate) mod tests {
                 .unwrap(),
             block: node_root,
         });
-        let root_identity = ArtifactIdentity {
-            store: admitted.base.store,
-            artifact: ArtifactId::new(9_999).unwrap(),
-            generation: target_generation,
-            creation_serial: 9_999,
-        };
-        let root_envelope = write_framed_file(
-            directory,
-            ContainerKind::RootEnvelope,
-            root_identity,
-            &[Block {
-                kind: BlockKind::CheckpointPayload,
-                payload: b"controlled-tombstone-root",
-            }],
-        );
         NativeGraphBundleInput {
             base: BaseIdentity {
                 store: admitted.base.store,
                 generation: target_generation,
-                fold: Default::default(),
-                roots: Some(root_identity.artifact),
+                fold: crate::property_graph::staging::FoldMark {
+                    manifest_generation: target_generation.get(),
+                    ..Default::default()
+                },
             },
-            root_envelope: Some(root_envelope),
             roots,
             wal_roots,
             sequence: admitted.sequence + 1,
@@ -4509,7 +4303,7 @@ pub(crate) mod tests {
         );
         let identity = StoreInstanceId::new(1_u128 << 96).unwrap();
         let old = bundle(identity, 1, 11);
-        let old_root = old.root_envelope;
+        let old_catalog = old.catalog;
         store.install_native_graph_for_test(old).unwrap();
 
         let entered = Arc::new(std::sync::Barrier::new(2));
@@ -4531,7 +4325,7 @@ pub(crate) mod tests {
         let lease = admitted.join().unwrap();
         let captured = replacement.join().unwrap();
 
-        assert!(captured.contains(old_root.unwrap()));
+        assert!(captured.contains(old_catalog));
         assert_eq!(captured.bundle_count(), 2);
         drop(lease);
         drop(captured);
@@ -4904,20 +4698,6 @@ pub(crate) mod tests {
         let mut input = bundle(identity, 0, 45001);
         input.catalog =
             install_catalog_file(directory.path(), identity, GraphGeneration::new(0), 45002);
-        input.root_envelope = Some(write_framed_file(
-            directory.path(),
-            ContainerKind::RootEnvelope,
-            ArtifactIdentity {
-                store: identity,
-                artifact: ArtifactId::new(45001).unwrap(),
-                generation: GraphGeneration::new(0),
-                creation_serial: 10,
-            },
-            &[Block {
-                kind: BlockKind::CheckpointPayload,
-                payload: b"coordinator-base",
-            }],
-        ));
         input.high_waters.creation_serial = 10;
         store.install_native_graph_for_test(input).unwrap();
         let lease = store.admit_native_read().unwrap();

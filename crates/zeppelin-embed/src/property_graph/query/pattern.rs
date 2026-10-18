@@ -37,10 +37,6 @@ pub(super) mod relational;
 mod search;
 mod source;
 
-#[allow(
-    unused_imports,
-    reason = "ZE-64 binds the real ranking adapter; ZE-53 S1 lands the seam"
-)]
 pub(crate) use search::{
     SearchAdapter, SearchArguments, SearchHit, SearchInvocation, SearchReports, SearchScope,
 };
@@ -326,10 +322,6 @@ pub(crate) struct MutationScope<'s, 'i> {
 }
 
 impl<'s, 'i> MutationScope<'s, 'i> {
-    #[allow(
-        dead_code,
-        reason = "ZE-52 slice D2 lands the executor; the Cypher statement driver is a later slice"
-    )]
     pub(crate) fn new(
         overlay: GraphBatchReadView<'s, 'static>,
         images: &'s StatementImages<'i>,
@@ -429,10 +421,6 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         reason = "all authentic native owners stay explicit"
     )]
     #[allow(
-        dead_code,
-        reason = "ZE-52 slice D2 lands the executor; the Cypher statement driver is a later slice"
-    )]
-    #[allow(
         clippy::result_large_err,
         reason = "keep typed graph errors allocation-free on failure paths"
     )]
@@ -459,10 +447,6 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
 
     /// Returns the overlay this pattern staged into, for the admission's
     /// final staging step. A read-only pattern returns `None`.
-    #[allow(
-        dead_code,
-        reason = "ZE-52 slice D2 lands the executor; the Cypher statement driver is a later slice"
-    )]
     pub(crate) fn into_mutation(self) -> Option<GraphBatchReadView<'s, 'static>> {
         self.mutation.map(|scope| scope.overlay)
     }

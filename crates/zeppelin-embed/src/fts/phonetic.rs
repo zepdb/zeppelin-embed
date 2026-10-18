@@ -434,14 +434,6 @@ mod tests {
     ];
 
     #[test]
-    #[ignore = "diagnostic printer for hand-checking the rule set"]
-    fn print_encodings() {
-        for (name, _) in NAME_LIST {
-            println!("{name} -> {}", encode(name));
-        }
-    }
-
-    #[test]
     fn double_metaphone_encodings_match_the_committed_name_list() {
         for (name, expected) in NAME_LIST {
             assert_eq!(encode(name), expected, "encoding of {name:?}");

@@ -2441,56 +2441,9 @@ fn biased_modes(
     }
 }
 
-/// Exercises the repository's crash-state materializer for every crash schedule.
-pub fn audit_crash_seam(
-    seed: u64,
-    op_index: usize,
-    boundary: CrashBoundary,
-) -> Result<FaultEvent, String> {
-    let backing = MemoryVfs::new();
-    let crash = CrashVfs::new(backing).map_err(|error| error.to_string())?;
-    let first = PathBuf::from(format!("/adv-{seed}-{op_index}-{}.tmp", boundary.key()));
-    let final_path = PathBuf::from(format!("/adv-{seed}-{op_index}-{}.bin", boundary.key()));
-    crash
-        .write(&first, b"adversarial-crash-boundary")
-        .map_err(|error| error.to_string())?;
-    crash
-        .sync(&first, SyncKind::Full)
-        .map_err(|error| error.to_string())?;
-    crash
-        .rename(&first, &final_path)
-        .map_err(|error| error.to_string())?;
-    let states = crash.crash_states().map_err(|error| error.to_string())?;
-    if states.is_empty() {
-        return Err("vfs::crash produced no crash states".to_owned());
-    }
-    Ok(FaultEvent {
-        id: format!("crash-{seed}-{op_index}-{}", boundary.key()),
-        op_index,
-        layer: Layer::Crash,
-        site: FaultSite::Write,
-        mode: FaultMode::TornWrite,
-        nth_match: states.len(),
-        expected_matches: None,
-        deadline_budget_seconds: None,
-        path_contains: None,
-        fired: true,
-        fire_count: 1,
-        path: Some(final_path),
-    })
-}
-
 #[must_use]
 pub fn std_scheduled(schedule: FaultSchedule) -> ScheduledVfs<StdVfs> {
     ScheduledVfs::new(StdVfs, schedule)
-}
-
-#[must_use]
-pub fn std_scheduled_with_clock(
-    schedule: FaultSchedule,
-    clock: Arc<ManualMonotonicClock>,
-) -> ScheduledVfs<StdVfs> {
-    ScheduledVfs::new_with_clock(StdVfs, schedule, clock)
 }
 
 #[must_use]

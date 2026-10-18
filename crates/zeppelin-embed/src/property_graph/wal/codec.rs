@@ -106,27 +106,6 @@ pub(super) fn descriptor(v: ArtifactDescriptor) -> Result<(), WalError> {
     }
     Ok(())
 }
-pub(super) fn candidate_descriptor(v: ArtifactDescriptor) -> Result<(), WalError> {
-    if v.family == 17 {
-        return descriptor(v);
-    }
-    if !matches!(v.family, 18 | 19) || v.version != 1 {
-        return Err(WalError::Unsupported);
-    }
-    if v.serial == 0
-        || v.bytes
-            < if v.family == 19 {
-                HEADER_BYTES as u32
-            } else {
-                104
-            }
-        || (v.family == 18
-            && v.bytes as usize > super::super::storage::artifact::MAX_ARTIFACT_BYTES)
-    {
-        return Err(WalError::Malformed);
-    }
-    Ok(())
-}
 pub(super) fn put_descriptor(
     v: ArtifactDescriptor,
     w: &mut Writer<'_>,
@@ -140,7 +119,7 @@ pub(super) fn put_candidate_descriptor(
     w: &mut Writer<'_>,
     r: &mut WalResources<'_>,
 ) -> Result<(), WalError> {
-    candidate_descriptor(v)?;
+    descriptor(v)?;
     w.u128(v.store.get(), r)?;
     w.u128(v.artifact.get(), r)?;
     w.u64(v.generation.get(), r)?;
@@ -172,7 +151,7 @@ pub(super) fn get_candidate_descriptor(
         version: rd.u16(r)?,
         checksum: rd.u64(r)?,
     };
-    candidate_descriptor(v)?;
+    descriptor(v)?;
     Ok(v)
 }
 fn artifact_id(value: u128) -> Result<ArtifactId, WalError> {
@@ -336,6 +315,68 @@ impl DescriptorList<'_> {
                     },
                     r,
                 )
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Families 18 (graph root) and 19 (graph WAL) were retired by ZE-346;
+    /// a reclaim candidate naming either must fail loudly, never decode.
+    #[test]
+    fn retired_root_and_wal_candidate_families_are_unsupported() {
+        let mut cancel = || false;
+        let mut r = WalResources::new(1 << 20, STACK_RESERVATION_BYTES, &mut cancel).unwrap();
+        let live = ArtifactDescriptor {
+            store: StoreInstanceId::new(1).unwrap(),
+            artifact: ArtifactId::new(2).unwrap(),
+            generation: GraphGeneration::new(3),
+            serial: 4,
+            bytes: 104,
+            family: 17,
+            version: 1,
+            checksum: 5,
+        };
+        for family in [17, 18, 19] {
+            let candidate = ArtifactDescriptor { family, ..live };
+            let mut bytes = [0_u8; 64];
+            let mut w = Writer {
+                bytes: Some(&mut bytes),
+                pos: 0,
+            };
+            w.u128(candidate.store.get(), &mut r).unwrap();
+            w.u128(candidate.artifact.get(), &mut r).unwrap();
+            w.u64(candidate.generation.get(), &mut r).unwrap();
+            w.u64(candidate.serial, &mut r).unwrap();
+            w.u32(candidate.bytes, &mut r).unwrap();
+            w.u16(candidate.family, &mut r).unwrap();
+            w.u16(candidate.version, &mut r).unwrap();
+            w.u64(candidate.checksum, &mut r).unwrap();
+            let decoded = get_candidate_descriptor(
+                &mut Reader {
+                    bytes: &bytes,
+                    pos: 0,
+                },
+                &mut r,
+            );
+            let encoded = put_candidate_descriptor(
+                candidate,
+                &mut Writer {
+                    bytes: None,
+                    pos: 0,
+                },
+                &mut r,
+            );
+            if family == 17 {
+                assert_eq!(decoded, Ok(candidate));
+                assert_eq!(encoded, Ok(()));
+            } else {
+                assert_eq!(decoded, Err(WalError::Unsupported), "family {family}");
+                assert_eq!(encoded, Err(WalError::Unsupported), "family {family}");
             }
         }
     }

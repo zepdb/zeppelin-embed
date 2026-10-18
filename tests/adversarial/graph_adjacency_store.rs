@@ -155,7 +155,6 @@ impl Fixture {
                     .map_err(|error| error.to_string())?,
                 generation: GraphGeneration::new(0),
                 fold: Default::default(),
-                roots: None,
             },
             high,
             entries: Vec::new(),
@@ -263,11 +262,11 @@ impl Fixture {
         Ok(Self {
             identity: BaseIdentity {
                 generation,
-                fold: Default::default(),
-                roots: Some(
-                    ArtifactId::new((1_u128 << 96) + u128::from(generation.get()))
-                        .map_err(|error| error.to_string())?,
-                ),
+                fold: zeppelin_embed::property_graph::staging::FoldMark {
+                    manifest_generation: generation.get(),
+                    ..Default::default()
+                },
+
                 ..self.identity
             },
             high: batch.high_waters(),

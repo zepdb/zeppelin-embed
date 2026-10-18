@@ -699,6 +699,7 @@ where
     /// Structured-write admission: every target is named by `requests` and is
     /// preloaded here, so a later cache miss is an absent entity, not an
     /// unasked question.
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn new(
         lease: &'lease NativeReadLease,
         source: &'source NativePreparationSource<'lease, 'm>,

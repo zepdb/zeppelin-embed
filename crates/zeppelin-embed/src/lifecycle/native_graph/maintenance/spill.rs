@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 const ALLOCATION_PAGE_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) struct NativeSpillStats {
     pub(crate) created_objects: u64,
     pub(crate) disk_bytes: u64,
@@ -187,10 +188,6 @@ impl PreparedDurableSpill {
         self.intent
     }
 
-    pub(in crate::lifecycle::native_graph) const fn intent_digest(&self) -> u64 {
-        self.intent_digest
-    }
-
     pub(in crate::lifecycle::native_graph) const fn candidate_count(&self) -> usize {
         self.candidate_count
     }
@@ -350,10 +347,12 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
         })
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(in crate::lifecycle::native_graph) const fn binding(&self) -> SpillBinding {
         self.binding
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn stats(&self) -> NativeSpillStats {
         NativeSpillStats {
             created_objects: self.created_objects,
@@ -379,7 +378,7 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
         if descriptor.store != self.binding.store
             || descriptor.serial == 0
             || descriptor.serial > self.binding.serial_fence
-            || !matches!(descriptor.family, 17..=19)
+            || descriptor.family != 17
             || descriptor.version != 1
         {
             return Err(TreeError::Invalid("reclaim candidate descriptor domain"));

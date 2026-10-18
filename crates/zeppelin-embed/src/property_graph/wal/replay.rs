@@ -128,11 +128,7 @@ pub(crate) struct FramedCaptureEnvelope<'a> {
 )]
 pub(crate) enum FramedCaptureStep<'a> {
     Envelope(FramedCaptureEnvelope<'a>),
-    #[allow(
-        dead_code,
-        reason = "retain typed terminal WAL evidence beside the framed envelope"
-    )]
-    End(ReplayEnd),
+    End,
 }
 /// Latched private recovery scanner borrowing immutable WAL and checkpoint state.
 pub struct Replay<'a> {
@@ -235,15 +231,6 @@ impl<'a> Replay<'a> {
             failed: false,
             end: None,
         }
-    }
-
-    /// Authenticates the selected WAL header and returns its declared first sequence.
-    pub(crate) fn checked_first_sequence(
-        bytes: &[u8],
-        store: StoreInstanceId,
-        r: &mut WalResources<'_>,
-    ) -> Result<u64, WalError> {
-        read_header(bytes, store, r)
     }
 
     /// Checks the exact complete-envelope byte watermark of an admitted
@@ -376,8 +363,8 @@ impl<'a> Replay<'a> {
         if self.failed {
             return Err(WalError::Failed);
         }
-        if let Some(end) = self.end {
-            return Ok(FramedCaptureStep::End(end));
+        if self.end.is_some() {
+            return Ok(FramedCaptureStep::End);
         }
         let result = self.next_inner(None, r);
         match result {
@@ -391,7 +378,7 @@ impl<'a> Replay<'a> {
                     complete_bytes: self.offset,
                 }))
             }
-            Ok(ReplayStep::End(end)) => Ok(FramedCaptureStep::End(end)),
+            Ok(ReplayStep::End(_)) => Ok(FramedCaptureStep::End),
             Err(error) => {
                 self.failed = true;
                 Err(error)
@@ -825,6 +812,7 @@ impl<'a> FramedCaptureEnvelope<'a> {
     }
 }
 impl<'a> ChangeReader<'a> {
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn remaining_count(&self) -> u32 {
         self.remaining
     }

@@ -1701,8 +1701,17 @@ fn child_process() {
     }
 }
 
+/// Kills and reaps a child that missed its deadline, then fails loudly.
+#[cfg(unix)]
+fn give_up_if_stuck(child: &mut std::process::Child, deadline: Instant, what: &str) {
+    if Instant::now() >= deadline {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("kill9 child stuck before {what}");
+    }
+}
+
 #[test]
-#[ignore = "real-process SIGKILL loop"]
 #[cfg(unix)]
 fn kill9_recovery_requires_zero_manual_cleanup() {
     let iterations = std::env::var("ZE_KILL9_ITERS")
@@ -1740,6 +1749,8 @@ fn kill9_recovery_requires_zero_manual_cleanup() {
             .spawn()
             .expect("spawn child");
 
+        // A stuck child must fail the test, not hang it or outlive it.
+        let deadline = Instant::now() + Duration::from_secs(60);
         let ready = directory.path().join("ready");
         loop {
             if ready.exists() {
@@ -1748,6 +1759,7 @@ fn kill9_recovery_requires_zero_manual_cleanup() {
             if let Some(status) = child.try_wait().expect("poll child") {
                 panic!("child exited before SIGKILL: {status}");
             }
+            give_up_if_stuck(&mut child, deadline, "ready");
             thread::yield_now();
         }
 
@@ -1762,6 +1774,7 @@ fn kill9_recovery_requires_zero_manual_cleanup() {
             if let Some(status) = child.try_wait().expect("poll child") {
                 panic!("child exited before WAL threshold: {status}");
             }
+            give_up_if_stuck(&mut child, deadline, "WAL threshold");
             thread::yield_now();
         }
         let killed = unsafe {

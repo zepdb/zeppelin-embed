@@ -132,10 +132,6 @@ impl<'a, 'b, S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>>
         self.packs.as_slice().is_empty()
     }
     /// Whether every retained pack has completed immutable framing validation.
-    #[allow(
-        dead_code,
-        reason = "used by the crate-private ZE-45 preparation handoff"
-    )]
     pub(crate) const fn is_finished(&self) -> bool {
         self.finished && !self.failed
     }

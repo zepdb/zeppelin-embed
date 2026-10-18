@@ -1,5 +1,4 @@
 //! Primitive, engine-independent graph profile comparison.
-use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Cell {
@@ -13,33 +12,6 @@ pub enum Cell {
     List(Vec<Cell>),
     NodeValue(Vec<String>, Vec<(String, Cell)>),
     RelationshipValue(String, Vec<(String, Cell)>),
-}
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TckState {
-    pub nodes: BTreeSet<u128>,
-    pub relationships: BTreeSet<u128>,
-    pub labels: BTreeSet<String>,
-    pub properties: BTreeSet<(String, u128, String, Cell)>,
-}
-/// Eight TCK counts: created/deleted nodes, relationships, labels, properties.
-#[must_use]
-pub fn diff_tck_state(before: &TckState, after: &TckState) -> [usize; 8] {
-    [
-        after.nodes.difference(&before.nodes).count(),
-        before.nodes.difference(&after.nodes).count(),
-        after
-            .relationships
-            .difference(&before.relationships)
-            .count(),
-        before
-            .relationships
-            .difference(&after.relationships)
-            .count(),
-        after.labels.difference(&before.labels).count(),
-        before.labels.difference(&after.labels).count(),
-        after.properties.difference(&before.properties).count(),
-        before.properties.difference(&after.properties).count(),
-    ]
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observation {

@@ -72,6 +72,10 @@ cargo test -p zeppelin-embed --features allocation-audit \
 # reason the accounting audit above is.
 cargo test -p zeppelin-embed --features allocation-audit --lib \
     fts::alloc_gate -- --test-threads=1
+# The graph allocation-audit tests compile only with both features on.
+cargo test -p zeppelin-embed --features graph-cypher,allocation-audit \
+    --test graph_query_allocation --test graph_artifact \
+    --test graph_storage_prepare -- --test-threads=1
 cargo test -p zeppelin-embed-workspace-tests \
     --test scaffold_gates deny_blacklist_rejects_banned_dep \
     -- --ignored --exact

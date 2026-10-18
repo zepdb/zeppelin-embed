@@ -414,7 +414,7 @@ fn assert_old(result: &CompletedGraphResult, fixture: &Fixture, value: i64) {
 pub(super) fn same_view(value: i64) {
     same_view_timing(value, false);
 }
-
+#[cfg(test)]
 pub(super) fn same_view_before_ranking(value: i64) {
     same_view_timing(value, true);
 }

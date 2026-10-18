@@ -1185,18 +1185,10 @@ reclamation files and failure contract.
 
 ## ZE-260 S6c bookkeeping (S7 maintenance foundation)
 
-- Reclaim intent/completion candidate rows may carry family 18 (immutable root
-  envelopes) or 19 (superseded graph WALs), using the existing descriptor layout.
-  They never enter ObjectInventory; only family 17 has inventory transitions.
-  Older intents containing only family 17 remain readable.
-- Root candidates pass the ordinary root-envelope codec. WAL candidates bind
-  the canonical filename identity, valid same-store WAL header, exact length,
-  and xxh3 digest of every observed byte. WAL headers have no allocation serial
-  or generation; those descriptor fields record the capture fences instead.
-- Current WAL authority, every captured checkpoint WAL, and open proofs' WAL
-  authorities remain marked. History uses the existing bounded candidate list,
-  durable intent, revalidation, unlink, directory sync, completion, and retirement;
-  there is no independent cleanup/unlink path.
+- Reclaim intent/completion candidates admit only family 17 object descriptors.
+  Family 18/19 candidates are refused after ZE-346 removed the graph WAL and
+  root selector. Reclamation retains the bounded candidate list, durable intent,
+  revalidation, unlink, directory sync, completion, and retirement path.
 
 ## ZE-260 automatic reclamation
 

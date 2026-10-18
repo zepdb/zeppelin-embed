@@ -463,10 +463,6 @@ impl EncodedNodeBlocks {
         self.bytes
     }
 
-    pub(crate) fn resident_bytes(&self) -> usize {
-        self.bytes.capacity()
-    }
-
     /// Returns the byte offset of a present dense node id.
     pub fn block_offset(&self, node_id: u32) -> Result<u32, GraphNodeError> {
         if node_id >= self.node_count {

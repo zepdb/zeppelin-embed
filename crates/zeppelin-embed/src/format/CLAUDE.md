@@ -118,10 +118,8 @@
   old proofs on open, before resume or deletion; finish those cycles with the
   previous binary before upgrading. The directory remains safely resumable
   by that reader. Frozen 0.6.0 rejects role 7 as Unsupported and tags 5/6 as
-  an invalid protected-stream value. Family-18/19 S6c candidate reclamation
-  stays until ZE-346 deletes the graph WAL and root selector. Legacy control
-  references still protect their checkpoint and WAL identities, independently
-  of the self-contained proof's folded CommitState, without reading WAL bytes.
+  an invalid protected-stream value. Family-18/19 reclaim candidates are refused after ZE-346
+  removed the graph WAL and root selector; only family 17 candidates are admitted.
 - Unified WAL op 10 `GRAPH_COMMIT_V1` embeds exactly one complete ZE-38
   Begin/Change/Commit envelope without its family-19 file header. Op 11
   `MIXED_BATCH_MEMBER_V1` is `index:u32, count:u32, inner_op:u16, inner payload`,

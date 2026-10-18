@@ -3,6 +3,8 @@
 
 mod codec;
 mod trace;
+#[cfg(any(test, feature = "test-seams"))]
+pub(crate) use trace::trace_payload_references;
 
 use codec::ProofRole;
 pub(crate) use codec::{
@@ -10,7 +12,7 @@ pub(crate) use codec::{
 };
 pub(crate) use trace::{
     TraceEntrySource, TraceReferenceVisitor, trace_fence_entry_inner, trace_graph_bundle,
-    trace_graph_state, trace_payload_references, trace_record_entry_inner,
+    trace_graph_state, trace_record_entry_inner,
 };
 
 use super::artifact::{ArtifactId, BlockKind};

@@ -151,8 +151,10 @@ impl AdmittedBase for Base {
         BaseIdentity {
             store: StoreInstanceId::new(1).unwrap(),
             generation: GraphGeneration::new(self.generation),
-            fold: Default::default(),
-            roots: (self.generation != 0).then(|| storage::artifact::ArtifactId::new(1).unwrap()),
+            fold: zeppelin_embed::property_graph::staging::FoldMark {
+                manifest_generation: self.generation,
+                ..Default::default()
+            },
         }
     }
     fn high_waters(&self) -> HighWaters {

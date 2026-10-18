@@ -240,7 +240,6 @@ impl Base {
                 store: StoreInstanceId::new(1).unwrap(),
                 generation: GraphGeneration::new(0),
                 fold: Default::default(),
-                roots: None,
             },
             high: HighWaters {
                 node: NODE_HIGH,
@@ -297,8 +296,7 @@ impl Base {
         next.high = batch.high_waters();
         if !batch.deltas().is_empty() {
             next.identity.generation = GraphGeneration::new(next.identity.generation.get() + 1);
-            next.identity.roots =
-                Some(ArtifactId::new(50_000 + next.identity.generation.get() as u128).unwrap());
+            next.identity.fold.manifest_generation = next.identity.generation.get();
         }
         next
     }

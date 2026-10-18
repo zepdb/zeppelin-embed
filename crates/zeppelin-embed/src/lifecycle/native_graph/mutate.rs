@@ -181,6 +181,7 @@ impl crate::lifecycle::Store {
         clippy::result_large_err,
         reason = "keep typed graph errors allocation-free on failure paths"
     )]
+    #[cfg(test)]
     pub(crate) fn with_native_mutation<T, C: NativeMutationConsumer<T>>(
         &self,
         control: &crate::lifecycle::QueryControl,

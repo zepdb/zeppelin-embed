@@ -49,14 +49,6 @@ pub(crate) fn charged_artifact_path<'m>(
     directory: &std::path::Path,
     artifact: ArtifactId,
 ) -> Result<(PathBuf, StorageReservation<'m>), TreeError> {
-    charged_container_path(memory, directory, artifact, false)
-}
-fn charged_container_path<'m>(
-    memory: &'m StorageMemory<'m>,
-    directory: &std::path::Path,
-    artifact: ArtifactId,
-    wal: bool,
-) -> Result<(PathBuf, StorageReservation<'m>), TreeError> {
     const FILENAME_BYTES: usize = b"graph-00000000000000000000000000000000.zgraph".len();
     let path_upper = directory
         .as_os_str()
@@ -73,12 +65,7 @@ fn charged_container_path<'m>(
     filename
         .try_reserve_exact(FILENAME_BYTES)
         .map_err(|_| TreeError::Memory)?;
-    if wal {
-        write!(&mut filename, "graph-wal-{:032x}.ze", artifact.get())
-    } else {
-        write!(&mut filename, "graph-{:032x}.zgraph", artifact.get())
-    }
-    .map_err(|_| TreeError::Memory)?;
+    write!(&mut filename, "graph-{:032x}.zgraph", artifact.get()).map_err(|_| TreeError::Memory)?;
     let mut raw = OsString::with_capacity(path_upper);
     raw.push(directory.as_os_str());
     let mut path = PathBuf::from(raw);
@@ -128,27 +115,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         directory: &std::path::Path,
         descriptor: crate::property_graph::wal::ArtifactDescriptor,
     ) -> Result<(PathBuf, StorageReservation<'m>), TreeError> {
-        charged_container_path(
-            memory,
-            directory,
-            descriptor.artifact,
-            descriptor.family == 19,
-        )
-    }
-
-    pub(crate) fn wal_first_sequence(
-        header: &[u8],
-        store: crate::property_graph::StoreInstanceId,
-    ) -> Result<u64, TreeError> {
-        let mut cancelled = || false;
-        let mut resources = crate::property_graph::wal::WalResources::new(
-            1024,
-            crate::property_graph::wal::STACK_RESERVATION_BYTES,
-            &mut cancelled,
-        )
-        .map_err(|_| TreeError::Memory)?;
-        crate::property_graph::wal::Replay::checked_first_sequence(header, store, &mut resources)
-            .map_err(|_| TreeError::Invalid("reclaim WAL header"))
+        charged_artifact_path(memory, directory, descriptor.artifact)
     }
 
     pub(crate) fn new(
@@ -540,44 +507,13 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         self.check_owner(resources)?;
         let bundle = self.lease.bundle();
         if descriptor.store != bundle.base().store
-            || !matches!(descriptor.family, 17..=19)
+            || descriptor.family != 17
             || descriptor.version != 1
         {
             return Err(TreeError::Invalid("inventory object descriptor domain"));
         }
         let (path, path_charge) =
             Self::charged_candidate_path(self.memory, bundle.directory(), descriptor)?;
-        if descriptor.family == 19 {
-            let length = bundle.vfs().open(&path).map_err(TreeError::Io)?;
-            if length != u64::from(descriptor.bytes) {
-                return Err(TreeError::Invalid("reclaim WAL length"));
-            }
-            let header = bundle
-                .vfs()
-                .read_range(&path, 0, crate::property_graph::wal::HEADER_BYTES)
-                .map_err(TreeError::Io)?;
-            Self::wal_first_sequence(&header, descriptor.store)?;
-            let _charge = self.memory.reserve(64 * 1024)?;
-            let mut digest = xxhash_rust::xxh3::Xxh3::new();
-            let mut offset = 0;
-            while offset < length {
-                let take = (length - offset).min(64 * 1024) as usize;
-                resources.step(take as u64)?;
-                let bytes = bundle
-                    .vfs()
-                    .read_range(&path, offset, take)
-                    .map_err(TreeError::Io)?;
-                if bytes.len() != take {
-                    return Err(TreeError::Invalid("reclaim WAL short read"));
-                }
-                digest.update(&bytes);
-                offset += take as u64;
-            }
-            if digest.digest() != descriptor.checksum {
-                return Err(TreeError::Invalid("reclaim WAL digest"));
-            }
-            return Ok(());
-        }
         let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
         let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
         #[cfg(all(test, feature = "graph-cypher"))]
@@ -586,11 +522,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             mapping.as_bytes().len() as u64,
         );
         let frame = artifact::decode_with_control(
-            if descriptor.family == 18 {
-                ContainerKind::RootEnvelope
-            } else {
-                ContainerKind::Object
-            },
+            ContainerKind::Object,
             Some((descriptor.store, descriptor.artifact)),
             mapping.as_bytes(),
             &mut |bytes| resources.step(bytes as u64),
@@ -614,69 +546,6 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             || checksum != descriptor.checksum
         {
             return Err(TreeError::Invalid("inventory object descriptor mismatch"));
-        }
-        drop(mapping);
-        drop(path);
-        drop(path_charge);
-        Ok(())
-    }
-
-    pub(crate) fn validate_required_reference(
-        &self,
-        required: crate::property_graph::wal::RequiredRef,
-        resources: &mut TreeResources<'_>,
-    ) -> Result<(), TreeError> {
-        self.check_owner(resources)?;
-        let bundle = self.lease.bundle();
-        let kind = if required.object.family == crate::format::FormatFamily::NativeGraphObject.id()
-        {
-            ContainerKind::Object
-        } else if required.object.family == crate::format::FormatFamily::NativeGraphRoot.id() {
-            ContainerKind::RootEnvelope
-        } else {
-            return Err(TreeError::Invalid("required reference container family"));
-        };
-        if required.object.store != bundle.base().store
-            || required.object.generation > bundle.base().generation
-            || required.object.serial == 0
-            || required.object.serial > bundle.high_waters().creation_serial
-            || required.object.artifact != required.block.artifact
-            || required.object.version != 1
-        {
-            return Err(TreeError::Invalid("required reference descriptor domain"));
-        }
-        let (path, path_charge) =
-            charged_artifact_path(self.memory, bundle.directory(), required.object.artifact)?;
-        let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
-        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
-        #[cfg(all(test, feature = "graph-cypher"))]
-        crate::property_graph::storage::preparation_work_capture::artifact(
-            required.object.artifact,
-            mapping.as_bytes().len() as u64,
-        );
-        let frame = artifact::decode_with_control(
-            kind,
-            Some((required.object.store, required.object.artifact)),
-            mapping.as_bytes(),
-            &mut |bytes| resources.step(bytes as u64),
-        )
-        .map_err(|error| match error {
-            ArtifactControlError::Format(error) => TreeError::Format(error),
-            ArtifactControlError::Control(error) => error,
-        })?;
-        let block = frame
-            .framed_block(required.block)
-            .map_err(TreeError::Format)?;
-        let identity = frame.identity();
-        if identity.store != required.object.store
-            || identity.artifact != required.object.artifact
-            || identity.generation != required.object.generation
-            || identity.creation_serial != required.object.serial
-            || mapping.as_bytes().len() != required.object.bytes as usize
-            || block.file_checksum() != required.object.checksum
-            || block.reference() != required.block
-        {
-            return Err(TreeError::Invalid("required reference descriptor mismatch"));
         }
         drop(mapping);
         drop(path);
@@ -912,27 +781,6 @@ impl BlockSource for NativeArtifactWindow<'_, '_, '_> {
 
     fn scoped_blocks(&self) -> bool {
         true
-    }
-}
-
-impl<'source, 'lease, 'm> NativeArtifactWindow<'source, 'lease, 'm> {
-    /// Reuse this authenticated object or enter one nested bounded object
-    /// window through the same admitted parent.
-    pub(crate) fn with_artifact_window<R>(
-        &self,
-        reference: PhysicalRef,
-        resources: &mut TreeResources<'_>,
-        callback: impl for<'a, 'r> FnOnce(
-            &'a NativeArtifactWindow<'_, 'lease, 'm>,
-            &'r mut TreeResources<'_>,
-        ) -> Result<R, TreeError>,
-    ) -> Result<R, TreeError> {
-        if reference.artifact == self.artifact {
-            callback(self, resources)
-        } else {
-            self.source
-                .with_artifact_window(reference, resources, callback)
-        }
     }
 }
 

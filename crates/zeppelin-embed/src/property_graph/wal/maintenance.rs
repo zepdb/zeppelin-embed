@@ -24,7 +24,7 @@ fn candidates(
     let mut previous = None;
     for index in 0..count {
         let candidate = v.get(index, r)?;
-        candidate_descriptor(candidate)?;
+        descriptor(candidate)?;
         if candidate.store != state.store {
             return Err(WalError::Store);
         }

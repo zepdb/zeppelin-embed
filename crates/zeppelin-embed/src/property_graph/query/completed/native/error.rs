@@ -430,21 +430,9 @@ fn retrieval(error: &crate::property_graph::retrieval::RetrievalError) -> Kind {
             _ => Kind::Corruption,
         },
         RetrievalError::Memory | RetrievalError::CandidateWindow { .. } => Kind::Limit,
-        RetrievalError::LexicalTerms { .. } => Kind::Limit,
-        RetrievalError::NoVectorSpace
-        | RetrievalError::UnindexedVectorSource
-        | RetrievalError::AnalyzerMismatch
-        | RetrievalError::MissingVersion(_)
-        | RetrievalError::Version(_) => Kind::Constraint,
-        RetrievalError::Dimension { .. }
-        | RetrievalError::Graph(crate::graph::search::GraphSearchError::AdaptiveEf(_)) => {
-            Kind::Expression
-        }
-        RetrievalError::Identity(_)
-        | RetrievalError::Vector(_)
-        | RetrievalError::Graph(_)
-        | RetrievalError::EligibilityMismatch
-        | RetrievalError::Invariant(_) => Kind::Corruption,
+        RetrievalError::NoVectorSpace => Kind::Constraint,
+        RetrievalError::Dimension { .. } => Kind::Expression,
+        RetrievalError::Invariant(_) => Kind::Corruption,
     }
 }
 

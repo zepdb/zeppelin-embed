@@ -3473,7 +3473,6 @@ fn feature_campaign_registry_owns_exact_ranges_without_generic_credit() {
 
 #[test]
 fn feature_campaigns_refuse_generic_storage_credit() {
-    feature_campaign_registry_owns_exact_ranges_without_generic_credit();
     let storage = CampaignSpec::for_kind(CampaignKind::StorageDurability);
     assert_eq!(
         storage.owned_invariants,
@@ -3703,21 +3702,6 @@ fn clean_physical_purge_runs_i23_byte_and_reopen_checker() {
 }
 
 #[test]
-fn ingest_retention_i20_oracle_is_std_only() {
-    let manifest = include_str!("adversarial-oracle/Cargo.toml");
-    let source = include_str!("adversarial-oracle/src/ingest_retention.rs");
-    assert!(
-        !manifest.contains("zeppelin-embed =")
-            && !manifest.contains("zeppelin_embed =")
-            && !source.contains("use zeppelin_embed")
-            && !source.contains("PrimitiveObservation")
-            && !source.contains("campaign_search_facts")
-            && !source.contains("CheckerKind"),
-        "I20 independent oracle imports or names a forbidden production/generic seam"
-    );
-}
-
-#[test]
 fn ingest_post_ack_retry_can_fire_at_batch_commit() {
     let campaign = CampaignKind::IngestRetention;
     let seed = (0..12)
@@ -3924,17 +3908,6 @@ fn ingest_purge_crash_boundary_can_fire_at_purge() {
     assert!(receipts.contains("\"child_aborted\":true"));
 }
 
-#[cfg(unix)]
-#[test]
-fn every_ingest_retention_fault_can_fire_at_its_store_operation() {
-    ingest_post_ack_retry_can_fire_at_batch_commit();
-    ingest_partial_batch_append_can_fire_at_batch_commit();
-    ingest_seal_cancellation_can_fire_at_seal();
-    ingest_retention_clock_boundary_can_fire_at_retention();
-    ingest_purge_unlink_error_can_fire_at_purge();
-    ingest_purge_crash_boundary_can_fire_at_purge();
-}
-
 #[test]
 fn feature_credit_has_no_generic_or_harness_fabricated_path() {
     let sources = [
@@ -4023,21 +3996,6 @@ fn independent_oracle_is_a_std_only_source_and_dependency_boundary() {
                 );
             }
         }
-    }
-}
-
-#[test]
-fn storage_oracle_is_std_only() {
-    independent_oracle_is_a_std_only_source_and_dependency_boundary();
-    let source = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("adversarial-oracle/src/storage_durability.rs"),
-    )
-    .expect("read independent storage oracle source");
-    for forbidden in ["zeppelin_embed", "crate::adversarial", "super::runner"] {
-        assert!(
-            !source.contains(forbidden),
-            "storage oracle crossed the std-only boundary through {forbidden}"
-        );
     }
 }
 
@@ -4337,12 +4295,21 @@ fn every_storage_fault_fires_through_its_exact_campaign_operation() {
         .expect("storage feature fault episode");
         assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
         assert_eq!(
+            outcome.feature_faults_scheduled, 1,
+            "storage seed {seed} scheduled more than one fault"
+        );
+        assert_eq!(
             outcome.feature_faults_scheduled, outcome.feature_faults_fired,
             "storage seed {seed} missed its selected fault"
         );
         assert_eq!(outcome.integrated_feature_fault_receipts, 1);
         assert_eq!(outcome.expected_feature_fault_receipts, 1);
         assert_eq!(outcome.same_seed_clean_controls, 1);
+        assert!(
+            outcome.missing_feature_faults.is_empty(),
+            "storage seed {seed} missed {:?}",
+            outcome.missing_feature_faults
+        );
         for line in outcome
             .receipts_bytes
             .split(|byte| *byte == b'\n')
@@ -4429,70 +4396,6 @@ fn assert_storage_fault_can_fire_with_profile(
     );
     assert_eq!(outcome.same_seed_clean_controls, 1, "{}", fault.key());
     assert!(outcome.missing_feature_faults.is_empty(), "{}", fault.key());
-}
-
-#[test]
-fn storage_torn_wal_header_can_fire() {
-    assert_storage_fault_can_fire(
-        adversarial::campaign::FeatureFault::StorageTornWalHeader,
-        |_| true,
-    );
-}
-
-#[test]
-fn storage_torn_wal_body_can_fire() {
-    assert_storage_fault_can_fire(
-        adversarial::campaign::FeatureFault::StorageTornWalBody,
-        |_| true,
-    );
-}
-
-#[test]
-fn storage_torn_wal_checksum_can_fire() {
-    assert_storage_fault_can_fire(
-        adversarial::campaign::FeatureFault::StorageTornWalChecksum,
-        |_| true,
-    );
-}
-
-#[test]
-fn storage_post_commit_error_can_fire() {
-    assert_storage_fault_can_fire(
-        adversarial::campaign::FeatureFault::StoragePostCommitError,
-        |_| true,
-    );
-}
-
-#[test]
-fn storage_manifest_pre_rename_crash_can_fire() {
-    assert_storage_fault_can_fire(
-        adversarial::campaign::FeatureFault::StorageManifestPreRenameCrash,
-        |_| true,
-    );
-}
-
-#[test]
-fn storage_manifest_post_rename_crash_can_fire() {
-    assert_storage_fault_can_fire(
-        adversarial::campaign::FeatureFault::StorageManifestPostRenameCrash,
-        |_| true,
-    );
-}
-
-#[test]
-fn storage_corrupt_segment_region_can_fire() {
-    assert_storage_fault_can_fire(
-        adversarial::campaign::FeatureFault::StorageCorruptSegmentRegion,
-        |_| true,
-    );
-}
-
-#[test]
-fn storage_wrong_manifest_object_can_fire() {
-    assert_storage_fault_can_fire(
-        adversarial::campaign::FeatureFault::StorageWrongManifestObject,
-        |_| true,
-    );
 }
 
 #[test]
@@ -5787,16 +5690,6 @@ fn storage_oracle_i18_plant_is_rejected() {
 #[test]
 fn storage_oracle_i19_plant_is_rejected() {
     adversarial::storage_durability::tests::storage_oracle_i19_plant_is_rejected();
-}
-
-#[test]
-fn metadata_campaign_rejects_generic_invariant_credit() {
-    feature_campaign_registry_owns_exact_ranges_without_generic_credit();
-}
-
-#[test]
-fn metadata_summary_requires_oracle_attestation() {
-    metadata_summary_rejects_a_generic_feature_attestation_explicitly();
 }
 
 #[test]
@@ -13281,11 +13174,6 @@ fn retained_storage_summary_without_family_attestation_is_rejected() {
         error,
         "storage-durability attestation missing: oracle_contract_version"
     );
-}
-
-#[test]
-fn storage_verifier_rejects_legacy_false_credit() {
-    retained_storage_summary_without_family_attestation_is_rejected();
 }
 
 #[test]

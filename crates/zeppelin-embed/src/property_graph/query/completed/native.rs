@@ -1,8 +1,4 @@
 #![allow(
-    dead_code,
-    reason = "crate-private native completion is composed by focused graph consumers"
-)]
-#![allow(
     clippy::result_large_err,
     reason = "native and completed typed causes remain unboxed and allocation-free"
 )]
@@ -506,6 +502,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+#[cfg(test)]
 pub(crate) fn execute_native_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
     view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
     runtime: &mut RuntimeContext<'lease, 'm, 'g>,
@@ -533,6 +530,7 @@ pub(crate) fn execute_native_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
 /// Executes a read plan whose eager `Search` calls invoke `adapter` once each,
 /// in call order, and copies every call's report into the completed result.
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+#[cfg(test)]
 pub(super) fn execute_native_search_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
     view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
     runtime: &mut RuntimeContext<'lease, 'm, 'g>,
@@ -908,6 +906,7 @@ pub(crate) fn execute_native_mutation_result<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
 
 #[cfg(any(test, feature = "test-seams"))]
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+#[cfg(test)]
 fn execute_native_result_observed<'s, 'r, 'plan, 'lease, 'm, 'g, C>(
     view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
     runtime: &mut RuntimeContext<'lease, 'm, 'g>,

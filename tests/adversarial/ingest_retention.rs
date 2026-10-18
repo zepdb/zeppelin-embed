@@ -588,15 +588,6 @@ fn retained_fixture_seed(fixture: &RetainedIngestFixtureV1) -> u64 {
     }
 }
 
-fn json_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
-}
-
 fn hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));

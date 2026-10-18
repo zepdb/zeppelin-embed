@@ -329,6 +329,7 @@ impl<
         &self.objects
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn abort_inventory(
         &self,
     ) -> impl Iterator<Item = crate::property_graph::storage::artifact::ArtifactIdentity> + '_ {
@@ -347,6 +348,7 @@ impl<
         self.base.token() == lease.token() && same_admitted_bundle(&self.base, lease)
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -378,6 +380,7 @@ impl<'a, 'b, S, F> PreparedGraphFailure<'a, 'b, S, F> {
             base,
         }
     }
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn error(&self) -> &TreeError {
         &self.error
     }

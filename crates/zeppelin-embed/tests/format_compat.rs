@@ -157,8 +157,8 @@ fn file_hashes(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, u6
     hashes
 }
 
+/// Legacy roots copied without explicit conversion remain path-bound (ZE-384).
 #[test]
-#[ignore = "legacy roots copied without explicit conversion remain path-bound"]
 fn a_relocated_0_6_0_namespace_store_is_refused_today() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/releases/v0.6.0-namespaces");
@@ -323,6 +323,7 @@ fn the_v3_old_reader_fixture_is_a_real_writer_manifest() {
     reopened.close().expect("close");
 }
 
+#[cfg(feature = "graph-cypher")]
 fn data_bytes(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
     // Exact bytes also detect additions/removals, without hash collisions.
     std::fs::read_dir(root)

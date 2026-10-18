@@ -1,10 +1,5 @@
 //! Crate-private scalar evaluation over one admitted native query owner.
 
-#![allow(
-    dead_code,
-    reason = "ZE-145's crate-private evaluator is consumed by the later ZE-50/51 integration"
-)]
-
 use super::list::ListArena;
 use super::plan::{
     BinaryExpression, ExprId, Expression, Literal, MAX_PLAN_DEPTH, ParameterBinding,
