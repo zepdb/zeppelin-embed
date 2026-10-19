@@ -44,3 +44,58 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --locked -p zeppelin-embed
+
+  publish-text:
+    name: Publish zeppelin-embed-text to crates.io
+    needs: publish
+    runs-on: macos-26
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - name: Match release tag and core dependency to workspace version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          workspace = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
+          version = workspace['workspace']['package']['version']
+          expected = f"v{version}"
+          actual = os.environ["RELEASE_TAG"]
+          if actual != expected:
+              raise SystemExit(f"release tag {actual!r} must be {expected!r}")
+          text = tomllib.loads(pathlib.Path("crates/zeppelin-embed-text/Cargo.toml").read_text())
+          if text['package']['version'] != {'workspace': True}:
+              raise SystemExit("text crate version must inherit the workspace version")
+          for section in ('dependencies', 'dev-dependencies'):
+              if text[section]['zeppelin-embed']['version'] != f"={version}":
+                  raise SystemExit(f"{section}: zeppelin-embed must be pinned to ={version}")
+          PY
+      - name: Install Metal toolchain on Apple silicon
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -downloadComponent MetalToolchain
+      - name: Verify packaged text crate
+        # Allow the preceding core publish time to propagate through the index.
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if cargo publish --dry-run --locked -p zeppelin-embed-text; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              exit 1
+            fi
+            sleep 15
+          done
+      - name: Publish text crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked -p zeppelin-embed-text
