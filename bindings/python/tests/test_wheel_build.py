@@ -67,15 +67,15 @@ def test_wheel_build_features_and_runtime_assets(
     assert ("--features" in command) == text
     if text:
         assert command[command.index("--features") + 1] == "text"
-        assert cargo_environment["MACOSX_DEPLOYMENT_TARGET"] == "14.0"
-        assert os.environ["MACOSX_DEPLOYMENT_TARGET"] == "14.0"
+        assert cargo_environment["MACOSX_DEPLOYMENT_TARGET"] == "13.0"
+        assert os.environ["MACOSX_DEPLOYMENT_TARGET"] == "13.0"
         monkeypatch.setattr(
             setup["bdist_wheel"],
             "get_tag",
             lambda self: ("cp311", "cp311", "macosx_26_0_arm64"),
         )
         wheel = setup["PlatformWheel"](setuptools.Distribution())
-        assert wheel.get_tag() == ("py3", "none", "macosx_14_0_arm64")
+        assert wheel.get_tag() == ("py3", "none", "macosx_13_0_arm64")
     assets = Path(builder.build_lib) / "zeppelin_embed/.dylibs"
     assert (assets / native).read_bytes() == b"native"
     assert (assets / "mlx.metallib").exists() == text
@@ -83,20 +83,20 @@ def test_wheel_build_features_and_runtime_assets(
         assert str(assets / "mlx.metallib") in builder.get_outputs()
 
 
-def test_text_wheel_rejects_deployment_target_below_14(
+def test_text_wheel_rejects_deployment_target_below_13(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
     setup = runpy.run_path(str(Path(__file__).parents[1] / "setup.py"))
     monkeypatch.setattr(setup["sys"], "platform", "darwin")
     monkeypatch.setattr(setup["platform_module"], "machine", lambda: "arm64")
-    monkeypatch.setenv("MACOSX_DEPLOYMENT_TARGET", "13.0")
+    monkeypatch.setenv("MACOSX_DEPLOYMENT_TARGET", "12.9")
     monkeypatch.setattr(
         setup["bdist_wheel"],
         "get_tag",
         lambda self: ("cp311", "cp311", "macosx_26_0_arm64"),
     )
     wheel = setup["PlatformWheel"](setuptools.Distribution())
-    with pytest.raises(RuntimeError, match="text.*14.0"):
+    with pytest.raises(RuntimeError, match="text.*13.0"):
         wheel.get_tag()
-    assert os.environ["MACOSX_DEPLOYMENT_TARGET"] == "13.0"
+    assert os.environ["MACOSX_DEPLOYMENT_TARGET"] == "12.9"

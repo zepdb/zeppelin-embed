@@ -41,13 +41,13 @@ def _build_text() -> bool:
 def _configure_text_deployment_target() -> None:
     if not _build_text():
         return
-    target = os.environ.setdefault("MACOSX_DEPLOYMENT_TARGET", "14.0")
+    target = os.environ.setdefault("MACOSX_DEPLOYMENT_TARGET", "13.0")
     components = target.split(".")
     if len(components) != 2 or not all(part.isdigit() for part in components):
         raise RuntimeError(f"invalid MACOSX_DEPLOYMENT_TARGET: {target!r}")
-    if tuple(map(int, components)) < (14, 0):
+    if tuple(map(int, components)) < (13, 0):
         raise RuntimeError(
-            f"text wheels require MACOSX_DEPLOYMENT_TARGET >= 14.0; got {target!r}"
+            f"text wheels require MACOSX_DEPLOYMENT_TARGET >= 13.0; got {target!r}"
         )
 
 

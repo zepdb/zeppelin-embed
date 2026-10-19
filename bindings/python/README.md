@@ -27,8 +27,8 @@ wheel loads its bundled library from `zeppelin_embed/.dylibs`. Source-tree use
 also recognizes the workspace's debug and release Cargo outputs for development.
 An invalid override fails loudly and does not fall back to another library.
 
-The arm64 wheel (the only published wheel, including text) requires macOS 14 or
-newer on Apple silicon. Other platforms are not part of this PyPI release.
+The arm64 wheel (the only published wheel, including text) requires macOS 13
+or newer on Apple silicon. Other platforms are not part of this PyPI release.
 
 ## Text API (macOS arm64)
 

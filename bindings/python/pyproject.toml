@@ -45,4 +45,4 @@ test-sources = ["bindings/python/tests/installed_smoke.py", "crates/zeppelin-emb
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }
+environment = { MACOSX_DEPLOYMENT_TARGET = "13.0" }
