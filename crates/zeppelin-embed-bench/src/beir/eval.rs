@@ -110,6 +110,43 @@ pub fn mean_ndcg_at_k(run: &Run, qrels: &Qrels, k: usize) -> f64 {
     total / counted as f64
 }
 
+/// Returns mean recall@k over the same positively judged queries as mean nDCG.
+///
+/// Only the first occurrence of each parent counts toward the top `k` unique
+/// parents. Positive grades are relevant; absent runs contribute zero and no
+/// additional results are retrieved to fill short lists.
+#[must_use]
+pub fn mean_recall_at_k(run: &Run, qrels: &Qrels, k: usize) -> f64 {
+    let mut total = 0.0;
+    let mut counted = 0_usize;
+    for (query, judgements) in qrels {
+        let relevant = judgements.values().filter(|grade| **grade > 0).count();
+        if relevant == 0 {
+            continue;
+        }
+        let mut seen = BTreeSet::new();
+        let retrieved = run
+            .get(query)
+            .into_iter()
+            .flatten()
+            .filter(|entry| seen.insert(entry.doc_id.as_str()))
+            .take(k)
+            .filter(|entry| {
+                judgements
+                    .get(&entry.doc_id)
+                    .is_some_and(|grade| *grade > 0)
+            })
+            .count();
+        total += retrieved as f64 / relevant as f64;
+        counted += 1;
+    }
+    if counted == 0 {
+        0.0
+    } else {
+        total / counted as f64
+    }
+}
+
 /// One corpus's gate row: the published target and what we measured.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GateRow {
@@ -176,4 +213,45 @@ pub fn multifield_targets() -> Vec<GateRow> {
         measured: None,
     })
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn beir_recall_counts_unique_positive_parents_and_all_judged_queries() {
+        let judgements = BTreeMap::from([
+            ("a".into(), 2),
+            ("b".into(), 1),
+            ("c".into(), 1),
+            ("zero".into(), 0),
+        ]);
+        let ranked = ["a", "a", "zero", "b", "c"]
+            .into_iter()
+            .map(|doc_id| RunEntry {
+                doc_id: doc_id.into(),
+                score: 1.0,
+            })
+            .collect();
+        let run = Run::from([
+            ("found".into(), ranked),
+            (
+                "unjudged".into(),
+                vec![RunEntry {
+                    doc_id: "a".into(),
+                    score: 1.0,
+                }],
+            ),
+        ]);
+        let qrels = Qrels::from([
+            ("found".into(), judgements.clone()),
+            ("missing".into(), judgements),
+            ("no-positive".into(), BTreeMap::from([("zero".into(), 0)])),
+        ]);
+        assert!((mean_recall_at_k(&run, &qrels, 3) - 1.0 / 3.0).abs() < 1e-12);
+        assert!((mean_recall_at_k(&run, &qrels, 10) - 0.5).abs() < 1e-12);
+        assert_eq!(mean_recall_at_k(&run, &qrels, 0), 0.0);
+        assert_eq!(mean_recall_at_k(&run, &Qrels::new(), 10), 0.0);
+    }
 }

@@ -9,12 +9,12 @@ use zeppelin_embed::epoch::{EmbeddingEpoch, StoreEpoch};
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::lifecycle::{OpenOptions, ScanRescoreOptions, SearchTier, Store};
 use zeppelin_embed::tier::SegmentTier;
-use zeppelin_embed_bench::beir::eval::{Run, RunEntry, mean_ndcg_at_k};
+use zeppelin_embed_bench::beir::eval::{Run, RunEntry, mean_ndcg_at_k, mean_recall_at_k};
 use zeppelin_embed_bench::beir::loader::{BeirCorpus, load_corpus};
 use zeppelin_embed_bench::harness_json::{Value, from_slice, json, to_string, to_vec_pretty};
 use zeppelin_embed_bench::user_bench::{
     ColdCell, QualityCell, Results, SteadyCell, Summary, percentiles, recall_at_k, render_tables,
-    shuffled_order,
+    shuffled_order, verify_health,
 };
 use zeppelin_embed_text::bundle::Bundle;
 use zeppelin_embed_text::runtime::ModelRuntime;
@@ -130,6 +130,10 @@ fn ingest(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let bundle_path = Path::new(cli.required("--bundle")?);
     let store_path = Path::new(cli.required("--store")?);
     let seal_every = cli.usize("--seal-every", 200_000)?;
+    let embed_batch_size = cli.usize(
+        "--embed-batch-size",
+        IngestOptions::default().embed_batch_size,
+    )?;
     let maintenance_ms = cli.u64("--maintenance-ms", 0)?;
     if let Some(parent) = store_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -152,6 +156,7 @@ fn ingest(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         &documents,
         IngestOptions {
             seal_every,
+            embed_batch_size,
             maintenance_wall_time: Duration::from_millis(maintenance_ms),
             ..Default::default()
         },
@@ -166,6 +171,7 @@ fn ingest(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         "chunks": report.chunks,
         "tokens": report.tokens,
         "embed_batches": report.embed_batches,
+        "embed_batch_size": embed_batch_size,
         "seals": report.seals,
         "generation": report.generation,
         "max_in_flight_batches": report.max_in_flight_batches,
@@ -335,6 +341,7 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         "samples": samples.len(),
         "summary": summary_json(summary),
         "ndcg_at_10": (k == 10).then_some(ndcg),
+        "recall_at_10": (k == 10).then(|| mean_recall_at_k(&run, &corpus.qrels, k)),
         "unique_parent_ndcg_at_k": ndcg,
         "metric_policy": "first parent occurrence, compact unique parent ranks; no retrieval fill",
         "chunk_policy": "raw chunk ranks retained in query_samples; qrels judge parents, not chunks",
@@ -926,46 +933,6 @@ fn verify_timing_store(
     let health = store.health()?;
     verify_health(&health, expected, MIN_GRAPH_ROWS)?;
     Ok(expected)
-}
-
-fn verify_health(
-    health: &zeppelin_embed::diag::Health,
-    expected: SegmentTier,
-    minimum_rows: u64,
-) -> Result<u64, Box<dyn std::error::Error>> {
-    let mut rows = 0_u64;
-    let mut sealed = 0_usize;
-    for segment in &health.segments {
-        match segment.tier {
-            SegmentTier::ActiveScan => {
-                return Err(io::Error::other(format!(
-                    "timing refused: active segment has {} rows",
-                    segment.rows
-                ))
-                .into());
-            }
-            SegmentTier::SealedScan | SegmentTier::SealedGraph => {
-                if segment.tier != expected {
-                    return Err(io::Error::other(format!(
-                        "timing refused: expected {expected:?}, found {:?}",
-                        segment.tier
-                    ))
-                    .into());
-                }
-                rows = rows
-                    .checked_add(segment.rows)
-                    .ok_or_else(|| io::Error::other("sealed row count overflow"))?;
-                sealed = sealed.saturating_add(1);
-            }
-        }
-    }
-    if sealed == 0 || rows < minimum_rows {
-        return Err(io::Error::other(format!(
-            "timing refused: {sealed} sealed segments contain {rows} rows, need at least {minimum_rows}"
-        ))
-        .into());
-    }
-    Ok(rows)
 }
 
 fn segments_json(health: &zeppelin_embed::diag::Health) -> Vec<Value> {

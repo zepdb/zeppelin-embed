@@ -1,4 +1,53 @@
 use std::collections::BTreeSet;
+use std::io;
+
+use zeppelin_embed::tier::SegmentTier;
+
+/// Validates a fully sealed timing store; only graph stores need `minimum_rows`.
+pub fn verify_health(
+    health: &zeppelin_embed::diag::Health,
+    expected: SegmentTier,
+    minimum_rows: u64,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let minimum_rows = if expected == SegmentTier::SealedGraph {
+        minimum_rows
+    } else {
+        0
+    };
+    let mut rows = 0_u64;
+    let mut sealed = 0_usize;
+    for segment in &health.segments {
+        match segment.tier {
+            SegmentTier::ActiveScan => {
+                return Err(io::Error::other(format!(
+                    "timing refused: active segment has {} rows",
+                    segment.rows
+                ))
+                .into());
+            }
+            SegmentTier::SealedScan | SegmentTier::SealedGraph => {
+                if segment.tier != expected {
+                    return Err(io::Error::other(format!(
+                        "timing refused: expected {expected:?}, found {:?}",
+                        segment.tier
+                    ))
+                    .into());
+                }
+                rows = rows
+                    .checked_add(segment.rows)
+                    .ok_or_else(|| io::Error::other("sealed row count overflow"))?;
+                sealed = sealed.saturating_add(1);
+            }
+        }
+    }
+    if sealed == 0 || rows < minimum_rows {
+        return Err(io::Error::other(format!(
+            "timing refused: {sealed} sealed segments contain {rows} rows, need at least {minimum_rows}"
+        ))
+        .into());
+    }
+    Ok(rows)
+}
 
 /// Nearest-rank latency summary in milliseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -333,6 +382,49 @@ fn optional_component(value: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use zeppelin_embed::lifecycle::{OpenOptions, Store};
+
+    const MIN_GRAPH_ROWS: u64 = 30_000;
+
+    #[test]
+    fn timing_health_allows_small_scan_but_enforces_sealing_and_graph_minimum()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(directory.path(), OpenOptions::default())?;
+        assert!(verify_health(&store.health()?, SegmentTier::SealedScan, MIN_GRAPH_ROWS).is_err());
+        store.ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(1), Revision::new(1)),
+            vec![1.0],
+        )]))?;
+        assert!(verify_health(&store.health()?, SegmentTier::SealedScan, MIN_GRAPH_ROWS).is_err());
+        store.seal()?;
+        let mut health = store.health()?;
+        assert_eq!(
+            verify_health(&health, SegmentTier::SealedScan, MIN_GRAPH_ROWS)?,
+            1
+        );
+        let mut with_active = health.clone();
+        for mut segment in health.segments.clone() {
+            segment.tier = SegmentTier::ActiveScan;
+            with_active.segments.push(segment);
+        }
+        assert!(verify_health(&with_active, SegmentTier::SealedScan, MIN_GRAPH_ROWS).is_err());
+        assert!(verify_health(&health, SegmentTier::SealedGraph, MIN_GRAPH_ROWS).is_err());
+        for segment in &mut health.segments {
+            segment.tier = SegmentTier::SealedGraph;
+        }
+        assert!(verify_health(&health, SegmentTier::SealedGraph, MIN_GRAPH_ROWS).is_err());
+        for segment in &mut health.segments {
+            segment.rows = MIN_GRAPH_ROWS;
+        }
+        assert_eq!(
+            verify_health(&health, SegmentTier::SealedGraph, MIN_GRAPH_ROWS)?,
+            MIN_GRAPH_ROWS
+        );
+        assert!(verify_health(&health, SegmentTier::SealedScan, MIN_GRAPH_ROWS).is_err());
+        Ok(())
+    }
 
     #[test]
     fn percentiles_are_nearest_rank_on_the_sorted_sample() {

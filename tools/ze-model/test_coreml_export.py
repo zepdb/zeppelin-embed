@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 TOOL = Path(__file__).with_name("ze-model")
 EXPORT = runpy.run_path(str(TOOL))
@@ -17,6 +18,49 @@ class CoreMlExport(unittest.TestCase):
         args = EXPORT["parser"]().parse_args([
             "coreml-export", "--query", "query", "--output", "query.mlpackage"])
         self.assertEqual(args.tokens, 96)
+        self.assertEqual(args.precision, "fp16")
+
+    def test_int8_export_uses_per_channel_symmetric_weight_quantization(self):
+        import coremltools as ct
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = (Path(directory) / "query.mlpackage").resolve()
+            args = EXPORT["parser"]().parse_args([
+                "coreml-export", "--query", "query", "--output", str(output),
+                "--precision", "int8"])
+            converted, quantized = MagicMock(), MagicMock()
+
+            def compile_model(command, check):
+                self.assertTrue(check)
+                self.assertEqual(command[:3], ["xcrun", "coremlcompiler", "compile"])
+                output.with_suffix(".mlmodelc").mkdir()
+
+            with (patch.dict(EXPORT["coreml_export"].__globals__,
+                             _coreml_query_module=MagicMock()),
+                  patch("torch.jit.trace"),
+                  patch.object(ct, "convert", return_value=converted) as convert,
+                  patch.object(ct.optimize.coreml, "linear_quantize_weights",
+                               return_value=quantized) as quantize,
+                  patch("subprocess.run", side_effect=compile_model)):
+                EXPORT["coreml_export"](args)
+            self.assertEqual(convert.call_args.kwargs["compute_precision"], ct.precision.FLOAT16)
+            self.assertEqual(convert.call_args.kwargs["compute_units"], ct.ComputeUnit.CPU_AND_NE)
+            self.assertEqual(convert.call_args.kwargs["outputs"][0].dtype,
+                             ct.converters.mil.mil.types.fp16)
+            quantize.assert_called_once()
+            self.assertIs(quantize.call_args.args[0], converted)
+            config = quantize.call_args.kwargs["config"].global_config
+            self.assertEqual(config.mode, "LINEAR_SYMMETRIC")
+            self.assertEqual(config.dtype, ct.converters.mil.mil.types.int8)
+            self.assertEqual(config.granularity.name, "PER_CHANNEL")
+            self.assertEqual(config.weight_threshold,
+                             ct.optimize.coreml.OpLinearQuantizerConfig().weight_threshold)
+            quantized.save.assert_called_once_with(str(output))
+            self.assertEqual(quantized.user_defined_metadata.update.call_args.args[0]["precision"],
+                             "INT8")
+            receipt = json.loads(output.with_suffix(".json").read_text())
+            self.assertEqual(receipt["precision"], "INT8")
+            self.assertEqual(receipt["tokens"], 96)
 
     @unittest.skipUnless(os.environ.get("ZE497_PACK") and os.environ.get("ZE497_EXPORT_DIR"),
                          "requires clean71 pack, CoreML compiler and writable export directory")

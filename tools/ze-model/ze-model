@@ -355,7 +355,8 @@ def bake(args: argparse.Namespace) -> None:
     if args.query:
         document = load_tower(document_root, args.document_id, 0, "document", "",
                               args.document_precision)
-        query = load_tower(Path(args.query).resolve(), args.query_id, 1, "query", args.query_prefix)
+        query = load_tower(Path(args.query).resolve(), args.query_id, 1, "query", args.query_prefix,
+                           args.query_mlx_precision or args.document_precision)
         towers = (document, query)
         alignment = bytes.fromhex(args.alignment_digest)
     else:
@@ -442,10 +443,12 @@ def release(args: argparse.Namespace) -> None:
             document=str(pack / pair["document"]["path"]), document_id=pair["document"]["name"],
             query=str(pack / pair["query"]["path"]), query_id=pair["query"]["name"],
             query_prefix=pair["query"]["prefix"], query_max_tokens=96, document_max_tokens=8192,
-            document_precision=args.document_precision, alpha=0.5,
+            document_precision=args.document_precision, query_mlx_precision=args.query_mlx_precision,
+            alpha=0.5,
             alignment_digest=hashlib.sha256(pair_bytes).hexdigest(),
             output=str(stage / f"{args.name}.zem")))
         coreml_export(argparse.Namespace(query=str(pack / pair["query"]["path"]), tokens=96,
+                                       precision=args.query_coreml_precision,
                                        output=str(stage / f"{args.name}.mlpackage")))
         # The exporter also writes source package/receipt; only compiled bytes ship.
         payload = [stage / f"{args.name}.zem"]
@@ -468,8 +471,8 @@ def release(args: argparse.Namespace) -> None:
                  "query_coreml_bytes": sum(p.stat().st_size for p in compiled_files)}
         (stage / "README.md").write_text(
             f"# {args.name}\n\nModel card pending ZE-500.\n\n"
-            f"Document weights: {args.document_precision}; CoreML query: fp16, 96 tokens.\n"
-            "The bundle retains FP32 MLX query weights and both tokenizers.\n\n"
+            f"Document weights: {args.document_precision}; CoreML query: {args.query_coreml_precision}, 96 tokens.\n"
+            f"The bundle retains {(args.query_mlx_precision or args.document_precision).upper()} MLX query weights and both tokenizers.\n\n"
             f"Sizes (bytes): bundle {sizes['bundle_bytes']}; compiled query {sizes['query_coreml_bytes']}.\n")
         payload.extend([stage / "zeppelin-model.json", stage / "README.md"])
         checksums = []
@@ -668,9 +671,15 @@ def coreml_export(args: argparse.Namespace) -> None:
         minimum_deployment_target=ct.target.macOS15,
         skip_model_load=True,
     )
+    if args.precision == "int8":
+        config = ct.optimize.coreml.OptimizationConfig(
+            global_config=ct.optimize.coreml.OpLinearQuantizerConfig(
+                mode="linear_symmetric", dtype="int8", granularity="per_channel"))
+        model = ct.optimize.coreml.linear_quantize_weights(model, config=config)
     metadata = {"output": str(output), "compiled": str(compiled),
                 "query": str(root), "tokens": sequence,
-                "precision": "FLOAT16", "compute_units": "CPU_AND_NE",
+                "precision": "INT8" if args.precision == "int8" else "FLOAT16",
+                "compute_units": "CPU_AND_NE",
                 "torch": torch.__version__, "coremltools": ct.__version__}
     # Absolute build paths vary per run and must not enter the compiled model.
     model.user_defined_metadata.update({key: str(value) for key, value in metadata.items()
@@ -759,6 +768,8 @@ def parser() -> argparse.ArgumentParser:
     bake_parser.add_argument("--document", required=True)
     bake_parser.add_argument("--document-id", required=True)
     bake_parser.add_argument("--document-precision", choices=("fp32", "fp16"), default="fp32")
+    bake_parser.add_argument("--query-mlx-precision", choices=("fp32", "fp16"),
+                             help="MLX query weights (default: document precision)")
     bake_parser.add_argument("--query")
     bake_parser.add_argument("--query-id")
     bake_parser.add_argument("--query-max-tokens", type=int)
@@ -772,9 +783,12 @@ def parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--out", required=True)
     release_parser.add_argument("--name", required=True)
     release_parser.add_argument("--document-precision", choices=("fp32", "fp16"), required=True)
-    release_parser.add_argument("--query-coreml-precision", choices=("fp16",), default="fp16")
+    release_parser.add_argument("--query-mlx-precision", choices=("fp32", "fp16"),
+                                help="MLX query weights (default: document precision)")
+    release_parser.add_argument("--query-coreml-precision", choices=("fp16", "int8"), default="fp16")
     export = commands.add_parser("coreml-export")
     export.add_argument("--query", required=True)
+    export.add_argument("--precision", choices=("fp16", "int8"), default="fp16")
     export.add_argument("--tokens", type=int, default=96,
                         help="fixed sequence length, bounded by the pack limit (default: 96)")
     export.add_argument("--output", required=True)

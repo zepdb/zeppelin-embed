@@ -25,7 +25,13 @@ class Release(unittest.TestCase):
             descriptor = EXPORT["tensor_descriptor"](tensor, 4096)
             self.assertEqual(descriptor[4 + len(tensor.name)], 1)
 
-    def test_release_bakes_both_precisions_and_hashes_real_output_bytes(self):
+    def test_release_query_mlx_defaults_to_document_precision(self):
+        self.check_releases((("fp16", None, "fp16"), ("fp32", None, "fp16")))
+
+    def test_release_query_mlx_explicit_override_wins(self):
+        self.check_releases((("fp16", "fp32", "int8"), ("fp32", "fp16", "fp16")))
+
+    def check_releases(self, cases):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             pack = root / "pack"
@@ -56,20 +62,34 @@ class Release(unittest.TestCase):
 
             def compile_query(args):
                 self.assertEqual(args.tokens, 96)
+                compiled_precisions.append(getattr(args, "precision", None))
                 self.assertEqual(Path(args.query), (pack / "query").resolve())
                 compiled = Path(args.output).with_suffix(".mlmodelc")
                 (compiled / "weights").mkdir(parents=True)
                 (compiled / "weights/weight.bin").write_bytes(b"compiled query")
 
-            for precision in ("fp32", "fp16"):
+            for precision, override, coreml_precision in cases:
+                query_precision = override or precision
                 snapshots = []
                 for run in range(2):
-                    out = root / f"{precision}-{run}"
+                    out = root / f"{precision}-{override}-{run}"
                     args = EXPORT["parser"]().parse_args([
                         "release", "--pack", str(pack), "--out", str(out),
-                        "--name", "tiny", "--document-precision", precision])
+                        "--name", "tiny", "--document-precision", precision,
+                        "--query-coreml-precision", coreml_precision,
+                        *(["--query-mlx-precision", override] if override else [])])
+                    compiled_precisions = []
                     with patch.dict(EXPORT["release"].__globals__, coreml_export=compile_query):
                         EXPORT["release"](args)
+                    bundle = (out / "tiny.zem").read_bytes()
+                    name = b"query/embeddings.word_embeddings.weight"
+                    descriptor = bundle.index(struct.pack("<I", len(name)) + name)
+                    self.assertEqual(bundle[descriptor + 4 + len(name)],
+                                     {"fp32": 0, "fp16": 1}[query_precision])
+                    self.assertEqual(compiled_precisions, [coreml_precision])
+                    readme = (out / "README.md").read_text()
+                    self.assertIn(f"{query_precision.upper()} MLX query weights", readme)
+                    self.assertIn(f"CoreML query: {coreml_precision}", readme)
                     manifest = json.loads((out / "zeppelin-model.json").read_text())
                     self.assertEqual(manifest["query_coreml"], "tiny.mlmodelc")
                     self.assertEqual([f["path"] for f in manifest["files"]],

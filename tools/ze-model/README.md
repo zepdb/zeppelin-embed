@@ -32,9 +32,15 @@ paths/IDs and the query prefix from `PAIR.json`, pins query/document limits to
 exact `PAIR.json` bytes. Temporary source packages and exporter receipts do not
 ship. Existing release files are never overwritten.
 
-The bundle **retains FP32 MLX query weights**. CoreML is preferred, but
-`ZE_QUERY_COREML=off` and an absent companion select the separate query MLX
-tower. Retaining its tensors preserves this supported path and bundle digest
+`bake` and `release` accept `--query-mlx-precision fp32|fp16`, defaulting to
+`--document-precision`. `release --query-coreml-precision fp16|int8` and
+`coreml-export --precision fp16|int8` default to fp16. INT8 applies symmetric,
+per-channel weight-only linear quantization; activations and output remain FP16.
+The fixed 96-token release query uses CPU_AND_NE for both choices.
+
+The bundle retains MLX query weights at the selected precision. CoreML is
+preferred, but `ZE_QUERY_COREML=off` and an absent companion select the separate
+query MLX tower. Retaining its tensors preserves this supported path and bundle digest
 validation. A discovered CoreML model that fails to load is a hard error.
 
 For identical pack bytes and precision, `.zem` is deterministic. CoreML compiled

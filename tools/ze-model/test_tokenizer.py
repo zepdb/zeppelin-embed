@@ -93,6 +93,7 @@ class WordPieceExport(unittest.TestCase):
             args = SimpleNamespace(document=str(roots[0]), query=str(roots[1]),
                                    document_id="document", query_id="query", query_prefix="",
                                    query_max_tokens=None, document_max_tokens=None, document_precision="fp32",
+                                   query_mlx_precision=None,
                                    alignment_digest="01", alpha=0.5, output=str(Path(directory) / "pair.zem"))
             EXPORT["bake"](args)
             body = Path(args.output).read_bytes()
