@@ -1561,7 +1561,7 @@ impl QueryRuntime {
             Self::CoreMl(runtime) => QueryBackend {
                 runtime: runtime.identity(),
                 requested_compute_units: zeppelin_embed::epoch::ComputeUnits::CpuAndNeuralEngine,
-                observed_compute_units: None,
+                observed_compute_units: runtime.observed_compute_units(),
                 sequence_length: Some(runtime.sequence()),
             },
         }

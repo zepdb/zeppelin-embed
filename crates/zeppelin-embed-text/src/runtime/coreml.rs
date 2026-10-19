@@ -15,6 +15,7 @@ use std::ffi::{CString, c_char};
 use std::path::Path;
 
 use super::{EmbeddingBatch, ModelRuntime, RuntimeError, RuntimeIdentity};
+use crate::ObservedComputeUnits;
 use crate::tower::TokenBatch;
 
 /// Which processors CoreML may schedule the model on.
@@ -59,6 +60,8 @@ unsafe extern "C" {
     fn ze_coreml_open(
         path: *const c_char,
         compute_units: i32,
+        observed: *mut ObservedComputeUnits,
+        has_observed: *mut i32,
         error: *mut *mut c_char,
     ) -> *mut Handle;
     fn ze_coreml_predict(
@@ -94,6 +97,7 @@ pub struct CoreMlRuntime {
     sequence: usize,
     dims: usize,
     compute_units: ComputeUnits,
+    observed_compute_units: Option<ObservedComputeUnits>,
 }
 
 // SAFETY: the handle is owned exclusively by this value, every call goes
@@ -125,9 +129,19 @@ impl CoreMlRuntime {
         let path = CString::new(path)
             .map_err(|_| RuntimeError::Mlx("CoreML model path contains NUL".to_owned()))?;
         let mut error: *mut c_char = std::ptr::null_mut();
+        let mut observed = ObservedComputeUnits::default();
+        let mut has_observed = 0;
         // SAFETY: `path` is NUL-terminated and outlives the call; the shim
-        // writes `error` only when it returns null.
-        let handle = unsafe { ze_coreml_open(path.as_ptr(), compute_units.code(), &mut error) };
+        // writes the valid output pointers and writes `error` only on failure.
+        let handle = unsafe {
+            ze_coreml_open(
+                path.as_ptr(),
+                compute_units.code(),
+                &mut observed,
+                &mut has_observed,
+                &mut error,
+            )
+        };
         if handle.is_null() {
             return Err(RuntimeError::Mlx(take_error(
                 error,
@@ -139,6 +153,7 @@ impl CoreMlRuntime {
             sequence,
             dims,
             compute_units,
+            observed_compute_units: (has_observed != 0).then_some(observed),
         })
     }
 
@@ -146,6 +161,14 @@ impl CoreMlRuntime {
     #[must_use]
     pub const fn sequence(&self) -> usize {
         self.sequence
+    }
+
+    /// Returns preferred-device op counts from the load-time compute plan.
+    ///
+    /// macOS versions before 14.4 report `None` (unknown).
+    #[must_use]
+    pub const fn observed_compute_units(&self) -> Option<ObservedComputeUnits> {
+        self.observed_compute_units
     }
 
     fn embed_row(

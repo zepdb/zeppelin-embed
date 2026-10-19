@@ -8,6 +8,7 @@
 
 #import <CoreML/CoreML.h>
 #import <Foundation/Foundation.h>
+#import <dispatch/dispatch.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -38,10 +39,53 @@ void ze_coreml_string_free(char *text) {
     free(text);
 }
 
+// Matches the text crate's ObservedComputeUnits, not the requested policy.
+struct ze_coreml_compute_units {
+    uint64_t cpu_ops;
+    uint64_t gpu_ops;
+    uint64_t neural_engine_ops;
+};
+
+API_AVAILABLE(macos(14.4))
+static BOOL ze_coreml_count_usage(MLComputePlanDeviceUsage *usage,
+                                  struct ze_coreml_compute_units *counts) {
+    // Constants and other operations without device usage do not count.
+    if (usage == nil) return YES;
+    id<MLComputeDeviceProtocol> device = usage.preferredComputeDevice;
+    if ([device isKindOfClass:[MLCPUComputeDevice class]]) {
+        counts->cpu_ops += 1;
+    } else if ([device isKindOfClass:[MLGPUComputeDevice class]]) {
+        counts->gpu_ops += 1;
+    } else if ([device isKindOfClass:[MLNeuralEngineComputeDevice class]]) {
+        counts->neural_engine_ops += 1;
+    } else {
+        return NO;
+    }
+    return YES;
+}
+
+API_AVAILABLE(macos(14.4))
+static BOOL ze_coreml_count_block(MLComputePlan *plan, MLModelStructureProgramBlock *block,
+                                  struct ze_coreml_compute_units *counts) {
+    for (MLModelStructureProgramOperation *operation in block.operations) {
+        if (!ze_coreml_count_usage([plan computeDeviceUsageForMLProgramOperation:operation], counts)) {
+            return NO;
+        }
+        for (MLModelStructureProgramBlock *nested in operation.blocks) {
+            if (!ze_coreml_count_block(plan, nested, counts)) return NO;
+        }
+    }
+    return YES;
+}
+
 // compute_units: 0 = CPU only, 1 = CPU and GPU, 2 = CPU and Neural Engine,
 // 3 = all. Returns NULL and sets *error_out on failure.
-struct ze_coreml_model *ze_coreml_open(const char *path, int32_t compute_units, char **error_out) {
+struct ze_coreml_model *ze_coreml_open(const char *path, int32_t compute_units,
+                                      struct ze_coreml_compute_units *observed,
+                                      int32_t *has_observed, char **error_out) {
     @autoreleasepool {
+        *observed = (struct ze_coreml_compute_units){0};
+        *has_observed = 0;
         if (path == NULL) {
             if (error_out) *error_out = ze_copy_error(nil, "model path is null");
             return NULL;
@@ -60,6 +104,46 @@ struct ze_coreml_model *ze_coreml_open(const char *path, int32_t compute_units, 
         if (model == nil) {
             if (error_out) *error_out = ze_copy_error(error, "CoreML model failed to load");
             return NULL;
+        }
+        if (@available(macOS 14.4, *)) {
+            dispatch_semaphore_t ready = dispatch_semaphore_create(0);
+            __block MLComputePlan *plan = nil;
+            __block NSError *plan_error = nil;
+            [MLComputePlan loadContentsOfURL:url configuration:configuration
+                          completionHandler:^(MLComputePlan *loaded, NSError *failure) {
+                plan = loaded;
+                plan_error = failure;
+                dispatch_semaphore_signal(ready);
+            }];
+            dispatch_semaphore_wait(ready, DISPATCH_TIME_FOREVER);
+            if (plan == nil) {
+                if (error_out) *error_out = ze_copy_error(plan_error, "CoreML compute plan failed to load");
+                return NULL;
+            }
+            BOOL recognised = YES;
+            if (plan.modelStructure.neuralNetwork != nil) {
+                for (MLModelStructureNeuralNetworkLayer *layer in plan.modelStructure.neuralNetwork.layers) {
+                    if (!ze_coreml_count_usage([plan computeDeviceUsageForNeuralNetworkLayer:layer], observed)) {
+                        recognised = NO;
+                        break;
+                    }
+                }
+            } else if (plan.modelStructure.program != nil) {
+                for (MLModelStructureProgramFunction *function in plan.modelStructure.program.functions.allValues) {
+                    if (!ze_coreml_count_block(plan, function.block, observed)) {
+                        recognised = NO;
+                        break;
+                    }
+                }
+            } else {
+                if (error_out) *error_out = ze_copy_error(nil, "CoreML compute plan has an unsupported model structure");
+                return NULL;
+            }
+            if (!recognised) {
+                if (error_out) *error_out = ze_copy_error(nil, "CoreML compute plan has an unrecognised preferred device");
+                return NULL;
+            }
+            *has_observed = 1;
         }
         struct ze_coreml_model *handle = (struct ze_coreml_model *)calloc(1, sizeof(struct ze_coreml_model));
         if (handle == NULL) {

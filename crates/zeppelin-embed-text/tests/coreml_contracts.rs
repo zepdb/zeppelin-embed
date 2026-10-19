@@ -32,6 +32,55 @@ fn compile_fixture() -> (TempDir, PathBuf) {
     (root, model)
 }
 
+fn compute_plan_available() -> bool {
+    let output = Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .expect("macOS version");
+    assert!(output.status.success());
+    let version = String::from_utf8(output.stdout).expect("macOS version text");
+    let mut components = version.trim().split('.');
+    let major: u32 = components
+        .next()
+        .expect("major version")
+        .parse()
+        .expect("major number");
+    let minor: u32 = components
+        .next()
+        .expect("minor version")
+        .parse()
+        .expect("minor number");
+    (major, minor) >= (14, 4)
+}
+
+#[test]
+fn coreml_compute_plan_reports_one_fixture_op_under_every_requested_policy() {
+    let (_root, model) = compile_fixture();
+    for policy in [
+        ComputeUnits::Cpu,
+        ComputeUnits::CpuAndGpu,
+        ComputeUnits::CpuAndNeuralEngine,
+        ComputeUnits::All,
+    ] {
+        let runtime = CoreMlRuntime::load(&model, 2, 2, policy).expect("actual compiled model");
+        let observed = runtime.observed_compute_units();
+        if compute_plan_available() {
+            let observed = observed.expect("compute plan on macOS 14.4+");
+            assert_eq!(
+                observed.cpu_ops + observed.gpu_ops + observed.neural_engine_ops,
+                1
+            );
+            if policy == ComputeUnits::Cpu {
+                assert_eq!(observed.cpu_ops, 1);
+                assert_eq!(observed.gpu_ops, 0);
+                assert_eq!(observed.neural_engine_ops, 0);
+            }
+        } else {
+            assert_eq!(observed, None);
+        }
+    }
+}
+
 #[test]
 fn coreml_runtime_evaluates_exact_rows_and_masks_under_every_requested_policy() {
     let (_root, model) = compile_fixture();
@@ -169,10 +218,15 @@ fn coreml_store_child() {
         backend.requested_compute_units,
         zeppelin_embed::epoch::ComputeUnits::CpuAndNeuralEngine
     );
-    assert_eq!(
-        backend.observed_compute_units, None,
-        "requested policy is not observed placement"
-    );
+    if compute_plan_available() {
+        let observed = backend.observed_compute_units.expect("store compute plan");
+        assert_eq!(
+            observed.cpu_ops + observed.gpu_ops + observed.neural_engine_ops,
+            1
+        );
+    } else {
+        assert_eq!(backend.observed_compute_units, None);
+    }
     assert_eq!(backend.sequence_length, Some(2));
     let report = store
         .ingest_text(

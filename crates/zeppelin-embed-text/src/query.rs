@@ -86,16 +86,29 @@ impl Default for QueryOptions {
     }
 }
 
-/// Loaded query runtime selection. CoreML compute units are requested policy;
-/// they are not evidence that the Neural Engine executed each operation.
+/// Operation counts by preferred device in CoreML's compute plan.
+///
+/// This describes planned placement, not a trace of executed operations.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub struct ObservedComputeUnits {
+    /// Operations planned for the CPU.
+    pub cpu_ops: u64,
+    /// Operations planned for the GPU.
+    pub gpu_ops: u64,
+    /// Operations planned for the Neural Engine.
+    pub neural_engine_ops: u64,
+}
+
+/// Loaded query runtime selection and available planned placement diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueryBackend {
     /// Identity reported by the loaded runtime, rather than bundle metadata.
     pub runtime: crate::runtime::RuntimeIdentity,
     /// Compute units requested when constructing that runtime.
     pub requested_compute_units: zeppelin_embed::epoch::ComputeUnits,
-    /// Independently observed hardware routing, when available.
-    pub observed_compute_units: Option<zeppelin_embed::epoch::ComputeUnits>,
+    /// Preferred-device op counts from the compute plan; `None` means unknown.
+    pub observed_compute_units: Option<ObservedComputeUnits>,
     /// Fixed CoreML input width, or `None` for dynamic MLX inputs.
     pub sequence_length: Option<usize>,
 }
