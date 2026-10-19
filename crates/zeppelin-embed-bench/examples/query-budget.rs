@@ -39,12 +39,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         if batches.is_empty() {
             return Err("no fitting queries".into());
         }
-        let mut runtime = CoreMlRuntime::load(
-            &model,
-            sequence,
-            bundle.query_tower().embedding.dims as usize,
-            units,
-        )?;
+        let mut runtime =
+            CoreMlRuntime::load(&model, bundle.query_tower().embedding.dims as usize, units)?;
+        if runtime.sequence() != sequence {
+            return Err("requested control sequence does not match the CoreML model".into());
+        }
         for (_, tokens) in batches.iter().cycle().take(20) {
             runtime.embed_batch(tokens)?;
         }

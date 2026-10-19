@@ -30,10 +30,6 @@ fn main() {
     let mut arguments = std::env::args_os().skip(1).map(PathBuf::from);
     let bundle_path = arguments.next().expect("bundle path");
     let model_path = arguments.next().expect("coreml model path");
-    let sequence: usize = std::env::var("ZE_COREML_TOKENS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(32);
 
     let bundle = Arc::new(Bundle::open(&bundle_path).expect("open bundle"));
     let dims = bundle.query_tower().embedding.dims as usize;
@@ -57,22 +53,15 @@ fn main() {
     drop(mlx);
 
     let start = Instant::now();
-    let mut coreml = CoreMlRuntime::load(
-        &model_path,
-        sequence,
-        dims,
-        ComputeUnits::CpuAndNeuralEngine,
-    )
-    .expect("load coreml");
+    let mut coreml = CoreMlRuntime::load(&model_path, dims, ComputeUnits::CpuAndNeuralEngine)
+        .expect("load coreml");
     let load_ms = start.elapsed().as_secs_f64() * 1000.0;
     coreml.warm().expect("warm coreml");
 
     let mut coreml_samples = Vec::new();
     let mut worst_cosine = 1.0_f64;
     for (index, query) in QUERIES.iter().enumerate() {
-        let tokens = bundle
-            .tokenize_query_padded(query, sequence)
-            .expect("tokenize padded");
+        let tokens = bundle.tokenize_query(query).expect("tokenize query");
         let mut vector = Vec::new();
         for round in 0..40 {
             let started = Instant::now();
@@ -99,6 +88,7 @@ fn main() {
 
     let (mlx_p50, mlx_p95) = percentiles(mlx_samples);
     let (ane_p50, ane_p95) = percentiles(coreml_samples);
+    let sequence = coreml.sequence();
     println!(
         "{{\"kind\":\"coreml_placement\",\"tokens\":{sequence},\"dims\":{dims},\
 \"coreml_load_ms\":{load_ms:.3},\"mlx_p50_ms\":{mlx_p50:.4},\"mlx_p95_ms\":{mlx_p95:.4},\

@@ -17,6 +17,7 @@ struct ze_coreml_model {
     // through explicit bridge casts rather than implicitly.
     void *model;
     void *options;
+    size_t sequence;
 };
 
 static char *ze_copy_error(NSError *error, const char *fallback) {
@@ -76,6 +77,28 @@ static BOOL ze_coreml_count_block(MLComputePlan *plan, MLModelStructureProgramBl
         }
     }
     return YES;
+}
+
+// CoreML describes a fixed ML program as a singleton enumeration. It must
+// exactly match the default shape; multiple shapes and all ranges are refused.
+static size_t ze_input_sequence(MLFeatureDescription *input) {
+    if (input.type != MLFeatureTypeMultiArray) return 0;
+    MLMultiArrayConstraint *constraint = input.multiArrayConstraint;
+    if (constraint.dataType != MLMultiArrayDataTypeInt32) return 0;
+    NSArray<NSNumber *> *shape = constraint.shape;
+    if (shape.count != 2 || shape[0].integerValue != 1 || shape[1].integerValue <= 0) return 0;
+    switch (constraint.shapeConstraint.type) {
+        case MLMultiArrayShapeConstraintTypeUnspecified:
+            break;
+        case MLMultiArrayShapeConstraintTypeEnumerated: {
+            NSArray<NSArray<NSNumber *> *> *shapes = constraint.shapeConstraint.enumeratedShapes;
+            if (shapes.count != 1 || ![shapes[0] isEqualToArray:shape]) return 0;
+            break;
+        }
+        default:
+            return 0;
+    }
+    return shape[1].unsignedLongLongValue;
 }
 
 // compute_units: 0 = CPU only, 1 = CPU and GPU, 2 = CPU and Neural Engine,
@@ -145,15 +168,26 @@ struct ze_coreml_model *ze_coreml_open(const char *path, int32_t compute_units,
             }
             *has_observed = 1;
         }
+        NSDictionary<NSString *, MLFeatureDescription *> *inputs = model.modelDescription.inputDescriptionsByName;
+        size_t sequence = ze_input_sequence(inputs[@"input_ids"]);
+        if (inputs.count != 2 || sequence == 0 || sequence != ze_input_sequence(inputs[@"attention_mask"])) {
+            if (error_out) *error_out = ze_copy_error(nil, "CoreML inputs must have matching fixed [1, sequence] Int32 shapes; multiple shapes and range constraints are unsupported");
+            return NULL;
+        }
         struct ze_coreml_model *handle = (struct ze_coreml_model *)calloc(1, sizeof(struct ze_coreml_model));
         if (handle == NULL) {
             if (error_out) *error_out = ze_copy_error(nil, "out of memory");
             return NULL;
         }
+        handle->sequence = sequence;
         handle->model = (__bridge_retained void *)model;
         handle->options = (__bridge_retained void *)[[MLPredictionOptions alloc] init];
         return handle;
     }
+}
+
+size_t ze_coreml_sequence(struct ze_coreml_model *handle) {
+    return handle == NULL ? 0 : handle->sequence;
 }
 
 static void ze_coreml_copy_embedding(MLMultiArray *embedding, float *out, size_t out_len) {

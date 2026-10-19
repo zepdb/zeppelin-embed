@@ -46,21 +46,12 @@ fn gpu_cpu_and_ane_query_vectors_agree_within_tolerance_on_the_golden_queries() 
     let model = std::env::var_os("ZE_COREML_QUERY_MODEL")
         .map(PathBuf::from)
         .unwrap_or_else(|| bundle_root.join("leaf-v1.5-pair.mlmodelc"));
-    let sequence = std::env::var("ZE_QUERY_COREML_TOKENS")
-        .map(|value| value.parse::<usize>().expect("CoreML token count"))
-        .unwrap_or(64);
     // Exercise the same public runtime and compiled model as TextStore,
     // without relying on a temporary Python environment from the exporter.
-    let mut ane = CoreMlRuntime::load(
-        &model,
-        sequence,
-        768,
-        CoreMlComputeUnits::CpuAndNeuralEngine,
-    )
-    .expect("load CoreML query model");
-    let ane_tokens = tokens.padded_to(sequence).expect("CoreML padding");
+    let mut ane = CoreMlRuntime::load(&model, 768, CoreMlComputeUnits::CpuAndNeuralEngine)
+        .expect("load CoreML query model");
     let ane_vectors = normalized(
-        ane.embed_batch(&ane_tokens)
+        ane.embed_batch(&tokens)
             .expect("CoreML vectors")
             .into_values(),
     );

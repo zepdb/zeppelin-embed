@@ -28,8 +28,6 @@ use zeppelin_embed::lifecycle::{
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceReport, MaintenanceStatus};
 
 const CALLER_BITS: u32 = 96;
-/// Sequence length the bundled CoreML query tower is exported at.
-const DEFAULT_COREML_TOKENS: usize = 64;
 const DEFAULT_MAINTENANCE_BYTES: u64 = 256 * 1024 * 1024;
 
 const CHUNK_BITS: u32 = 32;
@@ -1463,20 +1461,16 @@ fn encode_chunk_id(id: u128, chunk: u32) -> Result<DocId, TextError> {
 /// The Apple Neural Engine is the default query backend, so a compiled
 /// `<bundle stem>.mlmodelc` sitting beside the `.zem` is used without
 /// asking. `MLModel` refuses a raw `.mlpackage`, so only a compiled
-/// directory counts. `ZE_QUERY_COREML` overrides the path and
-/// `ZE_QUERY_COREML_TOKENS` its exported sequence length;
+/// directory counts. `ZE_QUERY_COREML` overrides the path; the fixed sequence
+/// length comes from the compiled model's input description.
 /// `ZE_QUERY_COREML=off` forces MLX.
-fn discover_query_coreml(bundle_path: &std::path::Path) -> Option<(std::path::PathBuf, usize)> {
-    let tokens = std::env::var("ZE_QUERY_COREML_TOKENS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_COREML_TOKENS);
+fn discover_query_coreml(bundle_path: &std::path::Path) -> Option<std::path::PathBuf> {
     let model = match std::env::var("ZE_QUERY_COREML") {
         Ok(value) if value == "off" => return None,
         Ok(value) => std::path::PathBuf::from(value),
         Err(_) => bundle_path.with_extension("mlmodelc"),
     };
-    model.is_dir().then_some((model, tokens))
+    model.is_dir().then_some(model)
 }
 
 fn load_versions(store: &Store, reconcile: bool) -> Result<BTreeMap<DocId, Revision>, TextError> {
@@ -1672,12 +1666,7 @@ impl QueryRuntime {
         match self {
             Self::Mlx(runtime) => runtime.embed_batch(tokens),
             #[cfg(target_os = "macos")]
-            Self::CoreMl(runtime) => {
-                // A CoreML program is exported at one fixed sequence
-                // length, so the batch is padded to it exactly.
-                let padded = tokens.padded_to(runtime.sequence())?;
-                runtime.embed_batch(&padded)
-            }
+            Self::CoreMl(runtime) => runtime.embed_batch(tokens),
         }
     }
 
@@ -1691,7 +1680,7 @@ impl QueryRuntime {
             #[cfg(target_os = "macos")]
             Self::CoreMl(runtime) => {
                 checkpoint()?;
-                let padded = tokens.padded_to(runtime.sequence())?;
+                let padded = crate::runtime::coreml::pad_query(tokens, runtime.sequence())?;
                 checkpoint()?;
                 let result = runtime.embed_batch(&padded);
                 checkpoint()?;
@@ -1776,7 +1765,7 @@ struct RuntimeClient {
 impl RuntimeClient {
     fn start(
         bundle: Arc<Bundle>,
-        query_coreml: Option<(std::path::PathBuf, usize)>,
+        query_coreml: Option<std::path::PathBuf>,
     ) -> Result<Self, TextError> {
         let (sender, receiver) = mpsc::sync_channel::<RuntimeCommand>(2);
         let (init_sender, init_receiver) = mpsc::sync_channel(0);
@@ -1796,9 +1785,8 @@ impl RuntimeClient {
                             // broken artifact, not a reason to quietly run
                             // something else.
                             #[cfg(target_os = "macos")]
-                            Some((path, sequence)) => crate::runtime::coreml::CoreMlRuntime::load(
+                            Some(path) => crate::runtime::coreml::CoreMlRuntime::load(
                                 &path,
-                                sequence,
                                 dims,
                                 crate::runtime::coreml::ComputeUnits::CpuAndNeuralEngine,
                             )

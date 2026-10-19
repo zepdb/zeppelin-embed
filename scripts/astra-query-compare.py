@@ -133,7 +133,6 @@ def main():
     parser.add_argument('--store', type=Path, required=True)
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--coreml', type=Path)
-    parser.add_argument('--coreml-tokens', type=int, default=64)
     parser.add_argument('--expect', choices=['scan', 'graph'], required=True)
     parser.add_argument('--out', type=Path, required=True, help='fresh output directory')
     parser.add_argument('--source-record', type=Path, required=True, help='JSON mapping labels to commit/build flags/diff hashes')
@@ -158,10 +157,8 @@ def main():
         raise ValueError('source-record labels must exactly match binary labels')
     env = os.environ.copy()
     env.pop('ZE_QUERY_COREML', None)
-    env.pop('ZE_QUERY_COREML_TOKENS', None)
     if args.coreml:
         env['ZE_QUERY_COREML'] = str(args.coreml.resolve())
-        env['ZE_QUERY_COREML_TOKENS'] = str(args.coreml_tokens)
     provenance = {'schema_version': 1, 'qualification': 'provisional calibration screen',
                   'driver_sha256': sha(__file__),
                   'hardware': platform.platform(), 'machine': platform.machine(),

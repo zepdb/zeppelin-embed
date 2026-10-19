@@ -74,6 +74,7 @@ unsafe extern "C" {
         error: *mut *mut c_char,
     ) -> i32;
     fn ze_coreml_close(handle: *mut Handle);
+    fn ze_coreml_sequence(handle: *mut Handle) -> usize;
     fn ze_coreml_string_free(text: *mut c_char);
 }
 
@@ -91,7 +92,17 @@ fn take_error(raw: *mut c_char, fallback: &str) -> String {
     message
 }
 
-/// A loaded CoreML query tower pinned to one padded sequence length.
+pub(crate) fn pad_query(tokens: &TokenBatch, sequence: usize) -> Result<TokenBatch, RuntimeError> {
+    if tokens.tokens_per_row == 0 || tokens.tokens_per_row > sequence {
+        return Err(RuntimeError::Shape(format!(
+            "CoreML query has {} tokens, expected 1..={sequence}",
+            tokens.tokens_per_row
+        )));
+    }
+    tokens.padded_to(sequence)
+}
+
+/// A loaded CoreML query tower with one model-declared fixed sequence length.
 pub struct CoreMlRuntime {
     handle: *mut Handle,
     sequence: usize,
@@ -107,20 +118,18 @@ pub struct CoreMlRuntime {
 unsafe impl Send for CoreMlRuntime {}
 
 impl CoreMlRuntime {
-    /// Loads a compiled or packaged CoreML model.
+    /// Loads a compiled CoreML model and reads its fixed input length.
     ///
-    /// `sequence` is the exact padded token count the model was exported
-    /// with, and `dims` its embedding width. Both are contracts of the
-    /// export, so a mismatch is rejected rather than reshaped.
+    /// Inputs must declare matching fixed [1, sequence] Int32
+    /// shapes. `dims` is the expected embedding width.
     pub fn load(
         model: &Path,
-        sequence: usize,
         dims: usize,
         compute_units: ComputeUnits,
     ) -> Result<Self, RuntimeError> {
-        if sequence == 0 || dims == 0 {
+        if dims == 0 {
             return Err(RuntimeError::Shape(
-                "CoreML sequence and dims must be non-zero".to_owned(),
+                "CoreML dims must be non-zero".to_owned(),
             ));
         }
         let path = model
@@ -148,6 +157,14 @@ impl CoreMlRuntime {
                 "CoreML model failed to load",
             )));
         }
+        // SAFETY: the handle is live; the accessor reads its validated input width.
+        let sequence = unsafe { ze_coreml_sequence(handle) };
+        if sequence == 0 {
+            unsafe { ze_coreml_close(handle) };
+            return Err(RuntimeError::Shape(
+                "CoreML sequence must be non-zero".to_owned(),
+            ));
+        }
         Ok(Self {
             handle,
             sequence,
@@ -157,7 +174,7 @@ impl CoreMlRuntime {
         })
     }
 
-    /// Returns the padded sequence length this model was exported with.
+    /// Returns the model's fixed padded sequence length.
     #[must_use]
     pub const fn sequence(&self) -> usize {
         self.sequence
@@ -211,12 +228,7 @@ impl Drop for CoreMlRuntime {
 
 impl ModelRuntime for CoreMlRuntime {
     fn embed_batch(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
-        if tokens.tokens_per_row != self.sequence {
-            return Err(RuntimeError::Shape(format!(
-                "CoreML model expects {} tokens per row, batch carries {}",
-                self.sequence, tokens.tokens_per_row
-            )));
-        }
+        let sequence = self.sequence;
         let rows = tokens.rows;
         let mut values = vec![
             0.0_f32;
@@ -224,13 +236,20 @@ impl ModelRuntime for CoreMlRuntime {
                 RuntimeError::Shape("CoreML batch size overflows".to_owned())
             })?
         ];
-        let mut mask = vec![0_i32; self.sequence];
+        let padded;
+        let tokens = if tokens.tokens_per_row == sequence {
+            tokens
+        } else {
+            padded = pad_query(tokens, sequence)?;
+            &padded
+        };
+        let mut mask = vec![0_i32; sequence];
         for row in 0..rows {
             let start = row
-                .checked_mul(self.sequence)
+                .checked_mul(sequence)
                 .ok_or_else(|| RuntimeError::Shape("CoreML row offset overflows".to_owned()))?;
             let end = start
-                .checked_add(self.sequence)
+                .checked_add(sequence)
                 .ok_or_else(|| RuntimeError::Shape("CoreML row end overflows".to_owned()))?;
             let ids = tokens
                 .token_ids
@@ -259,8 +278,9 @@ impl ModelRuntime for CoreMlRuntime {
     }
 
     fn warm(&mut self) -> Result<(), RuntimeError> {
-        let ids = vec![0_i32; self.sequence];
-        let mask = vec![1_i32; self.sequence];
+        let sequence = self.sequence;
+        let ids = vec![0_i32; sequence];
+        let mask = vec![1_i32; sequence];
         let mut out = vec![0.0_f32; self.dims];
         self.embed_row(&ids, &mask, &mut out)
     }
@@ -272,6 +292,37 @@ impl ModelRuntime for CoreMlRuntime {
                 self.compute_units,
                 ComputeUnits::CpuAndGpu | ComputeUnits::All
             ),
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    #[test]
+    fn query_rows_pad_to_96_and_reject_empty_or_overlength() {
+        for count in [1, 32, 33, 64, 65, 96] {
+            let tokens = crate::tower::TokenBatch::new(vec![7; count], vec![1.; count], 1, count)
+                .expect("row");
+            let padded = super::pad_query(&tokens, 96).expect("pad query");
+            assert_eq!(padded.tokens_per_row, 96);
+            assert_eq!(
+                padded.token_ids.iter().filter(|id| **id == 7).count(),
+                count
+            );
+            assert_eq!(padded.attention_mask.iter().sum::<f32>(), count as f32);
+        }
+        for count in [0, 97] {
+            let tokens = crate::tower::TokenBatch {
+                token_ids: vec![7; count],
+                attention_mask: vec![1.; count],
+                rows: 1,
+                tokens_per_row: count,
+            };
+            assert!(matches!(
+                super::pad_query(&tokens, 96),
+                Err(super::RuntimeError::Shape(_))
+            ));
         }
     }
 }

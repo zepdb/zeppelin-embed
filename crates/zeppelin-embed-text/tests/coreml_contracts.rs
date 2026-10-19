@@ -62,7 +62,7 @@ fn coreml_compute_plan_reports_one_fixture_op_under_every_requested_policy() {
         ComputeUnits::CpuAndNeuralEngine,
         ComputeUnits::All,
     ] {
-        let runtime = CoreMlRuntime::load(&model, 2, 2, policy).expect("actual compiled model");
+        let runtime = CoreMlRuntime::load(&model, 2, policy).expect("actual compiled model");
         let observed = runtime.observed_compute_units();
         if compute_plan_available() {
             let observed = observed.expect("compute plan on macOS 14.4+");
@@ -97,7 +97,7 @@ fn coreml_runtime_evaluates_exact_rows_and_masks_under_every_requested_policy() 
         (ComputeUnits::CpuAndNeuralEngine, "coreml-cpu-ane", false),
         (ComputeUnits::All, "coreml-all", true),
     ] {
-        let mut runtime = CoreMlRuntime::load(&model, 2, 2, policy).expect("actual compiled model");
+        let mut runtime = CoreMlRuntime::load(&model, 2, policy).expect("actual compiled model");
         assert_eq!(runtime.sequence(), 2);
         assert_eq!(runtime.identity().name, name);
         assert_eq!(runtime.identity().gpu, gpu);
@@ -121,25 +121,23 @@ fn coreml_runtime_evaluates_exact_rows_and_masks_under_every_requested_policy() 
 #[test]
 fn coreml_reports_bad_artifacts_paths_shapes_and_prediction_width_without_partial_results() {
     let (root, model) = compile_fixture();
-    for (sequence, dims) in [(0, 2), (2, 0)] {
-        assert!(
-            matches!(CoreMlRuntime::load(&model, sequence, dims, ComputeUnits::Cpu), Err(RuntimeError::Shape(detail)) if detail == "CoreML sequence and dims must be non-zero")
-        );
-    }
+    assert!(
+        matches!(CoreMlRuntime::load(&model, 0, ComputeUnits::Cpu), Err(RuntimeError::Shape(detail)) if detail == "CoreML dims must be non-zero")
+    );
     let invalid_utf8 = PathBuf::from(std::ffi::OsString::from_vec(vec![0xff]));
     assert!(
-        matches!(CoreMlRuntime::load(&invalid_utf8, 2, 2, ComputeUnits::Cpu), Err(RuntimeError::Mlx(detail)) if detail == "CoreML model path is not valid UTF-8")
+        matches!(CoreMlRuntime::load(&invalid_utf8, 2, ComputeUnits::Cpu), Err(RuntimeError::Mlx(detail)) if detail == "CoreML model path is not valid UTF-8")
     );
     assert!(
-        matches!(CoreMlRuntime::load(Path::new("invalid\0path"), 2, 2, ComputeUnits::Cpu), Err(RuntimeError::Mlx(detail)) if detail == "CoreML model path contains NUL")
+        matches!(CoreMlRuntime::load(Path::new("invalid\0path"), 2, ComputeUnits::Cpu), Err(RuntimeError::Mlx(detail)) if detail == "CoreML model path contains NUL")
     );
     assert!(
-        matches!(CoreMlRuntime::load(&root.path().join("absent.mlmodelc"), 2, 2, ComputeUnits::Cpu), Err(RuntimeError::Mlx(detail)) if !detail.is_empty())
+        matches!(CoreMlRuntime::load(&root.path().join("absent.mlmodelc"), 2, ComputeUnits::Cpu), Err(RuntimeError::Mlx(detail)) if !detail.is_empty())
     );
-    let mut runtime = CoreMlRuntime::load(&model, 2, 2, ComputeUnits::Cpu).expect("clean runtime");
+    let mut runtime = CoreMlRuntime::load(&model, 2, ComputeUnits::Cpu).expect("clean runtime");
     let wrong_width = TokenBatch::new(vec![1, 2, 3], vec![1.; 3], 1, 3).expect("different width");
     assert!(
-        matches!(runtime.embed_batch(&wrong_width), Err(RuntimeError::Shape(detail)) if detail == "CoreML model expects 2 tokens per row, batch carries 3")
+        matches!(runtime.embed_batch(&wrong_width), Err(RuntimeError::Shape(detail)) if detail == "CoreML query has 3 tokens, expected 1..=2")
     );
     let overflow = TokenBatch {
         token_ids: vec![],
@@ -168,15 +166,18 @@ fn coreml_reports_bad_artifacts_paths_shapes_and_prediction_width_without_partia
             .values(),
         [8., 11.]
     );
-    let mut wrong_dims = CoreMlRuntime::load(&model, 2, 3, ComputeUnits::Cpu)
+    let mut wrong_dims = CoreMlRuntime::load(&model, 3, ComputeUnits::Cpu)
         .expect("declaration checked at prediction");
     assert!(
         matches!(wrong_dims.embed_batch(&valid), Err(RuntimeError::Mlx(detail)) if detail == "output embedding has an unexpected width")
     );
-    let mut wrong_sequence =
-        CoreMlRuntime::load(&model, 3, 2, ComputeUnits::Cpu).expect("declaration checked by model");
-    assert!(
-        matches!(wrong_sequence.embed_batch(&wrong_width), Err(RuntimeError::Mlx(detail)) if !detail.is_empty())
+    let short = TokenBatch::new(vec![7], vec![1.], 1, 1).expect("short row");
+    assert_eq!(
+        runtime
+            .embed_batch(&short)
+            .expect("automatic padding")
+            .values(),
+        [8., 0.]
     );
 }
 
@@ -187,7 +188,6 @@ fn discovered_coreml_query_model_is_reported_and_used_by_the_store() {
         .args(["--exact", "coreml_store_child", "--nocapture"])
         .env("ZE115_COREML_FIXTURE", &model)
         .env("ZE_QUERY_COREML", &model)
-        .env("ZE_QUERY_COREML_TOKENS", "2")
         .output()
         .expect("isolated environment for model discovery");
     assert!(

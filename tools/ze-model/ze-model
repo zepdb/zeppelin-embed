@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import importlib.util
 import json
 import math
 import struct
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 import torch
@@ -431,8 +434,38 @@ def _layer_norm(torch_module, tensors: dict[str, torch.Tensor], base: str, eps: 
 
 def _coreml_query_module(root: Path, sequence: int):
     config = json_file(root / "config.json")
+    maximum = int(config["max_position_embeddings"])
+    sentence_config = root / "sentence_bert_config.json"
+    if sentence_config.is_file():
+        maximum = min(maximum, int(json_file(sentence_config)["max_seq_length"]))
+    if not 0 < sequence <= maximum:
+        raise ValueError(f"CoreML sequence must be in 1..{maximum}, got {sequence}")
+    if config.get("model_type") == "arctic_query":
+        from safetensors.torch import load_file
+
+        # Use the pack's architecture, with explicit attention for conversion.
+        spec = importlib.util.spec_from_file_location(
+            "ze_arctic_query", root / "modeling_arctic_query.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        config["attention_backend"] = "eager"
+        model = module.ArcticQueryModel(module.ArcticQueryConfig(**config))
+        model.load_state_dict(load_file(str(root / "model.safetensors")), strict=True)
+        model.eval().float().requires_grad_(False)
+
+        class ArcticQueryTower(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = model
+
+            def forward(self, input_ids, attention_mask):
+                return self.model.encode_tokens(input_ids, attention_mask)
+
+        return ArcticQueryTower().eval()
     if config.get("model_type") != "bert":
-        raise ValueError("CoreML query export currently requires BERT")
+        raise ValueError("CoreML query export requires BERT or ArcticQuery")
     tensors: dict[str, torch.Tensor] = {}
     with safe_open(root / "model.safetensors", framework="pt", device="cpu") as source:
         for name in source.keys():
@@ -534,6 +567,14 @@ def coreml_export(args: argparse.Namespace) -> None:
     except ImportError as error:
         raise RuntimeError("coreml-export requires coremltools in the tool venv") from error
     root = Path(args.query).resolve()
+    output = Path(args.output).resolve()
+    if output.suffix != ".mlpackage":
+        raise ValueError("CoreML export --output must end in .mlpackage")
+    compiled = output.with_suffix(".mlmodelc")
+    receipt = output.with_suffix(".json")
+    for path in (output, compiled, receipt):
+        if path.exists():
+            raise FileExistsError(f"refusing to replace CoreML export: {path}")
     sequence = args.tokens
     module = _coreml_query_module(root, sequence)
     input_ids = torch.ones((1, sequence), dtype=torch.int32)
@@ -544,17 +585,28 @@ def coreml_export(args: argparse.Namespace) -> None:
         traced,
         convert_to="mlprogram",
         inputs=[
-            ct.TensorType(name="input_ids", shape=(1, sequence), dtype=np.int32),
-            ct.TensorType(name="attention_mask", shape=(1, sequence), dtype=np.int32),
+            ct.TensorType(name=name, shape=(1, sequence), dtype=np.int32)
+            for name in ("input_ids", "attention_mask")
         ],
-        outputs=[ct.TensorType(name="embedding")],
+        outputs=[ct.TensorType(name="embedding", dtype=np.float16)],
         compute_precision=ct.precision.FLOAT16,
+        compute_units=ct.ComputeUnit.CPU_AND_NE,
         minimum_deployment_target=ct.target.macOS15,
+        skip_model_load=True,
     )
-    output = Path(args.output)
+    metadata = {"output": str(output), "compiled": str(compiled),
+                "query": str(root), "tokens": sequence,
+                "precision": "FLOAT16", "compute_units": "CPU_AND_NE",
+                "torch": torch.__version__, "coremltools": ct.__version__}
+    model.user_defined_metadata.update({key: str(value) for key, value in metadata.items()})
     output.parent.mkdir(parents=True, exist_ok=True)
-    model.save(output)
-    print(json.dumps({"output": str(output), "tokens": sequence}, sort_keys=True))
+    model.save(str(output))
+    subprocess.run(["xcrun", "coremlcompiler", "compile", str(output),
+                    str(output.parent)], check=True)
+    if not compiled.is_dir():
+        raise RuntimeError(f"CoreML compiler did not produce {compiled}")
+    receipt.write_text(json.dumps(metadata, indent=2) + "\n")
+    print(json.dumps(metadata, sort_keys=True))
 
 
 def coreml_run(args: argparse.Namespace) -> None:
@@ -640,7 +692,8 @@ def parser() -> argparse.ArgumentParser:
     bake_parser.add_argument("--output", required=True)
     export = commands.add_parser("coreml-export")
     export.add_argument("--query", required=True)
-    export.add_argument("--tokens", type=int, choices=(1, 16, 32, 64, 128, 256), default=32)
+    export.add_argument("--tokens", type=int, default=96,
+                        help="fixed sequence length, bounded by the pack limit (default: 96)")
     export.add_argument("--output", required=True)
     run = commands.add_parser("coreml-run")
     run.add_argument("--model", required=True)

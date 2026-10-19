@@ -61,7 +61,7 @@ query-budget tower BUNDLE FIXTURE FRESH_OUTPUT MODELC SEQUENCE cpu|ane
 
 `query` checks TextStore row/tombstone geometry and graph coverage, performs
 20 warmups, and times public queries including returned text. Set
-`ZE_QUERY_COREML` and `ZE_QUERY_COREML_TOKENS` for the fixed query model.
+`ZE_QUERY_COREML` for the query model; its fixed sequence comes from the model.
 `ZE_BUDGET_GRAPH_COVERAGE` defaults to zero. Before graph qualification, add a
 typed assertion of per-query graph-serving counters: coverage is insufficient.
 
