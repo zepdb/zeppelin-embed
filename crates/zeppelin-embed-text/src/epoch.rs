@@ -1,4 +1,5 @@
 use crate::bundle::Bundle;
+use crate::tower::TowerRole;
 
 fn evaluated_tower(
     tower: &zeppelin_embed::epoch::EmbeddingTower,
@@ -21,11 +22,11 @@ pub(crate) fn embedding_epoch(bundle: &Bundle) -> zeppelin_embed::epoch::Embeddi
     zeppelin_embed::epoch::EmbeddingEpoch {
         document: evaluated_tower(
             &bundle.document_tower().embedding,
-            bundle.tokenizer().evaluation_revision(),
+            bundle.tokenizer(TowerRole::Document).evaluation_revision(),
         ),
         query: evaluated_tower(
             &bundle.query_tower().embedding,
-            bundle.tokenizer().evaluation_revision(),
+            bundle.tokenizer(TowerRole::Query).evaluation_revision(),
         ),
         alignment_digest: bundle.alignment_digest().to_vec(),
     }
@@ -34,7 +35,7 @@ pub(crate) fn embedding_epoch(bundle: &Bundle) -> zeppelin_embed::epoch::Embeddi
 pub(crate) fn document_epoch(bundle: &Bundle) -> zeppelin_embed::epoch::EmbeddingEpoch {
     let document = evaluated_tower(
         &bundle.document_tower().embedding,
-        bundle.tokenizer().evaluation_revision(),
+        bundle.tokenizer(TowerRole::Document).evaluation_revision(),
     );
     zeppelin_embed::epoch::EmbeddingEpoch {
         document: document.clone(),

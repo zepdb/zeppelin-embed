@@ -15,7 +15,7 @@ from huggingface_hub import snapshot_download
 from safetensors import safe_open
 
 MAGIC = b"ZEMB0001"
-VERSION = 1
+VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -200,26 +200,26 @@ def wordpiece_flags(tokenizer: dict) -> int:
             or type(lower) is not bool
             or (strip is not None and type(strip) is not bool)
             or (lower and strip is False)):
-        raise ValueError("bundle v1 requires BERT cleaning/CJK and uncased default accent stripping")
+        raise ValueError("bundle requires BERT cleaning/CJK and uncased default accent stripping")
     if tokenizer.get("pre_tokenizer") != {"type": "BertPreTokenizer"}:
-        raise ValueError("bundle v1 requires BertPreTokenizer")
+        raise ValueError("bundle requires BertPreTokenizer")
     model = tokenizer["model"]
     if (model.get("type") != "WordPiece" or model.get("unk_token") != "[UNK]"
             or model.get("continuing_subword_prefix") != "##"
             or model.get("max_input_chars_per_word") != 100):
-        raise ValueError("bundle v1 requires standard WordPiece with a 100-character limit")
+        raise ValueError("bundle requires standard WordPiece with a 100-character limit")
     vocab = model["vocab"]
     if sorted(vocab.values()) != list(range(len(vocab))):
         raise ValueError("WordPiece vocabulary IDs must be contiguous from zero")
     specials = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
     if any(token not in vocab for token in specials):
-        raise ValueError("bundle v1 requires the five standard BERT special tokens")
+        raise ValueError("bundle requires the five standard BERT special tokens")
     expected_added = [{"id": vocab[token], "content": token, "single_word": False,
                        "lstrip": False, "rstrip": False, "normalized": False, "special": True}
                       for token in specials]
     added = tokenizer.get("added_tokens", [])
     if sorted(added, key=lambda token: token["id"]) != sorted(expected_added, key=lambda token: token["id"]):
-        raise ValueError("bundle v1 cannot represent different or additional special-token matching")
+        raise ValueError("bundle cannot represent different or additional special-token matching")
     post = tokenizer.get("post_processor", {})
     expected_single = [{"SpecialToken": {"id": "[CLS]", "type_id": 0}},
                        {"Sequence": {"id": "A", "type_id": 0}},
@@ -228,7 +228,7 @@ def wordpiece_flags(tokenizer: dict) -> int:
                          for token in ["[CLS]", "[SEP]"]}
     if (post.get("type") != "TemplateProcessing" or post.get("single") != expected_single
             or post.get("special_tokens") != expected_specials):
-        raise ValueError("bundle v1 requires a single CLS/sequence/SEP template with type ID zero")
+        raise ValueError("bundle requires a single CLS/sequence/SEP template with type ID zero")
     return int(lower) | (int(lower if strip is None else strip) << 1)
 
 
@@ -248,12 +248,12 @@ def encode_tokenizer(root: Path, architecture: int) -> bytes:
             if effective is not bool(flags & 2):
                 raise ValueError("tokenizer_config.json contradicts BERT accent stripping")
         if any(config.get(key, "right") != "right" for key in ["padding_side", "truncation_side"]):
-            raise ValueError("bundle v1 requires right padding and right truncation")
+            raise ValueError("bundle requires right padding and right truncation")
         mask = config.get("mask_token", "[MASK]")
         if isinstance(mask, dict):
             mask = mask.get("content")
         if mask != "[MASK]" or config.get("extra_special_tokens"):
-            raise ValueError("bundle v1 requires only the five standard BERT special tokens")
+            raise ValueError("bundle requires only the five standard BERT special tokens")
         added = {item["id"]: item for item in tokenizer["added_tokens"]}
         for configured_id, token in config.get("added_tokens_decoder", {}).items():
             if {"id": int(configured_id), **token} != added.get(int(configured_id)):
@@ -286,7 +286,7 @@ def encode_tokenizer(root: Path, architecture: int) -> bytes:
                            ("sep_token", "[SEP]" if kind == 1 else "</s>")]:
         selected = token_id(name, fallback)
         if kind == 1 and selected != vocab_ids[fallback]:
-            raise ValueError(f"bundle v1 requires the standard BERT {name}")
+            raise ValueError(f"bundle requires the standard BERT {name}")
         output += u32(selected)
     output += u32(len(entries))
     for token, score in entries:
@@ -313,7 +313,6 @@ def bake(args: argparse.Namespace) -> None:
         query = load_tower(Path(args.query).resolve(), args.query_id, 1, "query", args.query_prefix)
         towers = (document, query)
         alignment = bytes.fromhex(args.alignment_digest)
-        tokenizer_root = query.root
     else:
         document = load_tower(
             document_root,
@@ -324,18 +323,15 @@ def bake(args: argparse.Namespace) -> None:
         )
         towers = (document,)
         alignment = b""
-        tokenizer_root = document.root
     if len(towers) == 2 and not alignment:
         raise ValueError("a two-tower bundle requires --alignment-digest")
-    tokenizer = encode_tokenizer(tokenizer_root, towers[-1].architecture)
-    if len(towers) == 2 and encode_tokenizer(document_root, document.architecture) != tokenizer:
-        raise ValueError("bundle v1 has one tokenizer; document and query tokenizers must match")
     tensors = tuple(tensor for tower in towers for tensor in tower.tensors)
 
     prefix = bytearray(MAGIC + u32(VERSION) + u32(0) + bytes([len(towers)]) + b"\x00" * 7)
     for tower in towers:
         prefix += encode_tower(tower)
-    prefix += tokenizer
+    for tower in towers:
+        prefix += encode_tokenizer(tower.root, tower.architecture)
     prefix += struct.pack("<d", args.alpha)
     prefix += u32(len(tensors))
     placeholder_descriptors = b"".join(tensor_descriptor(tensor, 0) for tensor in tensors)

@@ -2,10 +2,11 @@
 import json
 from pathlib import Path
 import runpy
+import struct
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from safetensors.torch import save_file
 
 EXPORT = runpy.run_path(str(Path(__file__).with_name("ze-model")))
 
@@ -71,7 +72,7 @@ class WordPieceExport(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.encode(source)
 
-    def test_astra_08_bundle_refuses_distinct_tokenizer_contracts(self):
+    def test_bake_writes_layout_two_with_one_tokenizer_per_tower(self):
         with tempfile.TemporaryDirectory() as directory:
             roots = [Path(directory) / name for name in ["document", "query"]]
             for index, root in enumerate(roots):
@@ -81,16 +82,36 @@ class WordPieceExport(unittest.TestCase):
                     source["model"]["vocab"]["coffee"] = source["model"]["vocab"].pop("cafe")
                 (root / "tokenizer.json").write_text(json.dumps(source))
                 (root / "tokenizer_config.json").write_text("{}")
+                (root / "config.json").write_text(json.dumps({
+                    "model_type": "bert", "hidden_size": 2, "max_position_embeddings": 16,
+                    "num_hidden_layers": 0, "num_attention_heads": 1,
+                    "intermediate_size": 2, "layer_norm_eps": 1e-5,
+                }))
+                save_file({"embeddings.word_embeddings.weight": EXPORT["torch"].zeros(6, 2)},
+                          root / "model.safetensors")
             args = SimpleNamespace(document=str(roots[0]), query=str(roots[1]),
                                    document_id="document", query_id="query", query_prefix="",
-                                   alignment_digest="01", alpha=0.5)
-            def load_tower(root, *unused):
-                return SimpleNamespace(root=root, architecture=1, tensors=())
-            def serialize_tower(*unused):
-                raise AssertionError("distinct tokenizers reached bundle serialization")
-            with patch.dict(EXPORT["bake"].__globals__, load_tower=load_tower, encode_tower=serialize_tower):
-                with self.assertRaises(ValueError):
-                    EXPORT["bake"](args)
+                                   alignment_digest="01", alpha=0.5, output=str(Path(directory) / "pair.zem"))
+            EXPORT["bake"](args)
+            body = Path(args.output).read_bytes()
+            self.assertEqual(struct.unpack_from("<I", body, 8)[0], 2)
+            self.assertEqual(body[16], 2)
+            towers = [EXPORT["load_tower"](root, root.name, role, root.name, "")
+                      for role, root in enumerate(roots)]
+            start = 24 + sum(len(EXPORT["encode_tower"](tower)) for tower in towers)
+            tokenizers = b"".join(EXPORT["encode_tokenizer"](root, 1) for root in roots)
+            self.assertEqual(body[start:start + len(tokenizers)], tokenizers)
+            self.assertEqual(struct.unpack_from("<d", body, start + len(tokenizers))[0], 0.5)
+            self.assertEqual(EXPORT["xxhash"].xxh3_128_intdigest(body[:-16]).to_bytes(16, "little"), body[-16:])
+            args.query = None
+            args.output = str(Path(directory) / "symmetric.zem")
+            EXPORT["bake"](args)
+            body = Path(args.output).read_bytes()
+            self.assertEqual(body[16], 1)
+            start = 24 + len(EXPORT["encode_tower"](towers[0]))
+            tokenizer = EXPORT["encode_tokenizer"](roots[0], 1)
+            self.assertEqual(body[start:start + len(tokenizer)], tokenizer)
+            self.assertEqual(struct.unpack_from("<d", body, start + len(tokenizer))[0], 0.5)
 
     def test_astra_08_export_refuses_conflicting_tokenizer_settings(self):
         for config in [{"do_lower_case": False}, {"strip_accents": False}, {"tokenize_chinese_chars": False},

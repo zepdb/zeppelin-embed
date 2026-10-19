@@ -16,6 +16,7 @@ pub struct FixtureTower<'a> {
     pub architecture: u16,
     pub pooling: u8,
     pub dims: u32,
+    pub vocabulary: &'a [&'a str],
     pub word_vectors: [[f32; 2]; 7],
 }
 
@@ -28,6 +29,9 @@ impl FixtureTower<'_> {
             architecture: 1,
             pooling: 1,
             dims: 2,
+            vocabulary: &[
+                "[PAD]", "[UNK]", "[CLS]", "[SEP]", "the", "bronze", "zeppelin",
+            ],
             word_vectors: [
                 [0.0, 0.0],
                 [0.0, 0.0],
@@ -48,6 +52,9 @@ impl FixtureTower<'_> {
             architecture: 1,
             pooling: 1,
             dims: 2,
+            vocabulary: &[
+                "[PAD]", "[UNK]", "[CLS]", "[SEP]", "the", "bronze", "zeppelin",
+            ],
             word_vectors: [
                 [0.0, 0.0],
                 [0.0, 0.0],
@@ -112,14 +119,16 @@ fn write_fixture_bytes(path: &Path, towers: &[FixtureTower<'_>], alignment: &[u8
 
     let mut body = Vec::new();
     body.extend_from_slice(b"ZEMB0001");
-    push_u32(&mut body, 1);
+    push_u32(&mut body, 2);
     push_u32(&mut body, HEADER_LEN as u32);
     body.push(u8::try_from(towers.len()).expect("fixture tower count fits u8"));
     body.extend_from_slice(&[0; 7]);
     for tower in towers {
         write_tower(&mut body, tower, &tensors);
     }
-    write_tokenizer(&mut body);
+    for tower in towers {
+        write_tokenizer(&mut body, tower.vocabulary);
+    }
     push_f64(&mut body, 0.5);
     push_u32(
         &mut body,
@@ -215,7 +224,7 @@ fn write_tower(output: &mut Vec<u8>, tower: &FixtureTower<'_>, tensors: &[Tensor
     push_u32(output, 0);
 }
 
-fn write_tokenizer(output: &mut Vec<u8>) {
+fn write_tokenizer(output: &mut Vec<u8>, vocabulary: &[&str]) {
     output.push(1);
     output.push(1);
     output.extend_from_slice(&[0; 2]);
@@ -223,9 +232,6 @@ fn write_tokenizer(output: &mut Vec<u8>) {
     push_u32(output, 1);
     push_u32(output, 2);
     push_u32(output, 3);
-    let vocabulary = [
-        "[PAD]", "[UNK]", "[CLS]", "[SEP]", "the", "bronze", "zeppelin",
-    ];
     push_u32(output, vocabulary.len() as u32);
     for token in vocabulary {
         push_string(output, token);

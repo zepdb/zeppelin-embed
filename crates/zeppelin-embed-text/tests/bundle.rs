@@ -37,6 +37,16 @@ fn a_two_tower_bundle_binds_document_and_query_by_name_and_a_one_tower_bundle_se
     let symmetric = Bundle::open(&symmetric_path).expect("open symmetric fixture");
     assert!(symmetric.is_symmetric());
     assert_eq!(symmetric.document_tower(), symmetric.query_tower());
+    assert_eq!(
+        symmetric
+            .tokenize_query("bronze")
+            .expect("symmetric query")
+            .token_ids,
+        symmetric
+            .tokenize_document_chunks(&["bronze".to_owned()])
+            .expect("symmetric document")
+            .token_ids,
+    );
 
     let pair_path = directory.path().join("pair.zem");
     common::write_fixture_bundle(
@@ -120,7 +130,7 @@ fn malformed_bundle_metadata_is_refused_at_the_exact_field_boundary() {
     assert_refused(directory.path(), "truncated", &base[..8], |_| {});
     assert_refused(directory.path(), "magic", &base, |bytes| bytes[0] ^= 1);
     assert_refused(directory.path(), "layout", &base, |bytes| {
-        put_u32(bytes, 8, 2);
+        put_u32(bytes, 8, 3);
     });
     assert_refused(directory.path(), "root-reserved", &base, |bytes| {
         bytes[17] = 1;
@@ -342,4 +352,62 @@ fn rewrite_digest(bytes: &mut [u8]) {
     let trailer = bytes.len() - 16;
     let digest = xxhash_rust::xxh3::xxh3_128(&bytes[..trailer]);
     bytes[trailer..].copy_from_slice(&digest.to_le_bytes());
+}
+
+#[test]
+fn a_two_tower_bundle_loads_distinct_tokenizers_in_tower_order() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("distinct-tokenizers.zem");
+    let mut query = common::FixtureTower::query("query");
+    query.prefix = "";
+    query.vocabulary = &[
+        "[PAD]",
+        "[UNK]",
+        "[CLS]",
+        "[SEP]",
+        "bronze",
+        "the",
+        "queryword",
+    ];
+    // Query first deliberately checks that record order does not imply role.
+    common::write_unchecked_fixture_bundle(
+        &path,
+        &[query, common::FixtureTower::document("document")],
+        b"aligned",
+    );
+    let bundle = Bundle::open(path).expect("distinct tokenizer pair loads");
+    assert_eq!(bundle.query_tower().embedding.model_id, "query");
+    assert_eq!(bundle.document_tower().embedding.model_id, "document");
+    assert_eq!(
+        bundle
+            .tokenize_query("queryword")
+            .expect("query vocabulary")
+            .token_ids,
+        [2, 6, 3]
+    );
+    assert_eq!(
+        bundle
+            .tokenize_document_chunks(&["zeppelin".to_owned()])
+            .expect("document vocabulary")
+            .token_ids,
+        [2, 6, 3]
+    );
+}
+
+#[test]
+fn a_layout_one_bundle_is_refused_with_a_typed_unsupported_version() {
+    // Keep the digest valid so rejection must identify the unsupported version.
+    let mut bytes = include_bytes!("fixtures/ze115/bert.zem").to_vec();
+    put_u32(&mut bytes, 8, 1);
+    rewrite_digest(&mut bytes);
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("layout-one.zem");
+    std::fs::write(&path, bytes).expect("write layout one bundle");
+    assert!(matches!(
+        Bundle::open(path),
+        Err(BundleError::Unsupported {
+            field: "layout version",
+            id: 1
+        })
+    ));
 }

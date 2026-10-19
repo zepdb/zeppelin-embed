@@ -16,6 +16,9 @@
 - `libloading`'s ISC license and the unmaintained `paste` macro advisory are
   recorded deny exceptions forced by the pinned `mlx-rs` graph; neither adds
   runtime model, network, tokenizer, or serialization behavior.
+- `.zem` layout 2 stores all tower records followed by one tokenizer record
+  per tower in the same order; a symmetric bundle stores one of each. Layout 1
+  is refused with a typed unsupported-version error; re-bake pre-launch bundles.
 - Runtime model inputs are the explicit `.zem` layout only. JSON,
   safetensors, network access, and training remain in `tools/ze-model`.
 - The MLX runtime owns one named embed thread and one non-default stream. Calls

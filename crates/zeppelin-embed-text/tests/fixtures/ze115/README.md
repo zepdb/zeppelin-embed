@@ -5,7 +5,9 @@ implementations without downloading trained models. They make no production
 embedding accuracy, cross-model compatibility, or accelerator placement claim.
 
 `generate.py` writes two explicit `.zem` bundles (9,316 and 9,132 bytes) and
-`reference.rs`. Each model has one transformer block, hidden width 4, one
+`reference.rs`. Both use layout 2: one tokenizer record for their one
+document tower, shared by both roles at runtime. Layout 1 is unsupported;
+re-bake old bundles. Each model has one transformer block, hidden width 4, one
 attention head, intermediate width 6, token-type embeddings and a 3-coordinate
 dense head. BERT also has position embeddings; GTE uses RoPE and a gated MLP.
 Weights come from a fixed integer formula. The reference uses independent

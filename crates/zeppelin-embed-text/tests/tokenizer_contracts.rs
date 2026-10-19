@@ -8,6 +8,8 @@ use zeppelin_embed_text::runtime::RuntimeError;
 #[allow(dead_code, clippy::excessive_precision)]
 mod reference;
 
+mod common;
+
 fn with_tokenizer(kind: u8, flags: u8, vocabulary: &[(&str, f32)], max_tokens: u32) -> Vec<u8> {
     let original = include_bytes!("fixtures/ze115/bert.zem");
     let start = reference::POOLING_OFFSET + 35;
@@ -127,5 +129,51 @@ fn bundle_query_padding_preserves_special_tokens_and_refuses_truncation() {
     bad_special[0] = ("", 0.);
     assert!(
         matches!(open(&with_tokenizer(1, 0, &bad_special, 16)), Err(BundleError::Format(detail)) if detail == "tokenizer special token must not be empty")
+    );
+}
+
+#[test]
+fn a_pair_tokenizes_the_same_text_with_each_roles_own_vocabulary() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("distinct-tokenizers.zem");
+    let mut query = common::FixtureTower::query("query");
+    query.prefix = "";
+    query.vocabulary = &[
+        "[PAD]", "[UNK]", "[CLS]", "[SEP]", "bronze", "zeppelin", "the",
+    ];
+    common::write_unchecked_fixture_bundle(
+        &path,
+        &[common::FixtureTower::document("document"), query],
+        b"aligned",
+    );
+    let bundle = Bundle::open(path).expect("distinct tokenizer pair loads");
+    let query_ids = [2, 4, 5, 3];
+    assert_eq!(
+        bundle
+            .tokenize_query("bronze zeppelin")
+            .expect("query tokens")
+            .token_ids,
+        query_ids
+    );
+    assert_eq!(
+        bundle
+            .tokenize_queries(&["bronze zeppelin"])
+            .expect("batch query tokens")
+            .token_ids,
+        query_ids
+    );
+    assert_eq!(
+        bundle
+            .tokenize_query_padded("bronze zeppelin", 5)
+            .expect("padded query tokens")
+            .token_ids,
+        [2, 4, 5, 3, 0]
+    );
+    assert_eq!(
+        bundle
+            .tokenize_document_chunks(&["bronze zeppelin".to_owned()])
+            .expect("document tokens")
+            .token_ids,
+        [2, 5, 6, 3]
     );
 }

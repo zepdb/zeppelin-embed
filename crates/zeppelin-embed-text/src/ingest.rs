@@ -398,7 +398,7 @@ impl TextStore {
         let mut seals = 0_usize;
         for job in jobs {
             let tokenized = tokenize_job(
-                self.bundle.tokenizer(),
+                self.bundle.tokenizer(TowerRole::Document),
                 job,
                 self.bundle.document_tower().embedding.max_tokens as usize,
             )?;
@@ -478,7 +478,7 @@ impl TextStore {
         for worker in 0..worker_count {
             let queue = Arc::clone(&queue);
             let sender = sender.clone();
-            let tokenizer = self.bundle.tokenizer().clone();
+            let tokenizer = self.bundle.tokenizer(TowerRole::Document).clone();
             let control = control.clone();
             let in_flight = Arc::clone(&in_flight);
             let peak = Arc::clone(&peak_in_flight);

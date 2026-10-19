@@ -10,7 +10,9 @@ use crate::tower::{Architecture, ArchitectureConfig, Pooling, TokenBatch, TowerR
 use zeppelin_embed::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
 
 const MAGIC: &[u8; 8] = b"ZEMB0001";
-const LAYOUT_VERSION: u32 = 1;
+/// Layout 2 stores one unchanged tokenizer record per tower, in tower order.
+/// Pre-launch layout 1 bundles are unsupported and must be baked again.
+const LAYOUT_VERSION: u32 = 2;
 const DIGEST_BYTES: usize = 16;
 
 /// Typed `.zem` load failure.
@@ -184,7 +186,8 @@ pub struct Bundle {
     mapping: Arc<MappedFile>,
     document: Arc<TowerSpec>,
     query: Arc<TowerSpec>,
-    tokenizer: ModelTokenizer,
+    document_tokenizer: Arc<ModelTokenizer>,
+    query_tokenizer: Arc<ModelTokenizer>,
     tensors: BTreeMap<String, TensorDescriptor>,
     alignment_digest: Vec<u8>,
     digest: u128,
@@ -244,8 +247,18 @@ impl Bundle {
         } else {
             None
         };
+        let first_role = first.role;
         let (document, query) = bind_towers(first, second)?;
-        let tokenizer = parse_tokenizer(&mut cursor)?;
+        let first_tokenizer = Arc::new(parse_tokenizer(&mut cursor)?);
+        let second_tokenizer = if tower_count == 2 {
+            Arc::new(parse_tokenizer(&mut cursor)?)
+        } else {
+            Arc::clone(&first_tokenizer)
+        };
+        let (document_tokenizer, query_tokenizer) = match first_role {
+            TowerRole::Document => (first_tokenizer, second_tokenizer),
+            TowerRole::Query => (second_tokenizer, first_tokenizer),
+        };
         let alpha = cursor.f64()?;
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
             return Err(BundleError::Format(
@@ -289,7 +302,8 @@ impl Bundle {
             mapping,
             document,
             query,
-            tokenizer,
+            document_tokenizer,
+            query_tokenizer,
             tensors,
             alignment_digest,
             digest: actual_digest,
@@ -317,10 +331,13 @@ impl Bundle {
         Arc::ptr_eq(&self.document, &self.query)
     }
 
-    /// Returns the model tokenizer.
+    /// Returns the tokenizer bound to this role (shared for a symmetric bundle).
     #[must_use]
-    pub(crate) const fn tokenizer(&self) -> &ModelTokenizer {
-        &self.tokenizer
+    pub(crate) fn tokenizer(&self, role: TowerRole) -> &ModelTokenizer {
+        match role {
+            TowerRole::Document => &self.document_tokenizer,
+            TowerRole::Query => &self.query_tokenizer,
+        }
     }
 
     /// Returns one validated tensor descriptor.
@@ -364,7 +381,7 @@ impl Bundle {
     /// Applies the bundle prefix and tokenizer exactly as `query_text` does.
     #[doc(hidden)]
     pub fn tokenize_query(&self, text: &str) -> Result<TokenBatch, RuntimeError> {
-        self.tokenizer.encode_batch(
+        self.tokenizer(TowerRole::Query).encode_batch(
             &[self.query_input(text)],
             self.query.embedding.max_tokens as usize,
         )
@@ -390,7 +407,7 @@ impl Bundle {
             .iter()
             .map(|text| self.query_input(text))
             .collect::<Vec<_>>();
-        self.tokenizer
+        self.tokenizer(TowerRole::Query)
             .encode_batch(&inputs, self.query.embedding.max_tokens as usize)
     }
 
@@ -398,7 +415,7 @@ impl Bundle {
     /// document limit. Chunk formation remains the responsibility of ingestion.
     #[doc(hidden)]
     pub fn tokenize_document_chunks(&self, texts: &[String]) -> Result<TokenBatch, RuntimeError> {
-        self.tokenizer
+        self.tokenizer(TowerRole::Document)
             .encode_batch(texts, self.document.embedding.max_tokens as usize)
     }
 

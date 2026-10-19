@@ -62,7 +62,7 @@ def generate(architecture):
     add('dense.bias', (3,))
 
     raw = {name: struct.pack('<' + 'f' * value.numel(), *value.flatten().tolist()) for name, value in tensors.items()}
-    body = b'ZEMB0001' + U32(1) + U32(8192) + bytes([1]) + bytes(7)
+    body = b'ZEMB0001' + U32(2) + U32(8192) + bytes([1]) + bytes(7)
     body += bytes([0]) + TEXT('ze115-tiny') + TEXT('invented-v1')
     body += BYTES(xxhash.xxh3_128_intdigest(b''.join(raw.values())).to_bytes(16, 'little'))
     dims_offset = len(body)
