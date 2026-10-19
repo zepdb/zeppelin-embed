@@ -351,9 +351,7 @@ fn report_json(report: &BandwidthReport) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BandwidthConfig, measure, measure_method_comparison, parse_performance_core_count,
-    };
+    use super::{BandwidthConfig, measure, parse_performance_core_count};
 
     #[test]
     fn bandwidth_smoke_is_plausible() -> Result<(), Box<dyn std::error::Error>> {
@@ -374,7 +372,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     fn bandwidth_method_comparison_uses_matched_buffers() -> Result<(), Box<dyn std::error::Error>>
     {
-        let comparison = measure_method_comparison(BandwidthConfig::smoke())?;
+        let comparison = super::measure_method_comparison(BandwidthConfig::smoke())?;
         assert_eq!(
             comparison.memchr.buffer_bytes,
             comparison.wide_vector_load.buffer_bytes

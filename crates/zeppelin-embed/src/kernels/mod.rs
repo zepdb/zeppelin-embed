@@ -153,6 +153,7 @@ impl KernelBackendId {
         }
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     const fn arm(self) -> KernelArm {
         match self {
             Self::Scalar => KernelArm::Scalar,

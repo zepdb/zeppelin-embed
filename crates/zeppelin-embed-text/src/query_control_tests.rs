@@ -360,17 +360,21 @@ fn astra_18_native_completion_preserves_control_error_precedence() {
             worker.join().expect("join before assertions");
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             assert!(
-                match (stop, result) {
-                    ("cancel", Err(TextError::Query(QueryError::Cancelled { partial: false }))) =>
-                        true,
-                    ("deadline", Err(TextError::Query(QueryError::Timeout { partial: false }))) =>
-                        true,
+                matches!(
+                    (stop, result),
                     (
+                        "cancel",
+                        Err(TextError::Query(QueryError::Cancelled { partial: false }))
+                    ) | (
+                        "deadline",
+                        Err(TextError::Query(QueryError::Timeout { partial: false }))
+                    ) | (
                         "close",
-                        Err(TextError::Query(QueryError::ReadCancelled { partial: false })),
-                    ) => true,
-                    _ => false,
-                },
+                        Err(TextError::Query(QueryError::ReadCancelled {
+                            partial: false
+                        }))
+                    )
+                ),
                 "stop={stop}, completion={completion}"
             );
             println!("completion control={stop}, native={completion}, calls=1, joined=true");
