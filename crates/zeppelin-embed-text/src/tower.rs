@@ -8,6 +8,8 @@ pub enum Architecture {
     Bert = 1,
     /// Alibaba GTE `NewModel` encoder with RoPE and gated MLP.
     Gte = 2,
+    /// ArcticQuery: factorized token embeddings, GTE blocks, CLS projection.
+    ArcticQuery = 3,
 }
 
 /// Token pooling policy.
@@ -49,10 +51,14 @@ pub struct ArchitectureConfig {
     pub max_positions: u32,
     /// Layer normalization epsilon.
     pub layer_norm_eps: f32,
-    /// RoPE base for GTE.
+    /// RoPE base for GTE and ArcticQuery.
     pub rope_theta: f32,
     /// Dense head output width, or zero when absent.
     pub dense_out: u32,
+    /// ArcticQuery token embedding rank; zero for other architectures.
+    pub embedding_rank: u32,
+    /// ArcticQuery bias-free output width; zero for other architectures.
+    pub output_dimension: u32,
 }
 
 /// Fully declared model tower loaded from bundle metadata.

@@ -3,7 +3,7 @@ use mlx_rs::{Array, Stream};
 
 use crate::runtime::RuntimeError;
 use crate::runtime::mlx::MlxRuntime;
-use crate::tower::{Pooling, TokenBatch};
+use crate::tower::{Architecture, Pooling, TokenBatch};
 
 pub(crate) fn forward(runtime: &MlxRuntime, tokens: &TokenBatch) -> Result<Array, RuntimeError> {
     let stream = runtime.stream()?;
@@ -213,7 +213,15 @@ pub(crate) fn finish(
     if runtime.tower().config.dense_out > 0 {
         pooled = linear(runtime, &pooled, "dense")?;
     }
-    let output_width = if runtime.tower().config.dense_out > 0 {
+    let output_width = if runtime.tower().architecture == Architecture::ArcticQuery {
+        if runtime.tower().config.output_dimension != runtime.tower().config.hidden {
+            pooled = pooled
+                .matmul_device(runtime.tensor("output_projection.weight")?.t(), stream)
+                .map_err(mlx)?;
+        }
+        i32::try_from(runtime.tower().config.output_dimension)
+            .map_err(|_| RuntimeError::Shape("projection width exceeds i32".to_owned()))?
+    } else if runtime.tower().config.dense_out > 0 {
         i32::try_from(runtime.tower().config.dense_out)
             .map_err(|_| RuntimeError::Shape("dense width exceeds i32".to_owned()))?
     } else {

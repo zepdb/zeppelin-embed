@@ -557,6 +557,7 @@ fn parse_tower(cursor: &mut Cursor<'_>) -> Result<TowerSpec, BundleError> {
     let architecture = match cursor.u16()? {
         1 => Architecture::Bert,
         2 => Architecture::Gte,
+        3 => Architecture::ArcticQuery,
         id => return Err(BundleError::UnknownArchitecture { id }),
     };
     let config = ArchitectureConfig {
@@ -569,6 +570,18 @@ fn parse_tower(cursor: &mut Cursor<'_>) -> Result<TowerSpec, BundleError> {
         layer_norm_eps: cursor.f32()?,
         rope_theta: cursor.f32()?,
         dense_out: cursor.u32()?,
+        // Only id 3 appends these fields. Existing layout-2 tower records
+        // retain their exact encoding.
+        embedding_rank: if architecture == Architecture::ArcticQuery {
+            cursor.u32()?
+        } else {
+            0
+        },
+        output_dimension: if architecture == Architecture::ArcticQuery {
+            cursor.u32()?
+        } else {
+            0
+        },
     };
     if dims == 0 || max_tokens == 0 || config.hidden == 0 || config.heads == 0 {
         return Err(BundleError::Format(
@@ -578,6 +591,24 @@ fn parse_tower(cursor: &mut Cursor<'_>) -> Result<TowerSpec, BundleError> {
     if !config.hidden.is_multiple_of(u32::from(config.heads)) {
         return Err(BundleError::Format(
             "hidden width is not divisible by heads".to_owned(),
+        ));
+    }
+    if architecture == Architecture::ArcticQuery
+        && (config.embedding_rank == 0
+            || config.output_dimension == 0
+            || dims > config.output_dimension
+            || config.dense_out != 0
+            || config.type_vocab != 1
+            || pooling != Pooling::Cls
+            || max_tokens > config.max_positions
+            || !(config.hidden / u32::from(config.heads)).is_multiple_of(2)
+            || !config.rope_theta.is_finite()
+            || config.rope_theta <= 0.0
+            || !config.layer_norm_eps.is_finite()
+            || config.layer_norm_eps <= 0.0)
+    {
+        return Err(BundleError::Format(
+            "invalid ArcticQuery configuration".to_owned(),
         ));
     }
     Ok(TowerSpec {

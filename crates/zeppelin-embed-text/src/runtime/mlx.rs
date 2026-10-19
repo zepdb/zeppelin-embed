@@ -302,7 +302,7 @@ impl MlxRuntime {
     fn eval_chunk(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
         let output = match self.tower.architecture {
             Architecture::Bert => bert::forward(self, tokens),
-            Architecture::Gte => gte::forward(self, tokens),
+            Architecture::Gte | Architecture::ArcticQuery => gte::forward(self, tokens),
         }?;
         // CLS pooling and MRL truncation can leave gaps between logical
         // rows. mlx-rs's slice accessor reads consecutive memory and does
@@ -348,6 +348,14 @@ impl Drop for MlxRuntime {
 
 fn required_tensor_names(tower: &TowerSpec) -> Vec<String> {
     let mut names = vec!["embeddings.word_embeddings.weight".to_owned()];
+    if tower.architecture == Architecture::ArcticQuery {
+        if tower.config.embedding_rank != tower.config.hidden {
+            names.push("embeddings.embedding_projection.weight".to_owned());
+        }
+        if tower.config.output_dimension != tower.config.hidden {
+            names.push("output_projection.weight".to_owned());
+        }
+    }
     if tower.config.type_vocab > 0 {
         names.push("embeddings.token_type_embeddings.weight".to_owned());
     }
@@ -380,7 +388,7 @@ fn required_tensor_names(tower: &TowerSpec) -> Vec<String> {
                     names.push(format!("encoder.layer.{layer}.{suffix}"));
                 }
             }
-            Architecture::Gte => {
+            Architecture::Gte | Architecture::ArcticQuery => {
                 for suffix in [
                     "attention.qkv_proj.weight",
                     "attention.qkv_proj.bias",

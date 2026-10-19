@@ -4,7 +4,7 @@ use mlx_rs::ops::indexing::TryIndexOp;
 use crate::arch::bert::{attention, attention_bias, finish, layer_norm, linear, mlx};
 use crate::runtime::RuntimeError;
 use crate::runtime::mlx::MlxRuntime;
-use crate::tower::TokenBatch;
+use crate::tower::{Architecture, TokenBatch};
 
 pub(crate) fn forward(runtime: &MlxRuntime, tokens: &TokenBatch) -> Result<Array, RuntimeError> {
     let stream = runtime.stream()?;
@@ -19,6 +19,18 @@ pub(crate) fn forward(runtime: &MlxRuntime, tokens: &TokenBatch) -> Result<Array
         .tensor("embeddings.word_embeddings.weight")?
         .take_axis_device(&ids, 0, stream)
         .map_err(mlx)?;
+    if runtime.tower().architecture == Architecture::ArcticQuery
+        && runtime.tower().config.embedding_rank != runtime.tower().config.hidden
+    {
+        states = states
+            .matmul_device(
+                runtime
+                    .tensor("embeddings.embedding_projection.weight")?
+                    .t(),
+                stream,
+            )
+            .map_err(mlx)?;
+    }
     if runtime.tower().config.type_vocab > 0 {
         let type_ids = Array::from_slice(&vec![0_i32; tokens.token_ids.len()], &[batch, sequence]);
         let type_states = runtime
