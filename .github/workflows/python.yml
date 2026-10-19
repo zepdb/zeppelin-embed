@@ -25,20 +25,20 @@ jobs:
         with:
           toolchain: 1.93.0
       - uses: Swatinem/rust-cache@v2
-      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --upgrade pip 'setuptools>=77'
       - run: python -m pip install --editable './bindings/python[dev]'
-      - run: cargo build --locked -p zeppelin-embed-ffi
+      - run: cargo build --locked -p zeppelin-embed-ffi --features text
       - name: Ruff
         working-directory: bindings/python
         run: ruff check .
       - name: Strict mypy
         working-directory: bindings/python
         run: mypy
-      - name: Pytest core bindings
+      - name: Pytest core and text bindings (synthetic model + local HTTP cache)
         working-directory: bindings/python
         env:
           ZEPPELIN_EMBED_LIBRARY: ${{ github.workspace }}/target/debug/libzeppelin_embed_ffi.dylib
-        run: pytest tests --ignore=tests/test_text_api.py
+        run: pytest tests
 
   wheels:
     name: Wheel (macOS arm64)

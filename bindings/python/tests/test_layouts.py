@@ -58,6 +58,18 @@ LAYOUTS: dict[str, tuple[int, int, dict[str, int]]] = {
     "ZeQueryRequestV2": (192, 8, {"abi_size": 0, "abi_reserved": 4, "query": 8, "eligible_ids": 168, "eligible_count": 176, "has_eligible": 184, "reserved": 188}),
     "ZeQueryHit": (64, 8, {"has_document": 0, "has_revision": 4, "doc_id": 8, "revision": 24, "score": 32, "has_vector_score": 40, "has_lexical_score": 44, "vector_squared_l2": 48, "lexical_bm25": 56}),
     "ZeQueryResult": (128, 8, {"abi_size": 0, "abi_reserved": 4, "hits": 8, "hit_count": 16, "generation": 24, "mode": 32, "approximate": 36, "exact_rescore": 40, "budget_exhausted": 44, "has_fusion": 48, "fusion_method": 52, "effective_alpha": 56, "fusion_rounds": 64, "has_embedding_epoch": 72, "has_tokenizer_epoch": 76, "embedding_epoch": 80, "tokenizer_epoch": 88, "dims_touched": 96, "bytes_read": 104, "docs_evaluated": 112, "postings_decoded": 120}),
+    "ZeTextOpenModelRequest": (176, 8, {'abi_size': 0, 'abi_reserved': 4, 'store': 8, 'repo': 72, 'repo_len': 80, 'revision': 88, 'revision_len': 96, 'manifest_sha256': 104, 'manifest_sha256_len': 112, 'cache_dir': 120, 'cache_dir_len': 128, 'endpoint': 136, 'endpoint_len': 144, 'offline': 152, 'flags': 156, 'progress': 160, 'user_data': 168}),
+    "ZeTextOpenRequest": (88, 8, {'abi_size': 0, 'abi_reserved': 4, 'store': 8, 'bundle_path': 72, 'bundle_path_len': 80}),
+    "ZeTextDocument": (48, 8, {'abi_size': 0, 'abi_reserved': 4, 'doc_id': 8, 'revision': 24, 'text': 32, 'text_len': 40}),
+    "ZeTextIngestRequest": (48, 8, {'abi_size': 0, 'abi_reserved': 4, 'documents': 8, 'document_count': 16, 'embed_batch_size': 24, 'seal_every': 32, 'channel_capacity': 40}),
+    "ZeTextQueryRequest": (40, 8, {'abi_size': 0, 'abi_reserved': 4, 'text': 8, 'text_len': 16, 'k': 24, 'legs': 32, 'reserved': 36}),
+    "ZeTextQueryHit": (80, 8, {'doc_id': 0, 'revision': 16, 'chunk': 24, 'reserved': 28, 'text': 32, 'text_len': 40, 'score': 48, 'has_vector_score': 56, 'has_lexical_score': 60, 'vector_squared_l2': 64, 'lexical_bm25': 72}),
+    "ZeTextQueryResult": (40, 8, {'abi_size': 0, 'abi_reserved': 4, 'hits': 8, 'hit_count': 16, 'embedding_epoch': 24, 'tokenizer_epoch': 32}),
+    "ZeTextIngestRequestV2": (112, 8, {'abi_size': 0, 'abi_reserved': 4, 'batch': 8, 'chunk_policy': 56, 'reserved': 60, 'chunk_max': 64, 'chunk_overlap': 72, 'maintenance_wall_time_ns': 80, 'maintenance_bytes': 88, 'cancel_token': 96, 'deadline_ns': 104}),
+    "ZeTextIngestReport": (80, 8, {'abi_size': 0, 'abi_reserved': 4, 'generation': 8, 'documents': 16, 'chunks': 24, 'tokens': 32, 'embed_batches': 40, 'seals': 48, 'max_in_flight_batches': 56, 'all_threads_joined': 64, 'reserved': 68, 'elapsed_ns': 72}),
+    "ZeTextQueryRequestV2": (112, 8, {'abi_size': 0, 'abi_reserved': 4, 'query': 8, 'has_tier': 48, 'tier': 52, 'graph_profile': 56, 'scan_rescore': 60, 'graph_ef': 64, 'graph_seed': 72, 'oversample': 80, 'max_candidates_per_segment': 88, 'cancel_token': 96, 'deadline_ns': 104}),
+    "ZeTextQueryOutcome": (336, 8, {'abi_size': 0, 'abi_reserved': 4, 'result': 8, 'diagnostics': 48, 'has_diagnostics': 176, 'has_timings': 180, 'has_backend': 184, 'backend_gpu': 188, 'runtime_name': 192, 'runtime_name_len': 200, 'requested_compute_units': 208, 'has_observed_compute_units': 212, 'observed_cpu_ops': 216, 'observed_gpu_ops': 224, 'observed_neural_engine_ops': 232, 'has_sequence_length': 240, 'reserved': 244, 'sequence_length': 248, 'query_tokens': 256, 'embedding_calls': 264, 'timings_ns': 272}),
+    "ZeTextHealthReport": (64, 8, {'abi_size': 0, 'abi_reserved': 4, 'generation': 8, 'status': 16, 'has_retained_through': 20, 'pending_docs': 24, 'graph_coverage': 32, 'segment_count': 40, 'unresolved_fault_count': 48, 'retained_through': 56}),
 }
 
 

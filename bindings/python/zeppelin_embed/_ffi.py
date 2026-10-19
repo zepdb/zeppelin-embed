@@ -101,6 +101,15 @@ if TEXT_AVAILABLE:
         [Handle, ct.POINTER(s.ZeTextQueryRequest), ct.POINTER(s.ZeTextQueryResult)],
     )
     _bind("ze_text_query_result_free", [ct.POINTER(s.ZeTextQueryResult)])
+    _bind("ze_text_open_model", [ct.POINTER(s.ZeTextOpenModelRequest), ct.POINTER(Handle)])
+    _bind("ze_text_delete", [Handle, ct.POINTER(s.ZeDeleteRequest), ct.POINTER(s.ZeMutationReport)])
+    _bind("ze_text_health", [Handle, ct.POINTER(s.ZeTextHealthReport)])
+    for name in ("ze_text_maintain", "ze_text_maintain_budgeted"):
+        _bind(name, [Handle, ct.POINTER(s.ZeMaintainRequest), ct.POINTER(s.ZeMaintainReport)])
+    _bind("ze_text_ingest_v2", [Handle, ct.POINTER(s.ZeTextIngestRequestV2), ct.POINTER(s.ZeTextIngestReport)])
+    _bind("ze_text_query_v2", [Handle, ct.POINTER(s.ZeTextQueryRequestV2), ct.POINTER(s.ZeTextQueryOutcome)])
+    _bind("ze_text_query_outcome_free", [ct.POINTER(s.ZeTextQueryOutcome)])
+
 
 
 ABI_VERSION = int(LIBRARY.ze_abi_version())

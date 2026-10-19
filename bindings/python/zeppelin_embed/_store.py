@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import ctypes as ct
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, NoReturn, Self, TypeVar
 
 import numpy as np
 
+from . import _ffi
 from . import _structures as s
 from ._errors import (
     ERROR_TYPES,
+    TextUnavailable,
     UnsupportedBuild,
     invalid_argument,
     last_error_message,
@@ -58,12 +60,21 @@ from ._types import (
     StatsReport,
     StoredDocument,
     StoreState,
+    TextHealthReport,
+    TextHealthStatus,
     TextHit,
+    TextIngestReport,
     TextLegs,
     TextQueryResult,
     Tier,
     VectorSpace,
 )
+
+
+def _require_text() -> None:
+    if not _ffi.TEXT_AVAILABLE:
+        raise TextUnavailable("text API is available on macOS arm64 only")
+
 
 EnumValue = TypeVar("EnumValue", bound=IntEnum)
 
@@ -544,6 +555,36 @@ def epoch_identity(epoch: EmbeddingEpoch) -> EpochIdentity:
     del owners
     raise_for_status(status)
     return EpochIdentity(int(report.embedding_epoch), int(report.tokenizer_epoch))
+
+
+def _query_diagnostics(result: s.ZeQueryResult) -> QueryResult:
+    return QueryResult(
+        hits=(),
+        generation=int(result.generation),
+        mode=QueryMode(result.mode),
+        approximate=bool(result.approximate),
+        exact_rescore=bool(result.exact_rescore),
+        budget_exhausted=bool(result.budget_exhausted),
+        fusion=(
+            FusionReport(
+                FusionMethod(result.fusion_method),
+                float(result.effective_alpha),
+                int(result.fusion_rounds),
+            )
+            if result.has_fusion
+            else None
+        ),
+        embedding_epoch=int(result.embedding_epoch)
+        if result.has_embedding_epoch
+        else None,
+        tokenizer_epoch=int(result.tokenizer_epoch)
+        if result.has_tokenizer_epoch
+        else None,
+        dims_touched=int(result.dims_touched),
+        bytes_read=int(result.bytes_read),
+        docs_evaluated=int(result.docs_evaluated),
+        postings_decoded=int(result.postings_decoded),
+    )
 
 
 class CancelToken:
@@ -1127,6 +1168,13 @@ class Store:
         raise_for_status(status, handle)
         return CountResult(int(result.count), int(result.generation))
 
+    def _require_text_store(self) -> None:
+        _require_text()
+        if not self._text:
+            invalid_argument(
+                "text operation requires a store opened with open_text or open_model"
+            )
+
     def ingest_text(
         self,
         ids: Sequence[int | tuple[int, int]],
@@ -1136,10 +1184,18 @@ class Store:
         embed_batch_size: int = 32,
         seal_every: int = 512,
         channel_capacity: int = 2,
-    ) -> MutationReport:
-        """Embed and ingest caller text through the bounded native pipeline."""
-        if not self._text:
-            invalid_argument("ingest_text requires a store opened with open_text")
+        chunk_max: int = 0,
+        chunk_overlap: int = 0,
+        maintenance_wall_time_ns: int = 0,
+        maintenance_bytes: int = 0,
+        cancel_token: CancelToken | None = None,
+        deadline_ns: int = 0,
+    ) -> TextIngestReport:
+        """Ingest text; chunk_max > 0 enables overlapping token windows.
+
+        Cancellation or expiry may leave acknowledged partial writes.
+        """
+        self._require_text_store()
         _same_length("texts", texts, len(ids))
         revisions = [1] * len(ids) if revisions is None else revisions
         _same_length("revisions", revisions, len(ids))
@@ -1166,14 +1222,35 @@ class Store:
             seal_every=seal_every,
             channel_capacity=channel_capacity,
         )
-        report = s.sized(s.ZeMutationReport)
+        controlled = s.ZeTextIngestRequestV2(
+            abi_size=ct.sizeof(s.ZeTextIngestRequestV2),
+            batch=request,
+            chunk_policy=int(chunk_max != 0),
+            chunk_max=chunk_max,
+            chunk_overlap=chunk_overlap,
+            maintenance_wall_time_ns=maintenance_wall_time_ns,
+            maintenance_bytes=maintenance_bytes,
+            cancel_token=0 if cancel_token is None else cancel_token.value,
+            deadline_ns=deadline_ns,
+        )
+        report = s.sized(s.ZeTextIngestReport)
         handle = self._live_handle()
         status = self._call(
-            LIBRARY.ze_text_ingest, handle, ct.byref(request), ct.byref(report)
+            LIBRARY.ze_text_ingest_v2, handle, ct.byref(controlled), ct.byref(report)
         )
         del owners
         raise_for_status(status, handle)
-        return MutationReport(int(report.sequence), int(report.generation))
+        return TextIngestReport(
+            generation=int(report.generation),
+            documents=int(report.documents),
+            chunks=int(report.chunks),
+            tokens=int(report.tokens),
+            embed_batches=int(report.embed_batches),
+            seals=int(report.seals),
+            max_in_flight_batches=int(report.max_in_flight_batches),
+            all_threads_joined=bool(report.all_threads_joined),
+            elapsed_ns=int(report.elapsed_ns),
+        )
 
     def query_text(
         self,
@@ -1181,10 +1258,18 @@ class Store:
         *,
         k: int = 10,
         legs: TextLegs | str = TextLegs.HYBRID,
+        tier: Tier | str | None = None,
+        graph_profile: GraphProfile | str = GraphProfile.SIFT_CLASS,
+        graph_ef: int = 0,
+        graph_seed: int = 0,
+        scan_rescore: bool = False,
+        oversample: int = 0,
+        max_candidates_per_segment: int = 0,
+        cancel_token: CancelToken | None = None,
+        deadline_ns: int = 0,
     ) -> TextQueryResult:
-        """Embed one raw query and return stored text with every hit."""
-        if not self._text:
-            invalid_argument("query_text requires a store opened with open_text")
+        """Query text with core diagnostics and optional relative deadline."""
+        self._require_text_store()
         pointer, length, owner = _text_pointer(text)
         request = s.ZeTextQueryRequest(
             abi_size=ct.sizeof(s.ZeTextQueryRequest),
@@ -1195,14 +1280,34 @@ class Store:
             legs=int(_enum_value(legs, TextLegs, "legs")),
             reserved=0,
         )
-        result = s.sized(s.ZeTextQueryResult)
+        controlled = s.ZeTextQueryRequestV2(
+            abi_size=ct.sizeof(s.ZeTextQueryRequestV2),
+            query=request,
+            has_tier=int(tier is not None),
+            tier=0 if tier is None else int(_enum_value(tier, Tier, "tier")),
+            graph_profile=int(
+                _enum_value(graph_profile, GraphProfile, "graph_profile")
+            ),
+            graph_ef=graph_ef,
+            graph_seed=graph_seed,
+            scan_rescore=int(scan_rescore),
+            oversample=oversample,
+            max_candidates_per_segment=max_candidates_per_segment,
+            cancel_token=0 if cancel_token is None else cancel_token.value,
+            deadline_ns=deadline_ns,
+        )
+        outcome = s.sized(s.ZeTextQueryOutcome)
         handle = self._live_handle()
         primary: BaseException | None = None
         try:
             status = self._call(
-                LIBRARY.ze_text_query, handle, ct.byref(request), ct.byref(result)
+                LIBRARY.ze_text_query_v2,
+                handle,
+                ct.byref(controlled),
+                ct.byref(outcome),
             )
             raise_for_status(status, handle)
+            result = outcome.result
             hits = tuple(
                 TextHit(
                     doc_id=_python_doc_id(hit.doc_id),
@@ -1223,22 +1328,81 @@ class Store:
                 hits=hits,
                 embedding_epoch=int(result.embedding_epoch),
                 tokenizer_epoch=int(result.tokenizer_epoch),
+                diagnostics=_query_diagnostics(outcome.diagnostics)
+                if outcome.has_diagnostics
+                else None,
+                runtime_name=(
+                    ct.string_at(outcome.runtime_name, outcome.runtime_name_len).decode(
+                        "utf-8"
+                    )
+                    if outcome.has_backend
+                    else None
+                ),
+                backend_gpu=bool(outcome.backend_gpu) if outcome.has_backend else None,
+                requested_compute_units=(
+                    ComputeUnits(outcome.requested_compute_units)
+                    if outcome.has_backend
+                    else None
+                ),
+                observed_compute_units=(
+                    (
+                        int(outcome.observed_cpu_ops),
+                        int(outcome.observed_gpu_ops),
+                        int(outcome.observed_neural_engine_ops),
+                    )
+                    if outcome.has_observed_compute_units
+                    else None
+                ),
+                sequence_length=int(outcome.sequence_length)
+                if outcome.has_sequence_length
+                else None,
+                query_tokens=int(outcome.query_tokens),
+                embedding_calls=int(outcome.embedding_calls),
+                timings_ns=tuple(outcome.timings_ns) if outcome.has_timings else None,
             )
         except BaseException as error:
             primary = error
             raise
         finally:
             del owner
-            free_status = self._call(LIBRARY.ze_text_query_result_free, ct.byref(result))
+            free_status = self._call(
+                LIBRARY.ze_text_query_outcome_free, ct.byref(outcome)
+            )
             if free_status != 0:
                 if primary is None:
                     raise_for_status(free_status, handle)
                 assert primary is not None
                 primary.add_note(
-                    f"ze_text_query_result_free: {last_error_message(handle)}"
+                    f"ze_text_query_outcome_free: {last_error_message(handle)}"
                 )
 
+    def delete_text(self, doc_ids: Sequence[int | tuple[int, int]]) -> MutationReport:
+        """Delete every chunk of the supplied caller document ids."""
+        self._require_text_store()
+        return self.delete(doc_ids)
+
+    def health(self) -> TextHealthReport:
+        self._require_text_store()
+        handle = self._live_handle()
+        report = s.sized(s.ZeTextHealthReport)
+        raise_for_status(
+            self._call(LIBRARY.ze_text_health, handle, ct.byref(report)), handle
+        )
+        return TextHealthReport(
+            generation=int(report.generation),
+            status=TextHealthStatus(report.status),
+            pending_docs=int(report.pending_docs),
+            graph_coverage=float(report.graph_coverage),
+            segment_count=int(report.segment_count),
+            unresolved_fault_count=int(report.unresolved_fault_count),
+            retained_through=int(report.retained_through)
+            if report.has_retained_through
+            else None,
+        )
+
     def delete(self, doc_ids: Sequence[int | tuple[int, int]]) -> MutationReport:
+        if self._text:
+            self._require_text_store()
         handle = self._live_handle()
         ids = (s.ZeDocId * len(doc_ids))(*[_doc_id(value) for value in doc_ids])
         request = s.ZeDeleteRequest(
@@ -1249,7 +1413,12 @@ class Store:
         )
         report = s.sized(s.ZeMutationReport)
         raise_for_status(
-            self._call(LIBRARY.ze_delete, handle, ct.byref(request), ct.byref(report)),
+            self._call(
+                LIBRARY.ze_text_delete if self._text else LIBRARY.ze_delete,
+                handle,
+                ct.byref(request),
+                ct.byref(report),
+            ),
             handle,
         )
         return MutationReport(int(report.sequence), int(report.generation))
@@ -1595,6 +1764,8 @@ class Store:
         )
 
     def maintain(self, *, wall_time_ns: int, bytes: int) -> MaintainReport:
+        if self._text:
+            self._require_text_store()
         handle = self._live_handle()
         request = s.ZeMaintainRequest(
             abi_size=ct.sizeof(s.ZeMaintainRequest),
@@ -1604,7 +1775,14 @@ class Store:
         )
         report = s.sized(s.ZeMaintainReport)
         raise_for_status(
-            self._call(LIBRARY.ze_maintain, handle, ct.byref(request), ct.byref(report)),
+            self._call(
+                LIBRARY.ze_text_maintain_budgeted
+                if self._text
+                else LIBRARY.ze_maintain,
+                handle,
+                ct.byref(request),
+                ct.byref(report),
+            ),
             handle,
         )
         return MaintainReport(
@@ -1889,6 +2067,7 @@ def open_text(
     max_temp_bytes: int = (1 << 64) - 1,
 ) -> Store:
     """Open a text store and immutable model bundle through the text ABI."""
+    _require_text()
     request, path_owner = _open_request(
         path,
         access_mode,
@@ -1909,5 +2088,86 @@ def open_text(
     handle = ct.c_uint64()
     status = LIBRARY.ze_text_open(ct.byref(text_request), ct.byref(handle))
     del path_owner, bundle_owner
+    raise_for_status(status, int(handle.value))
+    return Store(int(handle.value), text=True)
+
+
+# Reserved for ZE-500: open_model requires explicit pins until an owner-selected ModelRef exists.
+DEFAULT_MODEL_REF: None = None
+
+
+def open_model(
+    path: str | Path,
+    *,
+    repo: str,
+    revision: str,
+    manifest_sha256: str,
+    cache_dir: str | Path | None = None,
+    offline: bool = False,
+    progress: Callable[[int, int], None] | None = None,
+    access_mode: AccessMode | str = AccessMode.READ_WRITE,
+    durability: DurabilityMode | str = DurabilityMode.DERIVED,
+    commit_tier: CommitTier | str = CommitTier.ORDERED,
+    reader_drain_timeout_ms: int = 250,
+    max_resident_bytes: int = (1 << 64) - 1,
+    max_temp_bytes: int = (1 << 64) - 1,
+) -> Store:
+    """Download/verify a pinned HF model, then open its text store.
+
+    Progress runs synchronously at file boundaries; it must not reenter model resolution.
+    Callback exceptions are propagated after native resolution returns.
+    """
+    _require_text()
+    request, path_owner = _open_request(
+        path,
+        access_mode,
+        durability,
+        commit_tier,
+        reader_drain_timeout_ms,
+        max_resident_bytes,
+        max_temp_bytes,
+    )
+    model = s.ZeTextOpenModelRequest(
+        abi_size=ct.sizeof(s.ZeTextOpenModelRequest),
+        store=request,
+        offline=int(offline),
+    )
+    owners: list[object] = [path_owner]
+    for field, value in (
+        ("repo", repo),
+        ("revision", revision),
+        ("manifest_sha256", manifest_sha256),
+        ("cache_dir", "" if cache_dir is None else str(cache_dir)),
+    ):
+        pointer, length, owner = _text_pointer(value)
+        setattr(model, field, pointer)
+        setattr(model, field + "_len", length)
+        if owner is not None:
+            owners.append(owner)
+    callback_errors: list[BaseException] = []
+
+    def on_progress(_user_data: object, done: int, total: int) -> None:
+        if progress is not None and not callback_errors:
+            try:
+                progress(done, total)
+            except BaseException as error:
+                callback_errors.append(error)
+
+    callback = (
+        s.ModelProgressCallback(on_progress)
+        if progress is not None
+        else s.ModelProgressCallback()
+    )
+    model.progress = callback
+    handle = ct.c_uint64()
+    status = LIBRARY.ze_text_open_model(ct.byref(model), ct.byref(handle))
+    if callback_errors:
+        if handle.value:
+            close_status = LIBRARY.ze_close(handle.value)
+            if close_status:
+                callback_errors[0].add_note(
+                    f"ze_close: {last_error_message(int(handle.value))}"
+                )
+        raise callback_errors[0]
     raise_for_status(status, int(handle.value))
     return Store(int(handle.value), text=True)

@@ -51,7 +51,7 @@ jobs:
       - uses: pypa/cibuildwheel@v4.1.1
         env:
           CIBW_TEST_COMMAND: python -I bindings/python/tests/installed_smoke.py
-          CIBW_TEST_SOURCES: bindings/python/tests/installed_smoke.py
+          CIBW_TEST_SOURCES: "bindings/python/tests/installed_smoke.py crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem"
         with:
           package-dir: bindings/python
           output-dir: wheelhouse

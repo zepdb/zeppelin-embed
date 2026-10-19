@@ -343,6 +343,46 @@ class TextQueryResult:
     hits: tuple[TextHit, ...]
     embedding_epoch: int
     tokenizer_epoch: int
+    diagnostics: QueryResult | None = None
+    runtime_name: str | None = None
+    backend_gpu: bool | None = None
+    requested_compute_units: ComputeUnits | None = None
+    observed_compute_units: tuple[int, int, int] | None = None
+    sequence_length: int | None = None
+    query_tokens: int = 0
+    embedding_calls: int = 0
+    timings_ns: tuple[int, ...] | None = None
+
+
+class TextHealthStatus(IntEnum):
+    UNCHECKED = 0
+    HEALTHY = 1
+    DEGRADED = 2
+    UNHEALTHY = 3
+
+
+@dataclass(frozen=True)
+class TextHealthReport:
+    generation: int
+    status: TextHealthStatus
+    pending_docs: int
+    graph_coverage: float
+    segment_count: int
+    unresolved_fault_count: int
+    retained_through: int | None
+
+
+@dataclass(frozen=True)
+class TextIngestReport:
+    generation: int
+    documents: int
+    chunks: int
+    tokens: int
+    embed_batches: int
+    seals: int
+    max_in_flight_batches: int
+    all_threads_joined: bool
+    elapsed_ns: int
 
 
 @dataclass(frozen=True)

@@ -749,3 +749,120 @@ class ZeWarmLexicalRequest(ct.Structure):
         ("cancel_token", ct.c_uint64),
         ("deadline_ns", ct.c_uint64),
     ]
+
+
+ModelProgressCallback = ct.CFUNCTYPE(None, ct.c_void_p, ct.c_uint64, ct.c_uint64)
+
+
+class ZeTextOpenModelRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("store", ZeOpenRequest),
+        ("repo", UInt8Pointer),
+        ("repo_len", ct.c_size_t),
+        ("revision", UInt8Pointer),
+        ("revision_len", ct.c_size_t),
+        ("manifest_sha256", UInt8Pointer),
+        ("manifest_sha256_len", ct.c_size_t),
+        ("cache_dir", UInt8Pointer),
+        ("cache_dir_len", ct.c_size_t),
+        ("endpoint", UInt8Pointer),
+        ("endpoint_len", ct.c_size_t),
+        ("offline", ct.c_uint32),
+        ("flags", ct.c_uint32),
+        ("progress", ModelProgressCallback),
+        ("user_data", ct.c_void_p),
+    ]
+
+
+class ZeTextHealthReport(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("generation", ct.c_uint64),
+        ("status", ct.c_int32),
+        ("has_retained_through", ct.c_uint32),
+        ("pending_docs", ct.c_uint64),
+        ("graph_coverage", ct.c_double),
+        ("segment_count", ct.c_uint64),
+        ("unresolved_fault_count", ct.c_uint64),
+        ("retained_through", ct.c_int64),
+    ]
+
+
+class ZeTextIngestRequestV2(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("batch", ZeTextIngestRequest),
+        ("chunk_policy", ct.c_int32),
+        ("reserved", ct.c_uint32),
+        ("chunk_max", ct.c_size_t),
+        ("chunk_overlap", ct.c_size_t),
+        ("maintenance_wall_time_ns", ct.c_uint64),
+        ("maintenance_bytes", ct.c_uint64),
+        ("cancel_token", ct.c_uint64),
+        ("deadline_ns", ct.c_uint64),
+    ]
+
+
+class ZeTextIngestReport(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("generation", ct.c_uint64),
+        ("documents", ct.c_uint64),
+        ("chunks", ct.c_uint64),
+        ("tokens", ct.c_uint64),
+        ("embed_batches", ct.c_uint64),
+        ("seals", ct.c_uint64),
+        ("max_in_flight_batches", ct.c_uint64),
+        ("all_threads_joined", ct.c_uint32),
+        ("reserved", ct.c_uint32),
+        ("elapsed_ns", ct.c_uint64),
+    ]
+
+
+class ZeTextQueryRequestV2(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("query", ZeTextQueryRequest),
+        ("has_tier", ct.c_uint32),
+        ("tier", ct.c_int32),
+        ("graph_profile", ct.c_int32),
+        ("scan_rescore", ct.c_uint32),
+        ("graph_ef", ct.c_size_t),
+        ("graph_seed", ct.c_uint64),
+        ("oversample", ct.c_size_t),
+        ("max_candidates_per_segment", ct.c_size_t),
+        ("cancel_token", ct.c_uint64),
+        ("deadline_ns", ct.c_uint64),
+    ]
+
+
+class ZeTextQueryOutcome(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("result", ZeTextQueryResult),
+        ("diagnostics", ZeQueryResult),
+        ("has_diagnostics", ct.c_uint32),
+        ("has_timings", ct.c_uint32),
+        ("has_backend", ct.c_uint32),
+        ("backend_gpu", ct.c_uint32),
+        ("runtime_name", UInt8Pointer),
+        ("runtime_name_len", ct.c_size_t),
+        ("requested_compute_units", ct.c_int32),
+        ("has_observed_compute_units", ct.c_uint32),
+        ("observed_cpu_ops", ct.c_uint64),
+        ("observed_gpu_ops", ct.c_uint64),
+        ("observed_neural_engine_ops", ct.c_uint64),
+        ("has_sequence_length", ct.c_uint32),
+        ("reserved", ct.c_uint32),
+        ("sequence_length", ct.c_size_t),
+        ("query_tokens", ct.c_uint64),
+        ("embedding_calls", ct.c_uint64),
+        ("timings_ns", ct.c_uint64 * 8),
+    ]

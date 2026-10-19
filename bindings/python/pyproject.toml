@@ -41,8 +41,8 @@ files = ["zeppelin_embed"]
 build = "cp311-macosx_arm64"
 build-verbosity = 1
 test-command = "python -I bindings/python/tests/installed_smoke.py"
-test-sources = ["bindings/python/tests/installed_smoke.py"]
+test-sources = ["bindings/python/tests/installed_smoke.py", "crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem"]
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }

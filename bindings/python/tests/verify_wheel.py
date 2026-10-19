@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +34,10 @@ def verify(wheel: Path) -> None:
         names = archive.namelist()
         assert native_member in names, f"wheel is missing {native_member}"
         assert "zeppelin_embed/LICENSE" in names
+        assert "zeppelin_embed/__init__.pyi" in names
+        assert "zeppelin_embed/py.typed" in names
+        if sys.platform == "darwin" and platform.machine() == "arm64":
+            assert "zeppelin_embed/.dylibs/mlx.metallib" in names
         wheel_metadata = next(
             name for name in names if name.endswith(".dist-info/WHEEL")
         )
@@ -67,9 +73,19 @@ def verify(wheel: Path) -> None:
         clean_env = os.environ.copy()
         clean_env.pop("PYTHONPATH", None)
         clean_env.pop("ZEPPELIN_EMBED_LIBRARY", None)
-        smoke = Path(__file__).with_name("installed_smoke.py")
+        smoke = root / "installed_smoke.py"
+        shutil.copy2(Path(__file__).with_name("installed_smoke.py"), smoke)
+        bundle = root / "gte.zem"
+        shutil.copy2(
+            Path(__file__).resolve().parents[3]
+            / "crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem",
+            bundle,
+        )
         subprocess.run(
-            [str(python), "-I", str(smoke)], check=True, cwd=root, env=clean_env
+            [str(python), "-I", str(smoke), "--bundle", str(bundle)],
+            check=True,
+            cwd=root,
+            env=clean_env,
         )
 
         missing = root / "missing-native-library"

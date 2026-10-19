@@ -2,7 +2,7 @@
 
 from . import _errors as _error_module
 from ._errors import *  # noqa: F403
-from ._ffi import ABI_VERSION
+from ._ffi import ABI_VERSION, TEXT_AVAILABLE
 from ._library import LIBRARY_PATH
 from ._store import (
     CancelToken,
@@ -10,6 +10,7 @@ from ._store import (
     epoch_identity,
     list_namespaces,
     open,
+    open_model,
     open_namespace,
     open_text,
     open_with_epoch,
@@ -54,7 +55,10 @@ from ._types import (
     StatsReport,
     StoredDocument,
     StoreState,
+    TextHealthReport,
+    TextHealthStatus,
     TextHit,
+    TextIngestReport,
     TextLegs,
     TextQueryResult,
     Tier,
@@ -64,6 +68,11 @@ from ._types import (
 __all__ = [  # noqa: PLE0604
     *_error_module.__all__,
     "ABI_VERSION",
+    "TEXT_AVAILABLE",
+    "open_model",
+    "TextHealthReport",
+    "TextHealthStatus",
+    "TextIngestReport",
     "AccessMode",
     "AttributeDefinition",
     "AttributeType",

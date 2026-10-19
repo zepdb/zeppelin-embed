@@ -27,12 +27,47 @@ wheel loads its bundled library from `zeppelin_embed/.dylibs`. Source-tree use
 also recognizes the workspace's debug and release Cargo outputs for development.
 An invalid override fails loudly and does not fall back to another library.
 
-The v0.6.0 wheel supports macOS 11 or newer on Apple silicon. Other platforms
-are not part of this PyPI release.
+The arm64 wheel (the only published wheel, including text) requires macOS 14 or
+newer on Apple silicon. Other platforms are not part of this PyPI release.
 
-The bundled wheel library does not enable the optional Rust `text` feature.
-`open_text` therefore requires a compatible feature-enabled library supplied
-through `ZEPPELIN_EMBED_LIBRARY`.
+## Text API (macOS arm64)
+
+Apple silicon wheels include the text feature and MLX's `mlx.metallib` beside
+its native library. Other builds raise `ze.TextUnavailable` with
+"text API is available on macOS arm64 only" from text entry points.
+No separate MLX install or shader-library path is needed.
+
+```python
+import zeppelin_embed as ze
+
+with ze.open_text("text-store", "model.zem") as store:
+    store.ingest_text([7, 9], ["the bronze zeppelin", "marine biology field notes"])
+    for legs in ("dense", "lexical", "hybrid"):
+        result = store.query_text("bronze zeppelin", k=1, legs=legs, tier="exact")
+        print(result.hits, result.diagnostics)
+    store.ingest_text([7], ["bronze"], revisions=[2])  # replace the previous revision
+    store.delete_text([9])  # removes every chunk belonging to document 9
+    print(store.health())
+    store.maintain(wall_time_ns=10_000_000, bytes=1_000_000)
+```
+
+To download and verify a model from Hugging Face, call
+`ze.open_model("text-store", repo=repo, revision=commit_sha,
+manifest_sha256=manifest_sha256, cache_dir=None, offline=False, progress=None)`.
+All three pins are required; there is no default model until ZE-500.
+The native resolver honors `ZE_MODEL_CACHE`, `ZE_MODEL_OFFLINE`, and
+`ZE_MODEL_ENDPOINT`. `progress(done, total)` runs synchronously at file boundaries
+and must not reenter model resolution; callback exceptions propagate after resolution.
+`offline=True` verifies a cached bundle and raises `ze.NotFound` on a cache miss.
+
+`ingest_text` and `query_text` accept `cancel_token=ze.CancelToken()` or
+`deadline_ns` (a relative monotonic budget), mutually exclusive. Cancellation
+raises `ze.Cancelled`; expiry raises `ze.Timeout`. Ingest may leave acknowledged
+partial writes. Its report includes generation, documents, chunks, tokens, batches,
+and worker completion. Set `chunk_max` and `chunk_overlap` to split long documents
+into token windows. Queries return stored text, core diagnostics, backend facts,
+and stage timings when the native runtime enables them. Text `maintain` executes
+one budgeted native maintenance call.
 
 ## Development
 
@@ -40,20 +75,32 @@ The package is built from the repository because the wheel build compiles
 `crates/zeppelin-embed-ffi` with the locked Rust 1.93 dependency graph:
 
 ```bash
-python -m build --wheel python
+python -m pip wheel --no-deps ./bindings/python -w wheelhouse
 ```
 
-Run the core binding checks against an explicit development library:
+Run all binding checks on macOS arm64, outside a process sandbox (MLX uses Metal):
 
 ```bash
-cargo build --locked -p zeppelin-embed-ffi
+cargo build --locked -p zeppelin-embed-ffi --features text
 ZEPPELIN_EMBED_LIBRARY="$PWD/target/debug/libzeppelin_embed_ffi.dylib" \
-  python -m pytest bindings/python/tests --ignore=bindings/python/tests/test_text_api.py
+  python -m pytest bindings/python/tests
 ```
 
-On Linux, use `libzeppelin_embed_ffi.so` in that command. The text API test also
-requires the repository's baked model fixture and a library built with
-`--features text`.
+The text tests use the committed synthetic bundle
+`crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem` and a local HTTP server
+for model download, verified cache reuse, and offline behavior. No real HF
+ModelRef is selected yet; cached real-model CI coverage follows in ZE-500.
+
+Build and verify the installed wheel in a fresh venv and temporary directory:
+
+```bash
+python -m pip wheel --no-deps ./bindings/python -w wheelhouse
+python bindings/python/tests/verify_wheel.py wheelhouse/zeppelin_embed-*.whl
+```
+
+The verifier clears source-library overrides, copies the synthetic fixture into
+the temporary directory, and tests ingest plus all three query legs using only
+the installed package and its colocated shader library.
 
 ## Releasing
 

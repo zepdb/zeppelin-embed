@@ -89,6 +89,10 @@ for _code, _name in enumerate(ERROR_NAMES):
     ERROR_TYPES[_code] = _type
 
 
+class TextUnavailable(ZeppelinError):
+    """The loaded library does not provide the macOS arm64 text API."""
+
+
 class UnsupportedBuild(ZeppelinError):
     """Graph operations are unavailable in the graph-free Python wheel."""
 
@@ -150,6 +154,7 @@ __all__ = [  # noqa: PLE0604
     "ErrorCode",
     "ZeppelinError",
     "UnsupportedBuild",
+    "TextUnavailable",
     "GraphUnsupportedBuild",
     "error_code_name",
     "last_error_message",

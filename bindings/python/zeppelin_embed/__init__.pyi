@@ -1,12 +1,14 @@
 from ._errors import *  # noqa: F403
 from ._errors import UnsupportedBuild as UnsupportedBuild
 from ._ffi import ABI_VERSION as ABI_VERSION
+from ._ffi import TEXT_AVAILABLE as TEXT_AVAILABLE
 from ._library import LIBRARY_PATH as LIBRARY_PATH
 from ._store import CancelToken as CancelToken
 from ._store import Store as Store
 from ._store import epoch_identity as epoch_identity
 from ._store import list_namespaces as list_namespaces
 from ._store import open as open
+from ._store import open_model as open_model
 from ._store import open_namespace as open_namespace
 from ._store import open_text as open_text
 from ._store import open_with_epoch as open_with_epoch
@@ -49,7 +51,10 @@ from ._types import StateReport as StateReport
 from ._types import StatsReport as StatsReport
 from ._types import StoredDocument as StoredDocument
 from ._types import StoreState as StoreState
+from ._types import TextHealthReport as TextHealthReport
+from ._types import TextHealthStatus as TextHealthStatus
 from ._types import TextHit as TextHit
+from ._types import TextIngestReport as TextIngestReport
 from ._types import TextLegs as TextLegs
 from ._types import TextQueryResult as TextQueryResult
 from ._types import Tier as Tier
