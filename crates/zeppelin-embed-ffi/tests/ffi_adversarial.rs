@@ -448,6 +448,11 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         name: "ze_text_query_outcome_free",
         coverage: AbiCoverage::InvalidProbe(probe_text_query_outcome_free),
     },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_observed_compute_units",
+        coverage: AbiCoverage::InvalidProbe(probe_text_observed_compute_units),
+    },
 ];
 
 fn expected_error(code: ZeErrorCode) -> CellResult {
@@ -1380,6 +1385,29 @@ fn probe_text_delete(_: &MatrixContext) -> ProbeResult {
 #[cfg(feature = "text")]
 fn probe_text_health(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_text_health(u64::MAX, std::ptr::null_mut()))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_observed_compute_units(_: &MatrixContext) -> ProbeResult {
+    assert_eq!(
+        ze_text_observed_compute_units(u64::MAX, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    let mut out: ZeTextObservedComputeUnits = common::sized_zeroed();
+    let invalid_handle = ze_text_observed_compute_units(u64::MAX, &mut out);
+    assert_eq!(invalid_handle, ZeErrorCode::ZeErrInvalidHandle);
+    for abi_size in [
+        0,
+        size_of::<ZeTextObservedComputeUnits>() as u32 - 1,
+        u32::MAX,
+    ] {
+        out.abi_size = abi_size;
+        assert_eq!(
+            ze_text_observed_compute_units(u64::MAX, &mut out),
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+    }
+    ProbeResult::Status(invalid_handle)
 }
 
 #[cfg(feature = "text")]

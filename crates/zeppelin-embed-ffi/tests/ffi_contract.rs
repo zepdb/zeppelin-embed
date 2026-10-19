@@ -1766,6 +1766,11 @@ fn every_text_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeTextHealthReport, 64, 8, { abi_size: 0, abi_reserved: 4, generation: 8, status: 16, has_retained_through: 20, pending_docs: 24, graph_coverage: 32, segment_count: 40, unresolved_fault_count: 48, retained_through: 56 });
 }
 
+#[test]
+fn text_observed_compute_units_has_frozen_layout() {
+    assert_layout!(ZeTextObservedComputeUnits, 48, 8, { abi_size: 0, abi_reserved: 4, cpu_ops: 8, gpu_ops: 16, neural_engine_ops: 24, other_ops: 32, has_observed_compute_units: 40, reserved: 44 });
+}
+
 #[cfg(feature = "text")]
 #[test]
 fn expired_text_ingest_deadline_matches_core_query_timeout() {

@@ -2049,3 +2049,25 @@ pub struct ZeTextHealthReport {
     /// Last retention range upper bound, or zero.
     pub retained_through: i64,
 }
+
+/// Caller-owned CoreML compute-plan placement counts, not an execution trace.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextObservedComputeUnits {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Operations planned for the CPU; zero when absent.
+    pub cpu_ops: u64,
+    /// Operations planned for the GPU; zero when absent.
+    pub gpu_ops: u64,
+    /// Operations planned for the Neural Engine; zero when absent.
+    pub neural_engine_ops: u64,
+    /// Operations with another or unknown preferred device; zero when absent.
+    pub other_ops: u64,
+    /// One when placement is available; zero without CoreML or before macOS 14.4.
+    pub has_observed_compute_units: u32,
+    /// Must be zero; explicit trailing alignment.
+    pub reserved: u32,
+}

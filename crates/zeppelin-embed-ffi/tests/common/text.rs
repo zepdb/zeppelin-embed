@@ -16,6 +16,10 @@ impl TextStore {
             include_bytes!("../../../zeppelin-embed-text/tests/fixtures/ze115/bert.zem"),
         )
         .expect("text model fixture");
+        Self::with_bundle(directory, &model)
+    }
+
+    pub fn with_bundle(directory: tempfile::TempDir, model: &std::path::Path) -> Self {
         let path = directory
             .path()
             .join("store")

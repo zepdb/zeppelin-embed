@@ -2073,6 +2073,44 @@ typedef struct ZeTextQueryOutcome {
 } ZeTextQueryOutcome;
 
 /*
+ Caller-owned CoreML compute-plan placement counts, not an execution trace.
+ */
+typedef struct ZeTextObservedComputeUnits {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Operations planned for the CPU; zero when absent.
+     */
+    uint64_t cpu_ops;
+    /*
+     Operations planned for the GPU; zero when absent.
+     */
+    uint64_t gpu_ops;
+    /*
+     Operations planned for the Neural Engine; zero when absent.
+     */
+    uint64_t neural_engine_ops;
+    /*
+     Operations with another or unknown preferred device; zero when absent.
+     */
+    uint64_t other_ops;
+    /*
+     One when placement is available; zero without CoreML or before macOS 14.4.
+     */
+    uint32_t has_observed_compute_units;
+    /*
+     Must be zero; explicit trailing alignment.
+     */
+    uint32_t reserved;
+} ZeTextObservedComputeUnits;
+
+/*
  Store lifecycle state report.
  */
 typedef struct ZeStateReport {
@@ -3890,6 +3928,14 @@ ze_error_code ze_text_query_v2(ze_handle handle,
  clears the complete outcome. Repeated frees of the cleared outcome succeed.
  */
 ze_error_code ze_text_query_outcome_free(struct ZeTextQueryOutcome *result);
+
+/*
+ Explicitly loads CoreML compute-plan placement diagnostics, lazily cached
+ with a 30-second load bound. Queries never load the plan. Returns zero counts
+ and a zero presence flag when placement is unavailable. Owns no allocation.
+ */
+ze_error_code ze_text_observed_compute_units(ze_handle handle,
+                                             struct ZeTextObservedComputeUnits *out);
 
 /*
  Releases the slot and store. A poisoned handle is still released and

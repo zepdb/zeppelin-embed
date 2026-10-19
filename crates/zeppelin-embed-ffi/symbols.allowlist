@@ -88,3 +88,4 @@ ze_text_maintain_budgeted
 ze_text_ingest_v2
 ze_text_query_v2
 ze_text_query_outcome_free
+ze_text_observed_compute_units

@@ -3118,6 +3118,49 @@ pub extern "C" fn ze_text_query_outcome_free(result: *mut ZeTextQueryOutcome) ->
     })
 }
 
+/// Explicitly loads CoreML compute-plan placement diagnostics, lazily cached
+/// with a 30-second load bound. Queries never load the plan. Returns zero counts
+/// and a zero presence flag when placement is unavailable. Owns no allocation.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_observed_compute_units(
+    handle: ZeHandle,
+    out: *mut ZeTextObservedComputeUnits,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_text_observed_compute_units");
+        finish(
+            Some(handle),
+            (|| {
+                let abi_size = marshal::validate_output(out)?;
+                let access = text_registry::lookup(handle)?;
+                let observed = access
+                    .store
+                    .observed_compute_units()
+                    .map_err(FfiError::text)?;
+                let mut result = ZeTextObservedComputeUnits {
+                    abi_size,
+                    abi_reserved: 0,
+                    cpu_ops: 0,
+                    gpu_ops: 0,
+                    neural_engine_ops: 0,
+                    other_ops: 0,
+                    has_observed_compute_units: bool_u32(observed.is_some()),
+                    reserved: 0,
+                };
+                if let Some(units) = observed {
+                    result.cpu_ops = units.cpu_ops;
+                    result.gpu_ops = units.gpu_ops;
+                    result.neural_engine_ops = units.neural_engine_ops;
+                    result.other_ops = units.other_ops;
+                }
+                marshal::write_output(out, result);
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Releases the slot and store. A poisoned handle is still released and
 /// returns `ZE_ERR_POISONED`. All other calls reject poison before touching
 /// the store.
