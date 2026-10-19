@@ -1879,3 +1879,171 @@ pub struct ZeNamespaceBatchLiveRequest {
     /// Caller-owned array of batch.participant_count live store handles.
     pub handles: *const ZeHandle,
 }
+
+// ZE-505: additive text ABI. Keep this block together.
+
+/// Text ingest options and cooperative cancellation or deadline.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextIngestRequestV2 {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Existing bounded batch request, with its own initialized ABI prefix.
+    pub batch: ZeTextIngestRequest,
+    /// 0 rejects overlong documents; 1 splits token windows.
+    pub chunk_policy: i32,
+    /// Must be zero.
+    pub reserved: u32,
+    /// Maximum source tokens per chunk; zero for policy 0.
+    pub chunk_max: usize,
+    /// Overlap tokens; zero for policy 0.
+    pub chunk_overlap: usize,
+    /// Maintenance wall budget per slice; zero disables ingest maintenance.
+    pub maintenance_wall_time_ns: u64,
+    /// Maintenance bytes per slice; zero disables ingest maintenance. Ingest retains Rust completion semantics.
+    pub maintenance_bytes: u64,
+    /// Existing registry token, or zero.
+    pub cancel_token: ZeCancelToken,
+    /// Relative monotonic deadline in nanoseconds; zero disables. Mutually exclusive with cancel_token.
+    pub deadline_ns: u64,
+}
+
+/// Complete caller-owned report from one successful text ingest.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextIngestReport {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Final acknowledged store generation.
+    pub generation: u64,
+    /// Caller documents consumed.
+    pub documents: u64,
+    /// Chunk rows written.
+    pub chunks: u64,
+    /// Model tokens evaluated, including padding.
+    pub tokens: u64,
+    /// Model batch calls.
+    pub embed_batches: u64,
+    /// Periodic seal calls.
+    pub seals: u64,
+    /// Peak buffered token batches.
+    pub max_in_flight_batches: u64,
+    /// One after all per-call workers joined.
+    pub all_threads_joined: u32,
+    /// Zero.
+    pub reserved: u32,
+    /// Inclusive elapsed nanoseconds.
+    pub elapsed_ns: u64,
+}
+
+/// Controlled text query with explicit search and rescore policy.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextQueryRequestV2 {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Existing query fields, with their own initialized ABI prefix.
+    pub query: ZeTextQueryRequest,
+    /// 0 leaves tier unspecified; 1 selects tier.
+    pub has_tier: u32,
+    /// 0 Auto, 1 Exact, 2 Scan, 3 Graph. Zero when has_tier is zero.
+    pub tier: i32,
+    /// 0 SiftClass, 1 Angular; zero unless Graph is selected.
+    pub graph_profile: i32,
+    /// 0 disabled, 1 enables exact scoring of quantized candidates; requires explicit Scan tier.
+    pub scan_rescore: u32,
+    /// Graph ef override, or zero; zero unless Graph is selected.
+    pub graph_ef: usize,
+    /// Graph seed; zero unless Graph is selected.
+    pub graph_seed: u64,
+    /// Rescore frontier multiplier; zero when disabled.
+    pub oversample: usize,
+    /// Rescore hard candidate limit; zero when disabled.
+    pub max_candidates_per_segment: usize,
+    /// Existing registry token, or zero. Mutually exclusive with deadline.
+    pub cancel_token: ZeCancelToken,
+    /// Relative monotonic deadline in nanoseconds; zero disables.
+    pub deadline_ns: u64,
+}
+
+/// Diagnostic text result. Release with ze_text_query_outcome_free.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextQueryOutcome {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Owned text hits, initialized by the callee; free only through the containing outcome.
+    pub result: ZeTextQueryResult,
+    /// Core query facts in the existing ABI shape. Its hits and hit_count are always zero; it owns no allocation.
+    pub diagnostics: ZeQueryResult,
+    /// One when core diagnostics are present; absent for k=0.
+    pub has_diagnostics: u32,
+    /// One when optional text query stage clocks are enabled.
+    pub has_timings: u32,
+    /// One when a model runtime participated.
+    pub has_backend: u32,
+    /// Runtime reports use of a GPU stream.
+    pub backend_gpu: u32,
+    /// Borrowed static runtime name; never free this pointer.
+    pub runtime_name: *const u8,
+    /// Runtime name byte count.
+    pub runtime_name_len: usize,
+    /// 1 CPU, 2 CPU+GPU, 3 CPU+ANE, 4 All; zero without backend.
+    pub requested_compute_units: i32,
+    /// One when CoreML compute-plan placement counts are available; zero means
+    /// unknown (MLX or macOS before 14.4). These counts describe planned
+    /// placement, not an execution trace.
+    pub has_observed_compute_units: u32,
+    /// Operations planned for the CPU; zero when placement is unknown.
+    pub observed_cpu_ops: u64,
+    /// Operations planned for the GPU; zero when placement is unknown.
+    pub observed_gpu_ops: u64,
+    /// Operations planned for the Neural Engine; zero when placement is unknown.
+    pub observed_neural_engine_ops: u64,
+    /// One for a fixed-width runtime.
+    pub has_sequence_length: u32,
+    /// Must be zero; explicit alignment before sequence_length.
+    pub reserved: u32,
+    /// Fixed model input width, or zero.
+    pub sequence_length: usize,
+    /// Nonpadding query model tokens.
+    pub query_tokens: u64,
+    /// Completed query embedding calls.
+    pub embedding_calls: u64,
+    /// Optional outer spans: tokenization, lexical analysis, embedding queue, evaluation, normalization, retrieval, materialization, end-to-end. Spans overlap; do not sum.
+    pub timings_ns: [u64; 8],
+}
+
+/// Caller-owned text store health summary. Counts summarize the Rust segment and retained-fault collections.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextHealthReport {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Current store generation.
+    pub generation: u64,
+    /// 0 Unchecked, 1 Healthy, 2 Degraded, 3 Unhealthy.
+    pub status: i32,
+    /// One when an explicit retention range is present.
+    pub has_retained_through: u32,
+    /// Live acknowledged rows not yet sealed.
+    pub pending_docs: u64,
+    /// Fraction of alive rows with a published graph.
+    pub graph_coverage: f64,
+    /// Number of active and immutable segment health records.
+    pub segment_count: u64,
+    /// Number of retained unresolved faults.
+    pub unresolved_fault_count: u64,
+    /// Last retention range upper bound, or zero.
+    pub retained_through: i64,
+}

@@ -264,3 +264,7 @@ pub fn open_path_with_epoch(path: &Path, epoch: &EpochFixture) -> (ZeErrorCode, 
 
 #[cfg(feature = "graph-cypher")]
 pub mod graph;
+
+// ZE-505: real text fixtures are compiled only for text-enabled tests.
+#[cfg(feature = "text")]
+pub mod text;

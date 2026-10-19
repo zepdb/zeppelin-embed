@@ -70,9 +70,42 @@ fn assert_heap_flat(name: &str, mut round: impl FnMut()) {
     );
 }
 
+// The mutex serializes test bodies, but libtest allocates outside those bodies
+// when it starts and finishes parallel tests. Measure in a child containing only
+// this test, retaining the process-wide allocator and exact heap assertions.
+fn run_in_heap_test_child(name: &str) -> bool {
+    const CHILD: &str = "ZE_FFI_OWNERSHIP_CHILD";
+    if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new(name)) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", name])
+        .env(CHILD, name)
+        .output()
+        .expect("run isolated ownership test");
+    assert!(
+        output.status.success(),
+        "{name} failed: {}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{name} did not run one passing test:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    true
+}
+
 #[test]
 fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
     let _heap_guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
+    if run_in_heap_test_child(
+        "every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat",
+    ) {
+        return;
+    }
     let store = common::TestStore::new();
     assert_eq!(
         common::ingest_rows(store.handle, 32, DIMENSION),
@@ -330,6 +363,11 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
 #[test]
 fn freeing_a_foreign_or_already_released_buffer_is_a_typed_error_not_a_double_free() {
     let _heap_guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
+    if run_in_heap_test_child(
+        "freeing_a_foreign_or_already_released_buffer_is_a_typed_error_not_a_double_free",
+    ) {
+        return;
+    }
     let store = common::TestStore::new();
     assert_eq!(
         common::ingest_rows(store.handle, 4, DIMENSION),
@@ -394,6 +432,9 @@ fn freeing_a_foreign_or_already_released_buffer_is_a_typed_error_not_a_double_fr
 #[test]
 fn query_snippets_are_released_by_their_free_and_the_heap_stays_flat() {
     let _heap_guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
+    if run_in_heap_test_child("query_snippets_are_released_by_their_free_and_the_heap_stays_flat") {
+        return;
+    }
     let store = common::TestStore::new();
     let texts = [
         "harbour lights at dusk",
@@ -456,4 +497,106 @@ fn query_snippets_are_released_by_their_free_and_the_heap_stays_flat() {
             assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
         });
     }
+}
+
+// ZE-505: ownership of diagnostic text outcomes uses the existing typed registry.
+#[cfg(feature = "text")]
+#[test]
+fn text_query_outcome_free_releases_hits_and_rejects_stale_copies() {
+    use common::text::*;
+    let _guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
+    if run_in_heap_test_child("text_query_outcome_free_releases_hits_and_rejects_stale_copies") {
+        return;
+    }
+    let store = TextStore::new();
+    let docs = [document(1, b"hello world hello")];
+    let mut report = output::<ZeTextIngestReport>();
+    assert_eq!(
+        ze_text_ingest_v2(store.handle, &ingest_request(&docs), &mut report),
+        ZeErrorCode::ZeOk
+    );
+    let query = query_request(b"hello");
+    let mut outcome = output::<ZeTextQueryOutcome>();
+    assert_heap_flat("ze_text_query_v2/outcome_free", || {
+        assert_eq!(
+            ze_text_query_v2(store.handle, &query, &mut outcome),
+            ZeErrorCode::ZeOk
+        );
+        assert!(outcome.result.hit_count > 0);
+        assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+        assert!(outcome.result.hits.is_null());
+        assert_eq!(outcome.runtime_name_len, 0);
+        assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+    });
+    assert_eq!(
+        ze_text_query_v2(store.handle, &query, &mut outcome),
+        ZeErrorCode::ZeOk
+    );
+    let mut wrong_type = output::<ZeQueryResult>();
+    wrong_type.hits = outcome.result.hits.cast();
+    wrong_type.hit_count = outcome.result.hit_count;
+    wrong_type.abi_reserved = outcome.result.abi_reserved;
+    assert_eq!(
+        ze_query_result_free(&mut wrong_type),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    let mut stale = outcome;
+    assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+    assert_eq!(
+        ze_text_query_outcome_free(&mut stale),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    let mut empty = query;
+    empty.query.k = 0;
+    assert_eq!(
+        ze_text_query_v2(store.handle, &empty, &mut outcome),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+}
+
+#[cfg(feature = "text")]
+#[test]
+fn text_query_outcome_free_validates_prefix_and_empty_results_without_native_runtime() {
+    use common::text::output;
+    let _guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
+    if run_in_heap_test_child(
+        "text_query_outcome_free_validates_prefix_and_empty_results_without_native_runtime",
+    ) {
+        return;
+    }
+    assert_eq!(
+        ze_text_query_outcome_free(std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    let mut outcome = output::<ZeTextQueryOutcome>();
+    outcome.abi_size = 8;
+    assert_eq!(
+        ze_text_query_outcome_free(&mut outcome),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    outcome.abi_size = size_of::<ZeTextQueryOutcome>() as u32;
+    outcome.abi_reserved = 1;
+    assert_eq!(
+        ze_text_query_outcome_free(&mut outcome),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    outcome.abi_reserved = 0;
+    assert_heap_flat("empty text outcome free", || {
+        assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+    });
+    let mut zero: ZeTextQueryOutcome = unsafe { std::mem::zeroed() };
+    assert_eq!(ze_text_query_outcome_free(&mut zero), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn mistyped_ownership_child_name_is_rejected() {
+    let _heap_guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
+    if run_in_heap_test_child("mistyped_ownership_child_name_is_rejected") {
+        return;
+    }
+    let rejected = std::panic::catch_unwind(|| {
+        run_in_heap_test_child("not_an_ownership_test");
+    });
+    assert!(rejected.is_err(), "a zero-test child must be rejected");
 }

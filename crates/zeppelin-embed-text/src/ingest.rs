@@ -135,10 +135,11 @@ impl TextFaultSite {
     }
 }
 
-/// Cooperative cancellation and deterministic fault control for one ingest call.
+/// Cooperative cancellation, deadline and deterministic fault control for one ingest call.
 #[derive(Clone, Debug)]
 pub struct IngestControl {
     cancelled: Arc<AtomicBool>,
+    external_control: Option<QueryControl>,
     fault: Option<TextFaultSite>,
     fired: Arc<AtomicUsize>,
 }
@@ -149,9 +150,24 @@ impl IngestControl {
     pub fn new() -> Self {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
+            external_control: None,
             fault: None,
             fired: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Shares a core cancellation token or deadline with the ingest pipeline.
+    #[must_use]
+    pub fn with_query_control(mut self, control: QueryControl) -> Self {
+        self.external_control = Some(control);
+        self
+    }
+
+    fn external_checkpoint(&self) -> Result<(), TextError> {
+        if let Some(control) = &self.external_control {
+            control.checkpoint().map_err(TextError::Query)?;
+        }
+        Ok(())
     }
 
     /// Arms one deterministic adversarial pipeline site.
@@ -175,7 +191,7 @@ impl IngestControl {
     }
 
     fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Relaxed)
+        self.cancelled.load(Ordering::Relaxed) || self.external_checkpoint().is_err()
     }
 
     fn fire(&self, site: TextFaultSite) -> bool {
@@ -471,6 +487,7 @@ impl TextStore {
         control: IngestControl,
     ) -> Result<TextIngestReport, TextError> {
         validate_ingest_options(documents, options)?;
+        control.external_checkpoint()?;
         let started = Instant::now();
         let previous_versions = self.capture_versions(documents)?;
         let jobs = build_jobs(
@@ -567,6 +584,11 @@ impl TextStore {
         let mut first_error = None;
         while let Ok(result) = receiver.recv() {
             in_flight.fetch_sub(1, Ordering::Relaxed);
+            if let Err(error) = control.external_checkpoint() {
+                first_error = Some(error);
+                control.cancel();
+                break;
+            }
             match result {
                 Ok(job) => {
                     pending.insert(job.ordinal, job);
@@ -583,6 +605,11 @@ impl TextStore {
                             .embed(TowerRole::Document, job_tokens, inject_panic)
                         {
                             Ok(mut embedded) => {
+                                if let Err(error) = control.external_checkpoint() {
+                                    first_error = Some(error);
+                                    control.cancel();
+                                    break;
+                                }
                                 if let Err(error) = normalize_batch(
                                     &mut embedded,
                                     &self.bundle.document_tower().embedding,
@@ -663,6 +690,9 @@ impl TextStore {
                     });
                 }
             }
+        }
+        if first_error.is_none() {
+            first_error = control.external_checkpoint().err();
         }
         if first_error.is_none() && expected != job_count {
             first_error = Some(TextError::Pipeline {
@@ -2084,6 +2114,19 @@ mod tests {
         assert!(normalize_batch(&mut zero, &tower(2, Normalization::L2)).is_err());
         let mut nan = EmbeddingBatch::new(vec![f32::NAN, 1.0], 1, 2).expect("nan batch");
         assert!(normalize_batch(&mut nan, &tower(2, Normalization::L2)).is_err());
+    }
+
+    #[test]
+    fn external_cancel_token_stops_ingest_control_after_construction() {
+        let token = CancelToken::new();
+        let control = IngestControl::new().with_query_control(QueryControl::Cancel(token.clone()));
+        assert_eq!(
+            acquire_buffer_slot(&AtomicUsize::new(0), 1, &control),
+            Some(1)
+        );
+        token.cancel();
+        assert_eq!(acquire_buffer_slot(&AtomicUsize::new(0), 1, &control), None);
+        assert!(control.external_checkpoint().is_err());
     }
 
     #[test]

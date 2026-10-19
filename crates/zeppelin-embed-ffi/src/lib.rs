@@ -2617,6 +2617,507 @@ pub extern "C" fn ze_text_query_result_free(result: *mut ZeTextQueryResult) -> Z
     })
 }
 
+// ZE-505: additive text API. Keep this block together for parallel ZE-501 work.
+#[cfg(feature = "text")]
+fn text_duration_ns(duration: Duration) -> Result<u64, FfiError> {
+    u64::try_from(duration.as_nanos()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrInternal,
+            "duration exceeds ABI nanoseconds",
+        )
+    })
+}
+
+/// Tombstones every chunk belonging to the caller document ids.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_delete(
+    handle: ZeHandle,
+    request: *const ZeDeleteRequest,
+    out_report: *mut ZeMutationReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_text_delete");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                let ids = marshal::read_slice(request.doc_ids, request.doc_id_count)?;
+                let mut caller_ids = Vec::new();
+                caller_ids.try_reserve_exact(ids.len()).map_err(|_| {
+                    FfiError::new(
+                        ZeErrorCode::ZeErrOutOfMemory,
+                        "text delete allocation failed",
+                    )
+                })?;
+                caller_ids.extend(ids.iter().map(|id| doc_id(*id).get()));
+                text_registry::with_writer(handle, |access| {
+                    let report = access
+                        .store
+                        .delete_text(&caller_ids)
+                        .map_err(FfiError::text)?;
+                    marshal::write_output(
+                        out_report,
+                        ZeMutationReport {
+                            abi_size,
+                            abi_reserved: 0,
+                            sequence: report.seq().get(),
+                            generation: report.generation(),
+                        },
+                    );
+                    Ok(())
+                })
+            })(),
+        )
+    })
+}
+
+/// Reads a non-mutating summary of text store health.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_health(
+    handle: ZeHandle,
+    out_report: *mut ZeTextHealthReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_text_health");
+        finish(
+            Some(handle),
+            (|| {
+                let abi_size = marshal::validate_output(out_report)?;
+                let access = text_registry::lookup(handle)?;
+                let health = access.store.health().map_err(FfiError::text)?;
+                let status = match health.status {
+                    zeppelin_embed::diag::HealthStatus::Unchecked => 0,
+                    zeppelin_embed::diag::HealthStatus::Healthy => 1,
+                    zeppelin_embed::diag::HealthStatus::Degraded => 2,
+                    zeppelin_embed::diag::HealthStatus::Unhealthy => 3,
+                };
+                marshal::write_output(
+                    out_report,
+                    ZeTextHealthReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        generation: health.generation,
+                        status,
+                        has_retained_through: bool_u32(health.retained_through.is_some()),
+                        pending_docs: health.pending_docs,
+                        graph_coverage: health.graph_coverage,
+                        segment_count: usize_u64(health.segments.len(), "segment_count")?,
+                        unresolved_fault_count: usize_u64(
+                            health.unresolved_faults.len(),
+                            "unresolved_fault_count",
+                        )?,
+                        retained_through: health.retained_through.unwrap_or(0),
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Executes exactly one Rust maintenance call with the supplied work budget.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_maintain_budgeted(
+    handle: ZeHandle,
+    request: *const ZeMaintainRequest,
+    out_report: *mut ZeMaintainReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_text_maintain_budgeted");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                text_registry::with_writer(handle, |access| {
+                    let report = access
+                        .store
+                        .maintain(MaintenanceBudget {
+                            wall_time: Duration::from_nanos(request.wall_time_ns),
+                            bytes: request.bytes,
+                        })
+                        .map_err(FfiError::text)?;
+                    let status = match report.status {
+                        MaintenanceStatus::Complete => 0,
+                        MaintenanceStatus::BudgetExhausted => 1,
+                        MaintenanceStatus::Failed(error) => {
+                            return Err(FfiError::maintenance(error));
+                        }
+                    };
+                    marshal::write_output(
+                        out_report,
+                        ZeMaintainReport {
+                            abi_size,
+                            abi_reserved: 0,
+                            graphs_built: report.graphs_built,
+                            bytes_consumed: report.bytes_consumed,
+                            checkpoints_resumed: report.checkpoints_resumed,
+                            status,
+                            reserved: 0,
+                        },
+                    );
+                    Ok(())
+                })
+            })(),
+        )
+    })
+}
+
+#[cfg(feature = "text")]
+fn text_ingest_control(
+    request: &ZeTextIngestRequestV2,
+) -> Result<zeppelin_embed_text::IngestControl, FfiError> {
+    // Resolve through the same registry and exclusivity contract as core queries.
+    let control = query_control_for(request.cancel_token, request.deadline_ns)?;
+    control.checkpoint().map_err(FfiError::query)?;
+    Ok(zeppelin_embed_text::IngestControl::new().with_query_control(control))
+}
+
+/// Ingests with explicit chunk/maintenance policy, shared cancellation and a full report.
+/// Cancellation and deadlines are cooperative between ingest stages and may leave
+/// acknowledged partial writes. After the final pre-commit check, cancellation or
+/// expiry does not turn a completed ingest into a cancellation/timeout error.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_ingest_v2(
+    handle: ZeHandle,
+    request: *const ZeTextIngestRequestV2,
+    out_report: *mut ZeTextIngestReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_text_ingest_v2");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let batch = marshal::read_struct(&request.batch)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                if request.reserved != 0 {
+                    return Err(FfiError::invalid("text ingest reserved field must be zero"));
+                }
+                let control = text_ingest_control(&request)?;
+                let chunk_policy = match request.chunk_policy {
+                    0 if request.chunk_max == 0 && request.chunk_overlap == 0 => {
+                        zeppelin_embed_text::ChunkPolicy::None
+                    }
+                    1 if request.chunk_max != 0 && request.chunk_overlap < request.chunk_max => {
+                        zeppelin_embed_text::ChunkPolicy::Tokens {
+                            max: request.chunk_max,
+                            overlap: request.chunk_overlap,
+                        }
+                    }
+                    _ => return Err(FfiError::invalid("invalid text chunk policy or window")),
+                };
+                let records = marshal::read_slice(batch.documents, batch.document_count)?;
+                if records.is_empty() {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrEmptyBatch,
+                        "text ingest batch is empty",
+                    ));
+                }
+                let mut documents = Vec::new();
+                documents.try_reserve_exact(records.len()).map_err(|_| {
+                    FfiError::new(
+                        ZeErrorCode::ZeErrOutOfMemory,
+                        "text document allocation failed",
+                    )
+                })?;
+                for record in records {
+                    let record = marshal::read_struct(record as *const ZeTextDocument)?;
+                    documents.push(zeppelin_embed_text::TextDocument::new(
+                        doc_id(record.doc_id).get(),
+                        record.revision,
+                        utf8_field(record.text, record.text_len, "text document")?,
+                    ));
+                }
+                text_registry::with_writer(handle, |access| {
+                    let report = access
+                        .store
+                        .ingest_text_controlled(
+                            &documents,
+                            zeppelin_embed_text::IngestOptions {
+                                embed_batch_size: batch.embed_batch_size,
+                                seal_every: batch.seal_every,
+                                channel_capacity: batch.channel_capacity,
+                                chunk_policy,
+                                maintenance_wall_time: Duration::from_nanos(
+                                    request.maintenance_wall_time_ns,
+                                ),
+                                maintenance_bytes: request.maintenance_bytes,
+                            },
+                            control,
+                        )
+                        .map_err(FfiError::text)?;
+                    marshal::write_output(
+                        out_report,
+                        ZeTextIngestReport {
+                            abi_size,
+                            abi_reserved: 0,
+                            generation: report.generation,
+                            documents: usize_u64(report.documents, "documents")?,
+                            chunks: usize_u64(report.chunks, "chunks")?,
+                            tokens: usize_u64(report.tokens, "tokens")?,
+                            embed_batches: usize_u64(report.embed_batches, "embed_batches")?,
+                            seals: usize_u64(report.seals, "seals")?,
+                            max_in_flight_batches: usize_u64(
+                                report.max_in_flight_batches,
+                                "max_in_flight_batches",
+                            )?,
+                            all_threads_joined: bool_u32(report.all_threads_joined),
+                            reserved: 0,
+                            elapsed_ns: text_duration_ns(report.elapsed)?,
+                        },
+                    );
+                    Ok(())
+                })
+            })(),
+        )
+    })
+}
+
+#[cfg(feature = "text")]
+fn text_query_options(
+    request: &ZeTextQueryRequestV2,
+) -> Result<zeppelin_embed_text::QueryOptions, FfiError> {
+    let query = marshal::read_struct(&request.query)?;
+    if query.reserved != 0 {
+        return Err(FfiError::invalid("text query reserved field must be zero"));
+    }
+    let legs = match query.legs {
+        0 => zeppelin_embed_text::Legs::Dense,
+        1 => zeppelin_embed_text::Legs::Lexical,
+        2 => zeppelin_embed_text::Legs::Hybrid,
+        _ => return Err(FfiError::invalid("text query legs is out of range")),
+    };
+    let tier = parse_tier_fields(
+        request.has_tier,
+        request.tier,
+        request.graph_profile,
+        request.graph_ef,
+        request.graph_seed,
+    )?;
+    if !matches!(tier, Some(SearchTier::Graph(_)))
+        && (request.graph_profile != 0 || request.graph_ef != 0 || request.graph_seed != 0)
+    {
+        return Err(FfiError::invalid(
+            "graph controls require explicit Graph tier",
+        ));
+    }
+    let mut options = zeppelin_embed_text::QueryOptions::new(query.k)
+        .with_legs(legs)
+        .with_optional_tier(tier);
+    if parse_flag(request.scan_rescore, "scan_rescore")? {
+        if tier != Some(SearchTier::Scan) || legs == zeppelin_embed_text::Legs::Lexical {
+            return Err(FfiError::invalid(
+                "rescore requires explicit Scan tier and a dense leg",
+            ));
+        }
+        let rescore = zeppelin_embed::lifecycle::ScanRescoreOptions::new(
+            request.oversample,
+            request.max_candidates_per_segment,
+        )
+        .map_err(|error| FfiError::invalid(error.to_string()))?;
+        options = options.with_scan_rescore(rescore);
+    } else if request.oversample != 0 || request.max_candidates_per_segment != 0 {
+        return Err(FfiError::invalid("rescore controls require scan_rescore=1"));
+    }
+    Ok(options)
+}
+
+#[cfg(feature = "text")]
+fn empty_text_outcome(abi_size: u32) -> ZeTextQueryOutcome {
+    ZeTextQueryOutcome {
+        abi_size,
+        abi_reserved: 0,
+        result: ZeTextQueryResult {
+            abi_size: size_of::<ZeTextQueryResult>() as u32,
+            abi_reserved: 0,
+            hits: std::ptr::null_mut(),
+            hit_count: 0,
+            embedding_epoch: 0,
+            tokenizer_epoch: 0,
+        },
+        diagnostics: empty_query_result(size_of::<ZeQueryResult>() as u32),
+        has_diagnostics: 0,
+        has_timings: 0,
+        has_backend: 0,
+        backend_gpu: 0,
+        runtime_name: std::ptr::null(),
+        runtime_name_len: 0,
+        requested_compute_units: 0,
+        has_observed_compute_units: 0,
+        observed_cpu_ops: 0,
+        observed_gpu_ops: 0,
+        observed_neural_engine_ops: 0,
+        has_sequence_length: 0,
+        reserved: 0,
+        sequence_length: 0,
+        query_tokens: 0,
+        embedding_calls: 0,
+        timings_ns: [0; 8],
+    }
+}
+
+#[cfg(feature = "text")]
+fn text_outcome_hits(
+    source: Vec<zeppelin_embed_text::TextHit>,
+    result: &mut ZeTextQueryResult,
+) -> Result<(), FfiError> {
+    let mut hits = Vec::new();
+    let mut texts = Vec::new();
+    hits.try_reserve_exact(source.len())
+        .map_err(|_| FfiError::new(ZeErrorCode::ZeErrOutOfMemory, "text hit allocation failed"))?;
+    texts
+        .try_reserve_exact(source.len())
+        .map_err(|_| FfiError::new(ZeErrorCode::ZeErrOutOfMemory, "text allocation failed"))?;
+    for hit in source {
+        let mut text = hit.text.into_bytes().into_boxed_slice();
+        let text_len = text.len();
+        let text_pointer = if text.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            text.as_mut_ptr()
+        };
+        hits.push(ZeTextQueryHit {
+            doc_id: ffi_doc_id(DocId::new(hit.doc_id)),
+            revision: hit.revision,
+            chunk: hit.chunk,
+            reserved: 0,
+            text: text_pointer,
+            text_len,
+            score: hit.score,
+            has_vector_score: bool_u32(hit.vector_squared_l2.is_some()),
+            has_lexical_score: bool_u32(hit.lexical_bm25.is_some()),
+            vector_squared_l2: hit.vector_squared_l2.unwrap_or(0.0),
+            lexical_bm25: hit.lexical_bm25.unwrap_or(0.0),
+        });
+        texts.push(text);
+    }
+    let (hits, hit_count, allocation_generation) = publish_hits(hits)?;
+    for text in texts {
+        if !text.is_empty() {
+            let _raw = Box::into_raw(text);
+        }
+    }
+    result.hits = hits;
+    result.hit_count = hit_count;
+    result.abi_reserved = allocation_generation;
+    Ok(())
+}
+
+/// Queries with core cancellation/deadline semantics and returns text, query facts,
+/// optional stage timings and the loaded backend. Only the outer output ABI
+/// prefix needs initialization. Release successful results with ze_text_query_outcome_free.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_query_v2(
+    handle: ZeHandle,
+    request: *const ZeTextQueryRequestV2,
+    out_result: *mut ZeTextQueryOutcome,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_text_query_v2");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_result)?;
+                let options = text_query_options(&request)?;
+                let control = query_control_for(request.cancel_token, request.deadline_ns)?;
+                let text = utf8_field(request.query.text, request.query.text_len, "query text")?;
+                let access = text_registry::lookup(handle)?;
+                let source = access
+                    .store
+                    .query_text_with_diagnostics_controlled(&text, options, control)
+                    .map_err(FfiError::text)?;
+                let mut outcome = empty_text_outcome(abi_size);
+                outcome.diagnostics.mode = request.query.legs;
+                if let Some(diagnostics) = &source.diagnostics {
+                    fill_diagnostics(&mut outcome.diagnostics, diagnostics)?;
+                    outcome.has_diagnostics = 1;
+                }
+                if let Some(timings) = source.timings {
+                    outcome.timings_ns = [
+                        text_duration_ns(timings.tokenization)?,
+                        text_duration_ns(timings.lexical_analysis)?,
+                        text_duration_ns(timings.embedding_queue)?,
+                        text_duration_ns(timings.embedding_evaluation)?,
+                        text_duration_ns(timings.embedding_normalization)?,
+                        text_duration_ns(timings.retrieval)?,
+                        text_duration_ns(timings.materialization)?,
+                        text_duration_ns(timings.end_to_end)?,
+                    ];
+                    outcome.has_timings = 1;
+                }
+                if let Some(backend) = source.backend {
+                    outcome.has_backend = 1;
+                    outcome.backend_gpu = bool_u32(backend.runtime.gpu);
+                    outcome.runtime_name = backend.runtime.name.as_ptr();
+                    outcome.runtime_name_len = backend.runtime.name.len();
+                    outcome.requested_compute_units = backend.requested_compute_units as i32;
+                    if let Some(units) = backend.observed_compute_units {
+                        outcome.has_observed_compute_units = 1;
+                        outcome.observed_cpu_ops = units.cpu_ops;
+                        outcome.observed_gpu_ops = units.gpu_ops;
+                        outcome.observed_neural_engine_ops = units.neural_engine_ops;
+                    }
+                    outcome.has_sequence_length = bool_u32(backend.sequence_length.is_some());
+                    outcome.sequence_length = backend.sequence_length.unwrap_or(0);
+                }
+                outcome.query_tokens = usize_u64(source.query_tokens, "query_tokens")?;
+                outcome.embedding_calls = usize_u64(source.embedding_calls, "embedding_calls")?;
+                let epoch = access.store.epoch();
+                outcome.result.embedding_epoch = epoch.embedding.value();
+                outcome.result.tokenizer_epoch = epoch.tokenizer.value();
+                // Publish ownership only after every fallible metadata conversion.
+                text_outcome_hits(source.hits, &mut outcome.result)?;
+                marshal::write_output(out_result, outcome);
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Frees owned text hits through the existing typed allocation registry and
+/// clears the complete outcome. Repeated frees of the cleared outcome succeed.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_query_outcome_free(result: *mut ZeTextQueryOutcome) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        finish(
+            None,
+            (|| {
+                scalar_output(result)?;
+                let abi_size = marshal::read_abi_size(result);
+                if abi_size != 0 {
+                    marshal::validate_abi_size::<ZeTextQueryOutcome>(abi_size)?;
+                }
+                let mut current = marshal::read_value(result);
+                if current.abi_reserved != 0 {
+                    return Err(FfiError::invalid("text outcome abi_reserved must be zero"));
+                }
+                if abi_size == 0
+                    && (!current.result.hits.is_null() || current.result.hit_count != 0)
+                {
+                    return Err(FfiError::invalid(
+                        "zero-sized text outcome contains an allocation",
+                    ));
+                }
+                let code = ze_text_query_result_free(&mut current.result);
+                if code != ZeErrorCode::ZeOk {
+                    return Err(FfiError::new(code, "invalid text outcome allocation"));
+                }
+                marshal::write_output(result, empty_text_outcome(abi_size));
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Releases the slot and store. A poisoned handle is still released and
 /// returns `ZE_ERR_POISONED`. All other calls reject poison before touching
 /// the store.

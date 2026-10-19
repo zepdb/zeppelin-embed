@@ -1612,6 +1612,465 @@ typedef struct ZeTextQueryResult {
 } ZeTextQueryResult;
 
 /*
+ Atomic document-delete request.
+ */
+typedef struct ZeDeleteRequest {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned document-id array.
+     */
+    const struct ZeDocId *doc_ids;
+    /*
+     Number of identifiers.
+     */
+    size_t doc_id_count;
+} ZeDeleteRequest;
+
+/*
+ Caller-owned text store health summary. Counts summarize the Rust segment and retained-fault collections.
+ */
+typedef struct ZeTextHealthReport {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Current store generation.
+     */
+    uint64_t generation;
+    /*
+     0 Unchecked, 1 Healthy, 2 Degraded, 3 Unhealthy.
+     */
+    int32_t status;
+    /*
+     One when an explicit retention range is present.
+     */
+    uint32_t has_retained_through;
+    /*
+     Live acknowledged rows not yet sealed.
+     */
+    uint64_t pending_docs;
+    /*
+     Fraction of alive rows with a published graph.
+     */
+    double graph_coverage;
+    /*
+     Number of active and immutable segment health records.
+     */
+    uint64_t segment_count;
+    /*
+     Number of retained unresolved faults.
+     */
+    uint64_t unresolved_fault_count;
+    /*
+     Last retention range upper bound, or zero.
+     */
+    int64_t retained_through;
+} ZeTextHealthReport;
+
+/*
+ Opaque generation-tagged cooperative-cancellation handle.
+ */
+typedef uint64_t ze_cancel_token;
+
+/*
+ Text ingest options and cooperative cancellation or deadline.
+ */
+typedef struct ZeTextIngestRequestV2 {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing bounded batch request, with its own initialized ABI prefix.
+     */
+    struct ZeTextIngestRequest batch;
+    /*
+     0 rejects overlong documents; 1 splits token windows.
+     */
+    int32_t chunk_policy;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Maximum source tokens per chunk; zero for policy 0.
+     */
+    size_t chunk_max;
+    /*
+     Overlap tokens; zero for policy 0.
+     */
+    size_t chunk_overlap;
+    /*
+     Maintenance wall budget per slice; zero disables ingest maintenance.
+     */
+    uint64_t maintenance_wall_time_ns;
+    /*
+     Maintenance bytes per slice; zero disables ingest maintenance. Ingest retains Rust completion semantics.
+     */
+    uint64_t maintenance_bytes;
+    /*
+     Existing registry token, or zero.
+     */
+    ze_cancel_token cancel_token;
+    /*
+     Relative monotonic deadline in nanoseconds; zero disables. Mutually exclusive with cancel_token.
+     */
+    uint64_t deadline_ns;
+} ZeTextIngestRequestV2;
+
+/*
+ Complete caller-owned report from one successful text ingest.
+ */
+typedef struct ZeTextIngestReport {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Final acknowledged store generation.
+     */
+    uint64_t generation;
+    /*
+     Caller documents consumed.
+     */
+    uint64_t documents;
+    /*
+     Chunk rows written.
+     */
+    uint64_t chunks;
+    /*
+     Model tokens evaluated, including padding.
+     */
+    uint64_t tokens;
+    /*
+     Model batch calls.
+     */
+    uint64_t embed_batches;
+    /*
+     Periodic seal calls.
+     */
+    uint64_t seals;
+    /*
+     Peak buffered token batches.
+     */
+    uint64_t max_in_flight_batches;
+    /*
+     One after all per-call workers joined.
+     */
+    uint32_t all_threads_joined;
+    /*
+     Zero.
+     */
+    uint32_t reserved;
+    /*
+     Inclusive elapsed nanoseconds.
+     */
+    uint64_t elapsed_ns;
+} ZeTextIngestReport;
+
+/*
+ Controlled text query with explicit search and rescore policy.
+ */
+typedef struct ZeTextQueryRequestV2 {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing query fields, with their own initialized ABI prefix.
+     */
+    struct ZeTextQueryRequest query;
+    /*
+     0 leaves tier unspecified; 1 selects tier.
+     */
+    uint32_t has_tier;
+    /*
+     0 Auto, 1 Exact, 2 Scan, 3 Graph. Zero when has_tier is zero.
+     */
+    int32_t tier;
+    /*
+     0 SiftClass, 1 Angular; zero unless Graph is selected.
+     */
+    int32_t graph_profile;
+    /*
+     0 disabled, 1 enables exact scoring of quantized candidates; requires explicit Scan tier.
+     */
+    uint32_t scan_rescore;
+    /*
+     Graph ef override, or zero; zero unless Graph is selected.
+     */
+    size_t graph_ef;
+    /*
+     Graph seed; zero unless Graph is selected.
+     */
+    uint64_t graph_seed;
+    /*
+     Rescore frontier multiplier; zero when disabled.
+     */
+    size_t oversample;
+    /*
+     Rescore hard candidate limit; zero when disabled.
+     */
+    size_t max_candidates_per_segment;
+    /*
+     Existing registry token, or zero. Mutually exclusive with deadline.
+     */
+    ze_cancel_token cancel_token;
+    /*
+     Relative monotonic deadline in nanoseconds; zero disables.
+     */
+    uint64_t deadline_ns;
+} ZeTextQueryRequestV2;
+
+/*
+ One callee-owned structured-query hit.
+ */
+typedef struct ZeQueryHit {
+    /*
+     One when document identity is present.
+     */
+    uint32_t has_document;
+    /*
+     One when `revision` is present; fused hits carry identity only.
+     */
+    uint32_t has_revision;
+    /*
+     Document id when `has_document` is one.
+     */
+    struct ZeDocId doc_id;
+    /*
+     Document revision when `has_revision` is one.
+     */
+    uint64_t revision;
+    /*
+     Larger-is-better ranking score of the executed mode.
+     */
+    double score;
+    /*
+     One when `vector_squared_l2` is present.
+     */
+    uint32_t has_vector_score;
+    /*
+     One when `lexical_bm25` is present.
+     */
+    uint32_t has_lexical_score;
+    /*
+     Squared L2 distance of the vector leg.
+     */
+    double vector_squared_l2;
+    /*
+     BM25 score of the lexical leg.
+     */
+    double lexical_bm25;
+} ZeQueryHit;
+
+/*
+ Callee-owned structured-query result; release with `ze_query_result_free`.
+ */
+typedef struct ZeQueryResult {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Caller sets zero; callee returns an opaque allocation generation.
+     */
+    uint32_t abi_reserved;
+    /*
+     Callee-owned hit array, or null when `hit_count` is zero.
+     */
+    struct ZeQueryHit *hits;
+    /*
+     Number of initialized hits.
+     */
+    size_t hit_count;
+    /*
+     Pinned store generation queried.
+     */
+    uint64_t generation;
+    /*
+     `0` vector, `1` lexical, or `2` hybrid mode executed.
+     */
+    int32_t mode;
+    /*
+     One when any candidate membership came from a non-exhaustive path.
+     */
+    uint32_t approximate;
+    /*
+     One when every returned score came from full-precision rows.
+     */
+    uint32_t exact_rescore;
+    /*
+     One when an execution budget fired.
+     */
+    uint32_t budget_exhausted;
+    /*
+     One when the fusion fields are present.
+     */
+    uint32_t has_fusion;
+    /*
+     `0` convex combination or `1` reciprocal rank fusion.
+     */
+    int32_t fusion_method;
+    /*
+     Effective fusion alpha.
+     */
+    double effective_alpha;
+    /*
+     Fusion widening rounds attempted.
+     */
+    uint64_t fusion_rounds;
+    /*
+     One when `embedding_epoch` is present.
+     */
+    uint32_t has_embedding_epoch;
+    /*
+     One when `tokenizer_epoch` is present.
+     */
+    uint32_t has_tokenizer_epoch;
+    /*
+     Embedding identity that interpreted the vector leg.
+     */
+    uint64_t embedding_epoch;
+    /*
+     Tokenizer identity that interpreted the lexical leg.
+     */
+    uint64_t tokenizer_epoch;
+    /*
+     Logical row-coordinate multiply-accumulates.
+     */
+    uint64_t dims_touched;
+    /*
+     Row-major payload bytes read.
+     */
+    uint64_t bytes_read;
+    /*
+     Lexical documents whose score was computed.
+     */
+    uint64_t docs_evaluated;
+    /*
+     Lexical posting entries decoded.
+     */
+    uint64_t postings_decoded;
+} ZeQueryResult;
+
+/*
+ Diagnostic text result. Release with ze_text_query_outcome_free.
+ */
+typedef struct ZeTextQueryOutcome {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Owned text hits, initialized by the callee; free only through the containing outcome.
+     */
+    struct ZeTextQueryResult result;
+    /*
+     Core query facts in the existing ABI shape. Its hits and hit_count are always zero; it owns no allocation.
+     */
+    struct ZeQueryResult diagnostics;
+    /*
+     One when core diagnostics are present; absent for k=0.
+     */
+    uint32_t has_diagnostics;
+    /*
+     One when optional text query stage clocks are enabled.
+     */
+    uint32_t has_timings;
+    /*
+     One when a model runtime participated.
+     */
+    uint32_t has_backend;
+    /*
+     Runtime reports use of a GPU stream.
+     */
+    uint32_t backend_gpu;
+    /*
+     Borrowed static runtime name; never free this pointer.
+     */
+    const uint8_t *runtime_name;
+    /*
+     Runtime name byte count.
+     */
+    size_t runtime_name_len;
+    /*
+     1 CPU, 2 CPU+GPU, 3 CPU+ANE, 4 All; zero without backend.
+     */
+    int32_t requested_compute_units;
+    /*
+     One when CoreML compute-plan placement counts are available; zero means
+     unknown (MLX or macOS before 14.4). These counts describe planned
+     placement, not an execution trace.
+     */
+    uint32_t has_observed_compute_units;
+    /*
+     Operations planned for the CPU; zero when placement is unknown.
+     */
+    uint64_t observed_cpu_ops;
+    /*
+     Operations planned for the GPU; zero when placement is unknown.
+     */
+    uint64_t observed_gpu_ops;
+    /*
+     Operations planned for the Neural Engine; zero when placement is unknown.
+     */
+    uint64_t observed_neural_engine_ops;
+    /*
+     One for a fixed-width runtime.
+     */
+    uint32_t has_sequence_length;
+    /*
+     Must be zero; explicit alignment before sequence_length.
+     */
+    uint32_t reserved;
+    /*
+     Fixed model input width, or zero.
+     */
+    size_t sequence_length;
+    /*
+     Nonpadding query model tokens.
+     */
+    uint64_t query_tokens;
+    /*
+     Completed query embedding calls.
+     */
+    uint64_t embedding_calls;
+    /*
+     Optional outer spans: tokenization, lexical analysis, embedding queue, evaluation, normalization, retrieval, materialization, end-to-end. Spans overlap; do not sum.
+     */
+    uint64_t timings_ns[8];
+} ZeTextQueryOutcome;
+
+/*
  Store lifecycle state report.
  */
 typedef struct ZeStateReport {
@@ -1909,28 +2368,6 @@ typedef struct ZeGetResult {
 } ZeGetResult;
 
 /*
- Atomic document-delete request.
- */
-typedef struct ZeDeleteRequest {
-    /*
-     Caller-provided structure size.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Caller-owned document-id array.
-     */
-    const struct ZeDocId *doc_ids;
-    /*
-     Number of identifiers.
-     */
-    size_t doc_id_count;
-} ZeDeleteRequest;
-
-/*
  Delete-by-filter request for `ze_delete_where`.
  */
 typedef struct ZeDeleteWhereRequest {
@@ -1996,11 +2433,6 @@ typedef struct ZeConditionalDeleteRequest {
      */
     size_t condition_count;
 } ZeConditionalDeleteRequest;
-
-/*
- Opaque generation-tagged cooperative-cancellation handle.
- */
-typedef uint64_t ze_cancel_token;
 
 /*
  Ordered, filtered, bounded document-enumeration request.
@@ -2645,138 +3077,6 @@ typedef struct ZeQueryRequest {
      */
     uint64_t deadline_ns;
 } ZeQueryRequest;
-
-/*
- One callee-owned structured-query hit.
- */
-typedef struct ZeQueryHit {
-    /*
-     One when document identity is present.
-     */
-    uint32_t has_document;
-    /*
-     One when `revision` is present; fused hits carry identity only.
-     */
-    uint32_t has_revision;
-    /*
-     Document id when `has_document` is one.
-     */
-    struct ZeDocId doc_id;
-    /*
-     Document revision when `has_revision` is one.
-     */
-    uint64_t revision;
-    /*
-     Larger-is-better ranking score of the executed mode.
-     */
-    double score;
-    /*
-     One when `vector_squared_l2` is present.
-     */
-    uint32_t has_vector_score;
-    /*
-     One when `lexical_bm25` is present.
-     */
-    uint32_t has_lexical_score;
-    /*
-     Squared L2 distance of the vector leg.
-     */
-    double vector_squared_l2;
-    /*
-     BM25 score of the lexical leg.
-     */
-    double lexical_bm25;
-} ZeQueryHit;
-
-/*
- Callee-owned structured-query result; release with `ze_query_result_free`.
- */
-typedef struct ZeQueryResult {
-    /*
-     Caller-provided structure size.
-     */
-    uint32_t abi_size;
-    /*
-     Caller sets zero; callee returns an opaque allocation generation.
-     */
-    uint32_t abi_reserved;
-    /*
-     Callee-owned hit array, or null when `hit_count` is zero.
-     */
-    struct ZeQueryHit *hits;
-    /*
-     Number of initialized hits.
-     */
-    size_t hit_count;
-    /*
-     Pinned store generation queried.
-     */
-    uint64_t generation;
-    /*
-     `0` vector, `1` lexical, or `2` hybrid mode executed.
-     */
-    int32_t mode;
-    /*
-     One when any candidate membership came from a non-exhaustive path.
-     */
-    uint32_t approximate;
-    /*
-     One when every returned score came from full-precision rows.
-     */
-    uint32_t exact_rescore;
-    /*
-     One when an execution budget fired.
-     */
-    uint32_t budget_exhausted;
-    /*
-     One when the fusion fields are present.
-     */
-    uint32_t has_fusion;
-    /*
-     `0` convex combination or `1` reciprocal rank fusion.
-     */
-    int32_t fusion_method;
-    /*
-     Effective fusion alpha.
-     */
-    double effective_alpha;
-    /*
-     Fusion widening rounds attempted.
-     */
-    uint64_t fusion_rounds;
-    /*
-     One when `embedding_epoch` is present.
-     */
-    uint32_t has_embedding_epoch;
-    /*
-     One when `tokenizer_epoch` is present.
-     */
-    uint32_t has_tokenizer_epoch;
-    /*
-     Embedding identity that interpreted the vector leg.
-     */
-    uint64_t embedding_epoch;
-    /*
-     Tokenizer identity that interpreted the lexical leg.
-     */
-    uint64_t tokenizer_epoch;
-    /*
-     Logical row-coordinate multiply-accumulates.
-     */
-    uint64_t dims_touched;
-    /*
-     Row-major payload bytes read.
-     */
-    uint64_t bytes_read;
-    /*
-     Lexical documents whose score was computed.
-     */
-    uint64_t docs_evaluated;
-    /*
-     Lexical posting entries decoded.
-     */
-    uint64_t postings_decoded;
-} ZeQueryResult;
 
 /*
  One half-open matched UTF-8 byte range. `ZeQuerySnippet.highlights` are
@@ -3543,6 +3843,51 @@ ze_error_code ze_text_query(ze_handle handle,
  Frees a text query result and every callee-owned hit string exactly once.
  */
 ze_error_code ze_text_query_result_free(struct ZeTextQueryResult *result);
+
+/*
+ Tombstones every chunk belonging to the caller document ids.
+ */
+ze_error_code ze_text_delete(ze_handle handle,
+                             const struct ZeDeleteRequest *request,
+                             struct ZeMutationReport *out_report);
+
+/*
+ Reads a non-mutating summary of text store health.
+ */
+ze_error_code ze_text_health(ze_handle handle,
+                             struct ZeTextHealthReport *out_report);
+
+/*
+ Executes exactly one Rust maintenance call with the supplied work budget.
+ */
+ze_error_code ze_text_maintain_budgeted(ze_handle handle,
+                                        const struct ZeMaintainRequest *request,
+                                        struct ZeMaintainReport *out_report);
+
+/*
+ Ingests with explicit chunk/maintenance policy, shared cancellation and a full report.
+ Cancellation and deadlines are cooperative between ingest stages and may leave
+ acknowledged partial writes. After the final pre-commit check, cancellation or
+ expiry does not turn a completed ingest into a cancellation/timeout error.
+ */
+ze_error_code ze_text_ingest_v2(ze_handle handle,
+                                const struct ZeTextIngestRequestV2 *request,
+                                struct ZeTextIngestReport *out_report);
+
+/*
+ Queries with core cancellation/deadline semantics and returns text, query facts,
+ optional stage timings and the loaded backend. Only the outer output ABI
+ prefix needs initialization. Release successful results with ze_text_query_outcome_free.
+ */
+ze_error_code ze_text_query_v2(ze_handle handle,
+                               const struct ZeTextQueryRequestV2 *request,
+                               struct ZeTextQueryOutcome *out_result);
+
+/*
+ Frees owned text hits through the existing typed allocation registry and
+ clears the complete outcome. Repeated frees of the cleared outcome succeed.
+ */
+ze_error_code ze_text_query_outcome_free(struct ZeTextQueryOutcome *result);
 
 /*
  Releases the slot and store. A poisoned handle is still released and

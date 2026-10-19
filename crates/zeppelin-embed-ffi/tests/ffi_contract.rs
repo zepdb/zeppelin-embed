@@ -1719,3 +1719,340 @@ fn ze_265_warm_request_has_frozen_layout() {
     assert_eq!(offset_of!(ZeWarmLexicalRequest, cancel_token), 8);
     assert_eq!(offset_of!(ZeWarmLexicalRequest, deadline_ns), 16);
 }
+
+// ZE-505: additive text ABI contracts, kept together for parallel ZE-501 work.
+#[cfg(feature = "text")]
+#[test]
+fn text_v2_entry_points_validate_requests_before_use() {
+    let mut ingest: ZeTextIngestReport = unsafe { std::mem::zeroed() };
+    ingest.abi_size = size_of::<ZeTextIngestReport>() as u32;
+    let mut outcome: ZeTextQueryOutcome = unsafe { std::mem::zeroed() };
+    outcome.abi_size = size_of::<ZeTextQueryOutcome>() as u32;
+    assert_eq!(
+        ze_text_ingest_v2(0, std::ptr::null(), &mut ingest),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert_eq!(
+        ze_text_query_v2(0, std::ptr::null(), &mut outcome),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+    assert_eq!(
+        ze_text_health(0, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert_eq!(
+        ze_text_delete(0, std::ptr::null(), std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert_eq!(
+        ze_text_maintain_budgeted(0, std::ptr::null(), std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+}
+
+#[test]
+fn every_text_struct_has_the_frozen_size_and_field_offsets() {
+    assert_layout!(ZeTextOpenRequest, 88, 8, { abi_size: 0, abi_reserved: 4, store: 8, bundle_path: 72, bundle_path_len: 80 });
+    assert_layout!(ZeTextDocument, 48, 8, { abi_size: 0, abi_reserved: 4, doc_id: 8, revision: 24, text: 32, text_len: 40 });
+    assert_layout!(ZeTextIngestRequest, 48, 8, { abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16, embed_batch_size: 24, seal_every: 32, channel_capacity: 40 });
+    assert_layout!(ZeTextQueryRequest, 40, 8, { abi_size: 0, abi_reserved: 4, text: 8, text_len: 16, k: 24, legs: 32, reserved: 36 });
+    assert_layout!(ZeTextQueryHit, 80, 8, { doc_id: 0, revision: 16, chunk: 24, reserved: 28, text: 32, text_len: 40, score: 48, has_vector_score: 56, has_lexical_score: 60, vector_squared_l2: 64, lexical_bm25: 72 });
+    assert_layout!(ZeTextQueryResult, 40, 8, { abi_size: 0, abi_reserved: 4, hits: 8, hit_count: 16, embedding_epoch: 24, tokenizer_epoch: 32 });
+    assert_layout!(ZeTextIngestRequestV2, 112, 8, { abi_size: 0, abi_reserved: 4, batch: 8, chunk_policy: 56, reserved: 60, chunk_max: 64, chunk_overlap: 72, maintenance_wall_time_ns: 80, maintenance_bytes: 88, cancel_token: 96, deadline_ns: 104 });
+    assert_layout!(ZeTextIngestReport, 80, 8, { abi_size: 0, abi_reserved: 4, generation: 8, documents: 16, chunks: 24, tokens: 32, embed_batches: 40, seals: 48, max_in_flight_batches: 56, all_threads_joined: 64, reserved: 68, elapsed_ns: 72 });
+    assert_layout!(ZeTextQueryRequestV2, 112, 8, { abi_size: 0, abi_reserved: 4, query: 8, has_tier: 48, tier: 52, graph_profile: 56, scan_rescore: 60, graph_ef: 64, graph_seed: 72, oversample: 80, max_candidates_per_segment: 88, cancel_token: 96, deadline_ns: 104 });
+    assert_layout!(ZeTextQueryOutcome, 336, 8, { abi_size: 0, abi_reserved: 4, result: 8, diagnostics: 48, has_diagnostics: 176, has_timings: 180, has_backend: 184, backend_gpu: 188, runtime_name: 192, runtime_name_len: 200, requested_compute_units: 208, has_observed_compute_units: 212, observed_cpu_ops: 216, observed_gpu_ops: 224, observed_neural_engine_ops: 232, has_sequence_length: 240, reserved: 244, sequence_length: 248, query_tokens: 256, embedding_calls: 264, timings_ns: 272 });
+    assert_layout!(ZeTextHealthReport, 64, 8, { abi_size: 0, abi_reserved: 4, generation: 8, status: 16, has_retained_through: 20, pending_docs: 24, graph_coverage: 32, segment_count: 40, unresolved_fault_count: 48, retained_through: 56 });
+}
+
+#[cfg(feature = "text")]
+#[test]
+fn expired_text_ingest_deadline_matches_core_query_timeout() {
+    use common::text::*;
+    let store = common::TestStore::new();
+    assert_eq!(common::ingest_rows(store.handle, 1, 4), ZeErrorCode::ZeOk);
+    let vector = [0.25_f32; 4];
+    let mut query = common::valid_query_request(&vector);
+    query.deadline_ns = 1;
+    let mut result = output::<ZeQueryResult>();
+    let core_code = ze_query(store.handle, &query, &mut result);
+    assert_eq!(core_code, ZeErrorCode::ZeErrTimeout);
+
+    let docs = [document(1, b"hello")];
+    let mut ingest = ingest_request(&docs);
+    ingest.deadline_ns = 1;
+    let mut report = output::<ZeTextIngestReport>();
+    assert_eq!(ze_text_ingest_v2(0, &ingest, &mut report), core_code);
+    assert_eq!(report.generation, 0);
+}
+
+#[cfg(feature = "text")]
+#[test]
+fn text_v2_rejects_invalid_controls_policies_and_nested_prefixes() {
+    use common::text::*;
+    let mut report = output::<ZeTextIngestReport>();
+    let mut ingest = ingest_request(&[]);
+    ingest.deadline_ns = 1;
+    assert_eq!(
+        ze_text_ingest_v2(0, &ingest, &mut report),
+        ZeErrorCode::ZeErrTimeout
+    );
+    ingest.cancel_token = 1;
+    assert_eq!(
+        ze_text_ingest_v2(0, &ingest, &mut report),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    ingest.deadline_ns = 0;
+    assert_eq!(
+        ze_text_ingest_v2(0, &ingest, &mut report),
+        ZeErrorCode::ZeErrInvalidHandle
+    );
+    ingest.cancel_token = 0;
+    ingest.chunk_overlap = ingest.chunk_max;
+    assert_eq!(
+        ze_text_ingest_v2(0, &ingest, &mut report),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    ingest.batch.abi_size = 8;
+    assert_eq!(
+        ze_text_ingest_v2(0, &ingest, &mut report),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    let mut outcome = output::<ZeTextQueryOutcome>();
+    let base = query_request(b"hello");
+    let cases = [
+        ZeTextQueryRequestV2 {
+            has_tier: 2,
+            ..base
+        },
+        ZeTextQueryRequestV2 { tier: 1, ..base },
+        ZeTextQueryRequestV2 {
+            has_tier: 1,
+            tier: 9,
+            ..base
+        },
+        ZeTextQueryRequestV2 {
+            graph_ef: 1,
+            ..base
+        },
+        ZeTextQueryRequestV2 {
+            scan_rescore: 2,
+            ..base
+        },
+        ZeTextQueryRequestV2 {
+            scan_rescore: 1,
+            ..base
+        },
+        ZeTextQueryRequestV2 {
+            oversample: 1,
+            ..base
+        },
+        ZeTextQueryRequestV2 {
+            cancel_token: 1,
+            deadline_ns: 1,
+            ..base
+        },
+        ZeTextQueryRequestV2 {
+            query: ZeTextQueryRequest {
+                abi_reserved: 1,
+                ..base.query
+            },
+            ..base
+        },
+        ZeTextQueryRequestV2 {
+            query: ZeTextQueryRequest {
+                abi_size: 8,
+                ..base.query
+            },
+            ..base
+        },
+        ZeTextQueryRequestV2 {
+            query: ZeTextQueryRequest {
+                legs: 9,
+                ..base.query
+            },
+            ..base
+        },
+    ];
+    for request in cases {
+        assert_eq!(
+            ze_text_query_v2(0, &request, &mut outcome),
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+        assert!(outcome.result.hits.is_null());
+    }
+    assert_eq!(
+        ze_text_query_v2(
+            0,
+            &ZeTextQueryRequestV2 {
+                cancel_token: 1,
+                ..base
+            },
+            &mut outcome
+        ),
+        ZeErrorCode::ZeErrInvalidHandle
+    );
+    assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+}
+
+#[cfg(feature = "text")]
+#[test]
+fn text_v2_roundtrip_reports_controls_and_bounded_maintenance() {
+    use common::text::*;
+    let store = TextStore::new();
+    let mut health = output::<ZeTextHealthReport>();
+    assert_eq!(ze_text_health(store.handle, &mut health), ZeErrorCode::ZeOk);
+    assert_eq!(health.unresolved_fault_count, 0);
+    let initial_generation = health.generation;
+    let docs = [
+        document(7, b"hello world hello world hello"),
+        document(8, b"hello world"),
+    ];
+    let mut ingest = ingest_request(&docs);
+    let mut report = output::<ZeTextIngestReport>();
+    let mut token = 0;
+    assert_eq!(ze_cancel_token_create(&mut token), ZeErrorCode::ZeOk);
+    assert_eq!(ze_cancel_token_cancel(token), ZeErrorCode::ZeOk);
+    ingest.cancel_token = token;
+    assert_eq!(
+        ze_text_ingest_v2(store.handle, &ingest, &mut report),
+        ZeErrorCode::ZeErrCancelled
+    );
+    assert_eq!(ze_text_health(store.handle, &mut health), ZeErrorCode::ZeOk);
+    assert_eq!(health.generation, initial_generation);
+    ingest.cancel_token = 0;
+    assert_eq!(
+        ze_text_ingest_v2(store.handle, &ingest, &mut report),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(
+        (report.documents, report.chunks, report.embed_batches),
+        (2, 3, 2)
+    );
+    assert!(report.tokens > 0);
+    assert_eq!(report.all_threads_joined, 1);
+    assert!(report.max_in_flight_batches <= 1);
+    let generation = report.generation;
+    assert_eq!(ze_text_health(store.handle, &mut health), ZeErrorCode::ZeOk);
+    assert_eq!(health.generation, generation);
+    let mut outcome = output::<ZeTextQueryOutcome>();
+    let mut query = query_request(b"hello");
+    query.cancel_token = token;
+    assert_eq!(
+        ze_text_query_v2(store.handle, &query, &mut outcome),
+        ZeErrorCode::ZeErrCancelled
+    );
+    query.cancel_token = 0;
+    query.deadline_ns = 1;
+    assert_eq!(
+        ze_text_query_v2(store.handle, &query, &mut outcome),
+        ZeErrorCode::ZeErrTimeout
+    );
+    query.deadline_ns = 0;
+    for legs in [0, 1, 2] {
+        query.query.legs = legs;
+        assert_eq!(
+            ze_text_query_v2(store.handle, &query, &mut outcome),
+            ZeErrorCode::ZeOk
+        );
+        assert!(outcome.result.hit_count > 0);
+        assert_eq!(outcome.has_diagnostics, 1);
+        assert_eq!(outcome.diagnostics.generation, generation);
+        assert_eq!(outcome.diagnostics.mode, legs);
+        assert!(outcome.diagnostics.hits.is_null());
+        assert_eq!(
+            outcome.has_timings,
+            u32::from(zeppelin_embed::diag::QUERY_TIMING_ENABLED)
+        );
+        assert_eq!(outcome.has_backend, u32::from(legs != 1));
+        assert_eq!(outcome.embedding_calls, u64::from(legs != 1));
+        if legs != 1 {
+            assert!(outcome.query_tokens > 0);
+            let name = unsafe {
+                std::slice::from_raw_parts(outcome.runtime_name, outcome.runtime_name_len)
+            };
+            assert_eq!(name, b"mlx-c");
+            assert_eq!(outcome.has_observed_compute_units, 0);
+            assert_eq!(
+                (
+                    outcome.observed_cpu_ops,
+                    outcome.observed_gpu_ops,
+                    outcome.observed_neural_engine_ops
+                ),
+                (0, 0, 0)
+            );
+            assert_eq!(outcome.reserved, 0);
+        }
+        assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+        assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+    }
+    query.query.legs = 0;
+    query.has_tier = 1;
+    query.tier = 2;
+    query.scan_rescore = 1;
+    query.oversample = 2;
+    query.max_candidates_per_segment = 100;
+    assert_eq!(
+        ze_text_query_v2(store.handle, &query, &mut outcome),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(outcome.diagnostics.exact_rescore, 1);
+    assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+    query.query.k = 0;
+    assert_eq!(
+        ze_text_query_v2(store.handle, &query, &mut outcome),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(
+        (
+            outcome.result.hit_count,
+            outcome.has_diagnostics,
+            outcome.has_backend
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+    let budget = ZeMaintainRequest {
+        abi_size: size_of::<ZeMaintainRequest>() as u32,
+        abi_reserved: 0,
+        wall_time_ns: 0,
+        bytes: 0,
+    };
+    let mut maintenance = output::<ZeMaintainReport>();
+    assert_eq!(
+        ze_text_maintain_budgeted(store.handle, &budget, &mut maintenance),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(maintenance.bytes_consumed, 0);
+    let id = ZeDocId { high: 0, low: 7 };
+    let delete = ZeDeleteRequest {
+        abi_size: size_of::<ZeDeleteRequest>() as u32,
+        abi_reserved: 0,
+        doc_ids: &id,
+        doc_id_count: 1,
+    };
+    let mut mutation = output::<ZeMutationReport>();
+    assert_eq!(
+        ze_text_delete(store.handle, &delete, &mut mutation),
+        ZeErrorCode::ZeOk
+    );
+    assert!(mutation.generation > generation);
+    let query = query_request(b"hello");
+    assert_eq!(
+        ze_text_query_v2(store.handle, &query, &mut outcome),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(outcome.result.hit_count, 1);
+    let hits = unsafe { std::slice::from_raw_parts(outcome.result.hits, outcome.result.hit_count) };
+    assert!(
+        hits.iter()
+            .all(|hit| (hit.doc_id.high, hit.doc_id.low) != (0, 7))
+    );
+    assert!(
+        hits.iter()
+            .any(|hit| (hit.doc_id.high, hit.doc_id.low) == (0, 8))
+    );
+    assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
+    assert_eq!(ze_cancel_token_free(token), ZeErrorCode::ZeOk);
+}

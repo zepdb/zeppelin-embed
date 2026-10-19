@@ -155,6 +155,8 @@ fn tower(bytes: &mut Bytes<'_>, rest: &[u8]) -> ZeEmbeddingTower {
 }
 
 fuzz_target!(|data: &[u8]| {
+    #[cfg(feature = "text")]
+    fuzz_text(data);
     let fixture = fixture();
     let handle = if data.first().copied().unwrap_or(0) % 16 == 0 {
         // Occasionally aim at a never-valid or stale handle.
@@ -718,3 +720,177 @@ fuzz_target!(|data: &[u8]| {
         _ => typed(ze_close(u64::MAX.saturating_sub(bytes.u64() % 1_024))),
     }
 });
+
+// ZE-505: run with --features text. All buffers and record counts are honest;
+// a real text handle reaches the new marshal, writer and result ownership paths.
+#[cfg(feature = "text")]
+fn text_fixture() -> ZeHandle {
+    static TEXT: OnceLock<ZeHandle> = OnceLock::new();
+    *TEXT.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("ze-text-ffi-fuzz-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("text fuzz directory");
+        let model = root.join("bert.zem");
+        std::fs::write(
+            &model,
+            include_bytes!("../../crates/zeppelin-embed-text/tests/fixtures/ze115/bert.zem"),
+        )
+        .expect("text fuzz model");
+        let model = model.to_string_lossy().into_owned().into_bytes();
+        let path = root
+            .join("store")
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes();
+        let request = ZeTextOpenRequest {
+            abi_size: size_of::<ZeTextOpenRequest>() as u32,
+            abi_reserved: 0,
+            store: ZeOpenRequest {
+                abi_size: size_of::<ZeOpenRequest>() as u32,
+                abi_reserved: 0,
+                path: path.as_ptr(),
+                path_len: path.len(),
+                access_mode: 0,
+                durability_mode: 0,
+                commit_tier: 1,
+                reader_drain_timeout_ms: 10,
+                max_resident_bytes: u64::MAX,
+                max_temp_bytes: u64::MAX,
+            },
+            bundle_path: model.as_ptr(),
+            bundle_path_len: model.len(),
+        };
+        let mut handle = 0;
+        assert_eq!(ze_text_open(&request, &mut handle), ZeErrorCode::ZeOk);
+        handle
+    })
+}
+
+#[cfg(feature = "text")]
+fn fuzz_text(data: &[u8]) {
+    let handle = text_fixture();
+    let mut bytes = Bytes { data, cursor: 0 };
+    let operation = bytes.u8() % 6;
+    let mut token = 0;
+    assert_eq!(ze_cancel_token_create(&mut token), ZeErrorCode::ZeOk);
+    if bytes.u8() % 2 == 0 {
+        typed(ze_cancel_token_cancel(token));
+    }
+    let cancel_token = if bytes.u8() % 2 == 0 { token } else { 0 };
+    let deadline_ns = if bytes.u8() % 2 == 0 {
+        u64::from(bytes.u8())
+    } else {
+        0
+    };
+    match operation {
+        0 => {
+            let rest = bytes.rest();
+            let document = ZeTextDocument {
+                abi_size: abi_size::<ZeTextDocument>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                doc_id: ZeDocId {
+                    high: 0,
+                    low: bytes.u64() % 32,
+                },
+                revision: bytes.u64(),
+                text: rest.as_ptr(),
+                text_len: bytes.len_within(rest.len()),
+            };
+            let request = ZeTextIngestRequestV2 {
+                abi_size: abi_size::<ZeTextIngestRequestV2>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                batch: ZeTextIngestRequest {
+                    abi_size: abi_size::<ZeTextIngestRequest>(&mut bytes),
+                    abi_reserved: bytes.u32() % 2,
+                    documents: &document,
+                    document_count: usize::from(bytes.u8() % 2),
+                    embed_batch_size: usize::from(bytes.u8() % 4),
+                    seal_every: usize::from(bytes.u8() % 8),
+                    channel_capacity: usize::from(bytes.u8() % 3),
+                },
+                chunk_policy: i32::from(bytes.u8() % 3),
+                reserved: bytes.u32() % 2,
+                chunk_max: usize::from(bytes.u8()),
+                chunk_overlap: usize::from(bytes.u8()),
+                maintenance_wall_time_ns: u64::from(bytes.u8()),
+                maintenance_bytes: u64::from(bytes.u8()),
+                cancel_token,
+                deadline_ns,
+            };
+            let mut report: ZeTextIngestReport = unsafe { std::mem::zeroed() };
+            report.abi_size = abi_size::<ZeTextIngestReport>(&mut bytes);
+            typed(ze_text_ingest_v2(handle, &request, &mut report));
+        }
+        1 => {
+            let rest = bytes.rest();
+            let request = ZeTextQueryRequestV2 {
+                abi_size: abi_size::<ZeTextQueryRequestV2>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                query: ZeTextQueryRequest {
+                    abi_size: abi_size::<ZeTextQueryRequest>(&mut bytes),
+                    abi_reserved: bytes.u32() % 2,
+                    text: rest.as_ptr(),
+                    text_len: bytes.len_within(rest.len()),
+                    k: usize::from(bytes.u8() % 16),
+                    legs: i32::from(bytes.u8() % 4),
+                    reserved: bytes.u32() % 2,
+                },
+                has_tier: u32::from(bytes.u8() % 3),
+                tier: i32::from(bytes.u8() % 5),
+                graph_profile: i32::from(bytes.u8() % 3),
+                scan_rescore: u32::from(bytes.u8() % 3),
+                graph_ef: usize::from(bytes.u8()),
+                graph_seed: bytes.u64(),
+                oversample: usize::from(bytes.u8()),
+                max_candidates_per_segment: usize::from(bytes.u8()),
+                cancel_token,
+                deadline_ns,
+            };
+            let mut outcome: ZeTextQueryOutcome = unsafe { std::mem::zeroed() };
+            outcome.abi_size = abi_size::<ZeTextQueryOutcome>(&mut bytes);
+            typed(ze_text_query_v2(handle, &request, &mut outcome));
+            // Restore the valid prefix for an untouched failed output; a successful
+            // call already contains the allocation generation in its nested result.
+            outcome.abi_size = size_of::<ZeTextQueryOutcome>() as u32;
+            typed(ze_text_query_outcome_free(&mut outcome));
+            typed(ze_text_query_outcome_free(&mut outcome));
+        }
+        2 => {
+            let id = ZeDocId {
+                high: bytes.u64(),
+                low: bytes.u64(),
+            };
+            let request = ZeDeleteRequest {
+                abi_size: abi_size::<ZeDeleteRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                doc_ids: &id,
+                doc_id_count: usize::from(bytes.u8() % 2),
+            };
+            let mut report: ZeMutationReport = unsafe { std::mem::zeroed() };
+            report.abi_size = size_of::<ZeMutationReport>() as u32;
+            typed(ze_text_delete(handle, &request, &mut report));
+        }
+        3 => {
+            let request = ZeMaintainRequest {
+                abi_size: abi_size::<ZeMaintainRequest>(&mut bytes),
+                abi_reserved: bytes.u32() % 2,
+                wall_time_ns: u64::from(bytes.u8()),
+                bytes: u64::from(bytes.u8()),
+            };
+            let mut report: ZeMaintainReport = unsafe { std::mem::zeroed() };
+            report.abi_size = abi_size::<ZeMaintainReport>(&mut bytes);
+            typed(ze_text_maintain_budgeted(handle, &request, &mut report));
+        }
+        4 => {
+            let mut report: ZeTextHealthReport = unsafe { std::mem::zeroed() };
+            report.abi_size = abi_size::<ZeTextHealthReport>(&mut bytes);
+            typed(ze_text_health(handle, &mut report));
+        }
+        _ => {
+            let mut outcome: ZeTextQueryOutcome = unsafe { std::mem::zeroed() };
+            outcome.abi_size = abi_size::<ZeTextQueryOutcome>(&mut bytes);
+            typed(ze_text_query_outcome_free(&mut outcome));
+        }
+    }
+    typed(ze_cancel_token_free(token));
+}

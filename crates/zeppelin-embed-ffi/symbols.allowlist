@@ -53,6 +53,7 @@ ze_stats
 ze_text_ingest
 ze_text_maintain
 ze_text_open
+ze_text_open_model
 ze_text_query
 ze_text_query_result_free
 ze_upsert
@@ -80,3 +81,10 @@ ze_store_graph_maintain
 ze_store_graph_query
 ze_store_graph_resources
 ze_store_set_graph_maintenance_policy
+
+ze_text_delete
+ze_text_health
+ze_text_maintain_budgeted
+ze_text_ingest_v2
+ze_text_query_v2
+ze_text_query_outcome_free

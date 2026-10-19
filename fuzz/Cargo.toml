@@ -8,6 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [features]
+text = ["zeppelin-embed-ffi/text"]
 graph-cypher = [
     "dep:zeppelin-embed-cypher",
     "zeppelin-embed/graph-cypher",

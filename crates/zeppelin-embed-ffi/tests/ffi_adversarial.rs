@@ -395,6 +395,11 @@ const ABI_REGISTRY: &[AbiEntry] = &[
     },
     #[cfg(feature = "text")]
     AbiEntry {
+        name: "ze_text_open_model",
+        coverage: AbiCoverage::InvalidProbe(probe_text_open_model),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
         name: "ze_text_ingest",
         coverage: AbiCoverage::InvalidProbe(probe_text_ingest),
     },
@@ -412,6 +417,36 @@ const ABI_REGISTRY: &[AbiEntry] = &[
     AbiEntry {
         name: "ze_text_query_result_free",
         coverage: AbiCoverage::InvalidProbe(probe_text_query_result_free),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_delete",
+        coverage: AbiCoverage::InvalidProbe(probe_text_delete),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_health",
+        coverage: AbiCoverage::InvalidProbe(probe_text_health),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_ingest_v2",
+        coverage: AbiCoverage::InvalidProbe(probe_text_ingest_v2),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_maintain_budgeted",
+        coverage: AbiCoverage::InvalidProbe(probe_text_maintain_budgeted),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_query_v2",
+        coverage: AbiCoverage::InvalidProbe(probe_text_query_v2),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
+        name: "ze_text_query_outcome_free",
+        coverage: AbiCoverage::InvalidProbe(probe_text_query_outcome_free),
     },
 ];
 
@@ -1297,6 +1332,11 @@ fn probe_text_open(_: &MatrixContext) -> ProbeResult {
 }
 
 #[cfg(feature = "text")]
+fn probe_text_open_model(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_open_model(std::ptr::null(), std::ptr::null_mut()))
+}
+
+#[cfg(feature = "text")]
 fn probe_text_ingest(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_text_ingest(
         u64::MAX,
@@ -1326,6 +1366,52 @@ fn probe_text_query(_: &MatrixContext) -> ProbeResult {
 #[cfg(feature = "text")]
 fn probe_text_query_result_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_text_query_result_free(std::ptr::null_mut()))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_delete(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_delete(
+        u64::MAX,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_health(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_health(u64::MAX, std::ptr::null_mut()))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_ingest_v2(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_ingest_v2(
+        u64::MAX,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_maintain_budgeted(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_maintain_budgeted(
+        u64::MAX,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_query_v2(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_query_v2(
+        u64::MAX,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+#[cfg(feature = "text")]
+fn probe_text_query_outcome_free(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_text_query_outcome_free(std::ptr::null_mut()))
 }
 
 fn probe_graph_relationship_types(_: &MatrixContext) -> ProbeResult {
