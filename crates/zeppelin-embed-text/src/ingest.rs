@@ -250,6 +250,16 @@ pub struct TextStore {
 }
 
 impl TextStore {
+    /// Resolves a pinned model into the verified cache, then opens the text store.
+    pub fn open_model(
+        store_path: impl AsRef<Path>,
+        model: &crate::ModelRef,
+        options: crate::ModelOpenOptions<'_>,
+    ) -> Result<Self, TextError> {
+        let bundle = crate::resolve_model(model, &options).map_err(TextError::ModelResolution)?;
+        Self::open(store_path, bundle, options.text)
+    }
+
     /// Opens a `.zem` bundle and a store stamped with its two-tower epoch.
     pub fn open(
         store_path: impl AsRef<Path>,

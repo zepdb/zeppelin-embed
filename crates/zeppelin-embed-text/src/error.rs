@@ -4,6 +4,8 @@ use crate::runtime::RuntimeError;
 /// Typed text API failure.
 #[derive(Debug)]
 pub enum TextError {
+    /// Pinned model download or cache verification failed.
+    ModelResolution(crate::ModelError),
     /// The `.zem` artifact is absent, corrupt, or unsupported.
     Bundle(BundleError),
     /// Tokenization or model evaluation failed.
@@ -45,6 +47,7 @@ pub enum TextError {
 impl std::fmt::Display for TextError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ModelResolution(error) => error.fmt(formatter),
             Self::Bundle(error) => error.fmt(formatter),
             Self::Runtime(error) => error.fmt(formatter),
             Self::DimsMismatch { declared, actual } => {
@@ -71,6 +74,7 @@ impl std::fmt::Display for TextError {
 impl std::error::Error for TextError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::ModelResolution(error) => Some(error),
             Self::Bundle(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Ingest(error) => Some(error),

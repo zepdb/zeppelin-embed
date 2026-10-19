@@ -898,6 +898,59 @@ pub struct ZeTextOpenRequest {
     pub bundle_path_len: usize,
 }
 
+/// Permit plain HTTP model downloads for test fixtures; tokens still require HTTPS.
+pub const ZE_MODEL_ALLOW_HTTP: u32 = 1;
+/// Authorize HF_TOKEN on HTTPS requests to the model endpoint's exact host.
+pub const ZE_MODEL_SEND_TOKEN_TO_ENDPOINT: u32 = 2;
+
+/// Resolves a pinned Hugging Face model and opens a text store.
+/// All string buffers are caller-owned UTF-8, without NUL terminators.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextOpenModelRequest {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Existing core store-open fields.
+    pub store: ZeOpenRequest,
+    /// Hugging Face owner/repository.
+    pub repo: *const u8,
+    /// Number of repo bytes.
+    pub repo_len: usize,
+    /// Immutable 40-hex commit SHA.
+    pub revision: *const u8,
+    /// Number of revision bytes.
+    pub revision_len: usize,
+    /// Pinned manifest SHA-256 as 64 hex characters.
+    pub manifest_sha256: *const u8,
+    /// Number of checksum bytes.
+    pub manifest_sha256_len: usize,
+    /// Cache root override; empty selects ZE_MODEL_CACHE or the macOS default.
+    pub cache_dir: *const u8,
+    /// Number of cache path bytes.
+    pub cache_dir_len: usize,
+    /// Endpoint override; empty selects ZE_MODEL_ENDPOINT or HF HTTPS.
+    /// HTTP requires ZE_MODEL_ALLOW_HTTP in flags or ZE_MODEL_ALLOW_HTTP=1.
+    pub endpoint: *const u8,
+    /// Number of endpoint bytes.
+    pub endpoint_len: usize,
+    /// Zero or one; ZE_MODEL_OFFLINE=1 also prohibits networking.
+    pub offline: u32,
+    /// Bitmask: ZE_MODEL_ALLOW_HTTP for fixtures and ZE_MODEL_SEND_TOKEN_TO_ENDPOINT
+    /// to allow HF_TOKEN on HTTPS to the endpoint's exact host. Default zero
+    /// sends tokens only to HTTPS huggingface.co. Tokens never travel over HTTP.
+    /// Unknown bits are invalid.
+    pub flags: u32,
+    /// Optional synchronous file-boundary progress callback (done, total bytes).
+    /// Initially (0, 0) means downloading the manifest. Must not unwind or
+    /// reenter model resolution. The callback and user_data live until return.
+    pub progress:
+        Option<unsafe extern "C" fn(user_data: *mut std::ffi::c_void, done: u64, total: u64)>,
+    /// Opaque caller pointer passed unchanged to progress.
+    pub user_data: *mut std::ffi::c_void,
+}
+
 /// One caller-owned text document.
 #[derive(Clone, Copy)]
 #[repr(C)]

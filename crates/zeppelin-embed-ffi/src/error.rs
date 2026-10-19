@@ -14,6 +14,13 @@ impl FfiError {
 
         let message = error.to_string();
         let code = match error {
+            TextError::ModelResolution(error) => match error {
+                zeppelin_embed_text::ModelError::OfflineMiss => ZeErrorCode::ZeErrNotFound,
+                zeppelin_embed_text::ModelError::Verification(_) => ZeErrorCode::ZeErrCorrupt,
+                zeppelin_embed_text::ModelError::Invalid(_) => ZeErrorCode::ZeErrInvalidArgument,
+                zeppelin_embed_text::ModelError::Download(_)
+                | zeppelin_embed_text::ModelError::Io(_) => ZeErrorCode::ZeErrIo,
+            },
             TextError::Bundle(_) => ZeErrorCode::ZeErrBundle,
             TextError::Runtime(_) => ZeErrorCode::ZeErrModel,
             TextError::Pipeline { .. } => ZeErrorCode::ZeErrPipeline,
@@ -26,7 +33,7 @@ impl FfiError {
             TextError::Query(error) => Self::query(error).code,
             TextError::Lexical(error) => Self::lexical(error).code,
             TextError::Hybrid(error) => Self::fusion(error).code,
-            TextError::Materialization(error) => Self::materialization(error).code,
+            TextError::Materialization(error) => Self::materialization(*error).code,
         };
         Self::new(code, message)
     }
@@ -425,7 +432,9 @@ mod tests {
             (Error::Storage(StoreError::Closed), ZeErrorCode::ZeErrClosed),
         ] {
             let message = error.to_string();
-            let mapped = FfiError::text(zeppelin_embed_text::TextError::Materialization(error));
+            let mapped = FfiError::text(zeppelin_embed_text::TextError::Materialization(Box::new(
+                error,
+            )));
             assert_eq!(mapped.code, code);
             assert_eq!(mapped.message, message);
         }

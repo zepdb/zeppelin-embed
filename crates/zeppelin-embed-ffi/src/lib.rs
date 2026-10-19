@@ -2298,6 +2298,71 @@ pub extern "C" fn ze_text_open(
     })
 }
 
+// ZE-501: model resolution is kept separate from the explicit-path text API.
+/// Resolves a pinned model, verifies/cache-installs every file, then opens.
+/// Offline misses return ZE_ERR_NOT_FOUND; verification failures ZE_ERR_CORRUPT;
+/// malformed references/manifests ZE_ERR_INVALID_ARGUMENT; transport/cache I/O ZE_ERR_IO.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_open_model(
+    request: *const ZeTextOpenModelRequest,
+    out_handle: *mut ZeHandle,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        finish(
+            None,
+            (|| {
+                let request = marshal::read_struct(request)?;
+                scalar_output(out_handle)?;
+                if request.flags & !(ZE_MODEL_ALLOW_HTTP | ZE_MODEL_SEND_TOKEN_TO_ENDPOINT) != 0 {
+                    return Err(FfiError::invalid("unknown model-open flags"));
+                }
+                let offline = parse_flag(request.offline, "offline")?;
+                let (store_path, text) = text_open_options(request.store)?;
+                let model = zeppelin_embed_text::ModelRef {
+                    repo: marshal::utf8_without_nul(request.repo, request.repo_len)?.to_owned(),
+                    revision: marshal::utf8_without_nul(request.revision, request.revision_len)?
+                        .to_owned(),
+                    manifest_sha256: marshal::utf8_without_nul(
+                        request.manifest_sha256,
+                        request.manifest_sha256_len,
+                    )?
+                    .to_owned(),
+                };
+                let cache_dir =
+                    marshal::utf8_without_nul(request.cache_dir, request.cache_dir_len)?;
+                let endpoint = marshal::utf8_without_nul(request.endpoint, request.endpoint_len)?;
+                let progress = |done, total| {
+                    if let Some(callback) = request.progress {
+                        // SAFETY: callback and user_data are caller-owned for the
+                        // synchronous duration of ze_text_open_model.
+                        unsafe { callback(request.user_data, done, total) };
+                    }
+                };
+                let store = zeppelin_embed_text::TextStore::open_model(
+                    Path::new(&store_path),
+                    &model,
+                    zeppelin_embed_text::ModelOpenOptions {
+                        text,
+                        cache_dir: (!cache_dir.is_empty())
+                            .then(|| Path::new(cache_dir).to_path_buf()),
+                        offline,
+                        endpoint: (!endpoint.is_empty()).then(|| endpoint.to_owned()),
+                        allow_http: request.flags & ZE_MODEL_ALLOW_HTTP != 0,
+                        send_token_to_endpoint: request.flags & ZE_MODEL_SEND_TOKEN_TO_ENDPOINT
+                            != 0,
+                        progress: request.progress.map(|_| &progress as &dyn Fn(u64, u64)),
+                    },
+                )
+                .map_err(FfiError::text)?;
+                let handle = text_registry::insert(store)?;
+                marshal::write_scalar(out_handle, handle);
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Ingests text through the bounded tokenizer, MLX, writer, and maintenance pipeline.
 #[cfg(feature = "text")]
 #[unsafe(no_mangle)]

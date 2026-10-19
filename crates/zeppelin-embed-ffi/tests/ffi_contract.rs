@@ -300,6 +300,13 @@ fn every_request_struct_has_the_frozen_size_and_field_offsets() {
         access_mode: 24, durability_mode: 28, commit_tier: 32,
         reader_drain_timeout_ms: 40, max_resident_bytes: 48, max_temp_bytes: 56
     });
+    assert_layout!(ZeTextOpenModelRequest, 176, 8, {
+        abi_size: 0, abi_reserved: 4, store: 8,
+        repo: 72, repo_len: 80, revision: 88, revision_len: 96,
+        manifest_sha256: 104, manifest_sha256_len: 112,
+        cache_dir: 120, cache_dir_len: 128, endpoint: 136, endpoint_len: 144,
+        offline: 152, flags: 156, progress: 160, user_data: 168
+    });
     assert_layout!(ZeStateReport, 16, 4, {
         abi_size: 0, abi_reserved: 4, state: 8, reserved: 12
     });

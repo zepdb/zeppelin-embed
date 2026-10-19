@@ -21,8 +21,24 @@
   tokenizer carries f64 scores and an explicit length-prefixed charsmap (empty
   when absent). Layouts 1 and 2 are refused with a typed unsupported-version
   error; re-bake pre-launch bundles.
-- Runtime model inputs are the explicit `.zem` layout only. JSON,
-  safetensors, network access, and training remain in `tools/ze-model`.
+- Runtime model inputs remain the explicit `.zem` layout. ZE-501 model
+  download now lives here: NSURLSession in `objc/ze_model.m`, a pinned
+  `zeppelin-model.json` manifest, CommonCrypto streaming SHA-256, and an
+  atomically installed verified cache. No new crate or deny-policy exception.
+  JSON beyond this manifest, safetensors, and training remain in `tools/ze-model`.
+  Model refs require a repo, immutable commit SHA, and manifest SHA-256;
+  ZE-500 will supply the built-in default after publication.
+  Cache option wins over `ZE_MODEL_CACHE`, then defaults to
+  `~/Library/Caches/zeppelin-embed/models/<repo with %2F separator>/<revision>`.
+  Offline option or `ZE_MODEL_OFFLINE=1` forbids network; endpoint option wins
+  over `ZE_MODEL_ENDPOINT`. Plain HTTP requires `allow_http` or
+  `ZE_MODEL_ALLOW_HTTP=1`, for test fixtures only. HF_TOKEN is sent only over
+  HTTPS to the exact `huggingface.co` host by default; `send_token_to_endpoint`
+  separately authorizes the endpoint's exact host over HTTPS. HTTP never gets
+  the token. The same authorization predicate governs initial requests and
+  every redirect; other hosts get a request with Authorization removed (HF CDN
+  signed URLs need no token). C request flags reuse the reserved slot without
+  changing size or offsets. Existing explicit-path open is retained.
 - The MLX runtime owns one named embed thread and one non-default stream. Calls
   reach it only through bounded standard-library channels, and a process-wide
   mutex serializes MLX creation, evaluation, and destruction because the

@@ -21,6 +21,8 @@ pub mod bundle;
 mod epoch;
 mod error;
 mod ingest;
+mod model;
+mod model_manifest;
 mod query;
 /// Model runtime implementations.
 pub mod runtime;
@@ -33,6 +35,7 @@ pub use ingest::{
     ChunkPolicy, IngestControl, IngestOptions, TextDocument, TextFaultSite, TextIngestReport,
     TextOpenOptions, TextStore,
 };
+pub use model::{ModelError, ModelOpenOptions, ModelRef, resolve_model};
 pub use query::{
     Legs, ObservedComputeUnits, QueryBackend, QueryOptions, TextHit, TextQueryOutcome,
     TextQueryTimings,

@@ -45,6 +45,16 @@
 #define ZE_REVISION_CONDITION_ABSENT 2
 
 /*
+ Permit plain HTTP model downloads for test fixtures; tokens still require HTTPS.
+ */
+#define ZE_MODEL_ALLOW_HTTP 1
+
+/*
+ Authorize HF_TOKEN on HTTPS requests to the model endpoint's exact host.
+ */
+#define ZE_MODEL_SEND_TOKEN_TO_ENDPOINT 2
+
+/*
  `manifest.ze` is absent, but the WAL or segment files prove a committed
  snapshot existed and data it covered is now unreachable.
  */
@@ -1263,6 +1273,87 @@ typedef struct ZeTextOpenRequest {
      */
     size_t bundle_path_len;
 } ZeTextOpenRequest;
+
+/*
+ Resolves a pinned Hugging Face model and opens a text store.
+ All string buffers are caller-owned UTF-8, without NUL terminators.
+ */
+typedef struct ZeTextOpenModelRequest {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing core store-open fields.
+     */
+    struct ZeOpenRequest store;
+    /*
+     Hugging Face owner/repository.
+     */
+    const uint8_t *repo;
+    /*
+     Number of repo bytes.
+     */
+    size_t repo_len;
+    /*
+     Immutable 40-hex commit SHA.
+     */
+    const uint8_t *revision;
+    /*
+     Number of revision bytes.
+     */
+    size_t revision_len;
+    /*
+     Pinned manifest SHA-256 as 64 hex characters.
+     */
+    const uint8_t *manifest_sha256;
+    /*
+     Number of checksum bytes.
+     */
+    size_t manifest_sha256_len;
+    /*
+     Cache root override; empty selects ZE_MODEL_CACHE or the macOS default.
+     */
+    const uint8_t *cache_dir;
+    /*
+     Number of cache path bytes.
+     */
+    size_t cache_dir_len;
+    /*
+     Endpoint override; empty selects ZE_MODEL_ENDPOINT or HF HTTPS.
+     HTTP requires ZE_MODEL_ALLOW_HTTP in flags or ZE_MODEL_ALLOW_HTTP=1.
+     */
+    const uint8_t *endpoint;
+    /*
+     Number of endpoint bytes.
+     */
+    size_t endpoint_len;
+    /*
+     Zero or one; ZE_MODEL_OFFLINE=1 also prohibits networking.
+     */
+    uint32_t offline;
+    /*
+     Bitmask: ZE_MODEL_ALLOW_HTTP for fixtures and ZE_MODEL_SEND_TOKEN_TO_ENDPOINT
+     to allow HF_TOKEN on HTTPS to the endpoint's exact host. Default zero
+     sends tokens only to HTTPS huggingface.co. Tokens never travel over HTTP.
+     Unknown bits are invalid.
+     */
+    uint32_t flags;
+    /*
+     Optional synchronous file-boundary progress callback (done, total bytes).
+     Initially (0, 0) means downloading the manifest. Must not unwind or
+     reenter model resolution. The callback and user_data live until return.
+     */
+    void (*progress)(void *user_data, uint64_t done, uint64_t total);
+    /*
+     Opaque caller pointer passed unchanged to progress.
+     */
+    void *user_data;
+} ZeTextOpenModelRequest;
 
 /*
  One caller-owned text document.
@@ -3418,6 +3509,14 @@ ze_error_code ze_epoch_drop(ze_handle handle,
  */
 ze_error_code ze_text_open(const struct ZeTextOpenRequest *request,
                            ze_handle *out_handle);
+
+/*
+ Resolves a pinned model, verifies/cache-installs every file, then opens.
+ Offline misses return ZE_ERR_NOT_FOUND; verification failures ZE_ERR_CORRUPT;
+ malformed references/manifests ZE_ERR_INVALID_ARGUMENT; transport/cache I/O ZE_ERR_IO.
+ */
+ze_error_code ze_text_open_model(const struct ZeTextOpenModelRequest *request,
+                                 ze_handle *out_handle);
 
 /*
  Ingests text through the bounded tokenizer, MLX, writer, and maintenance pipeline.
