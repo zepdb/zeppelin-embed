@@ -9,6 +9,9 @@ BUDGET_KB="${ZE_SIZE_BUDGET_KB:-5632}"
 # Owner decision 2026-09-27 (CLAUDE.md, ZE-253): complete graph FFI
 # archive (core + FFI + Cypher) is gated at 12,288 KB.
 GRAPH_BUDGET_KB="${ZE_GRAPH_SIZE_BUDGET_KB:-12288}"
+# ZE-506, orchestrator decision 2026-10-19 (flagged to the owner for veto):
+# the arm64 full graph+text FFI archive is gated at 28,672 KB.
+TEXT_BUDGET_KB=28672
 
 if [[ ! "$BUDGET_KB" =~ ^[0-9]+$ ]]; then
     echo "error: ZE_SIZE_BUDGET_KB must be a non-negative integer, got '$BUDGET_KB'" >&2
@@ -142,7 +145,7 @@ case "${1:-}" in
         if [[ "$1" == "--graph-archive" ]]; then
             measure_artifact "graph ffi" "$2" gate "$GRAPH_BUDGET_KB"
         elif [[ "$1" == "--text-graph-archive" ]]; then
-            measure_artifact "text graph ffi" "$2" report
+            measure_artifact "text graph ffi" "$2" gate "$TEXT_BUDGET_KB"
         elif [[ "$1" == "--graph-core-archive" ]]; then
             measure_artifact "graph core" "$2" report
         else
@@ -154,17 +157,10 @@ case "${1:-}" in
     *) echo "error: unknown size gate option: $1" >&2; exit 2 ;;
 esac
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi -p zeppelin-embed-text
-else
-    cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi
-fi
+cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi
 
 measure_artifact "core" "$TARGET_ROOT/release/libzeppelin_embed.a"
 measure_artifact "ffi" "$TARGET_ROOT/release/libzeppelin_embed_ffi.a"
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    measure_artifact "text" "$TARGET_ROOT/release/libzeppelin_embed_text.a" "report"
-fi
 
 # Graph uses a separate output directory, preserving the graph-free archive.
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -173,6 +169,15 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     measure_artifact "graph core" "$TARGET_ROOT/size-budget-graph/release/libzeppelin_embed.a" report
     measure_artifact "graph ffi" \
         "$TARGET_ROOT/size-budget-graph/release/libzeppelin_embed_ffi.a" gate "$GRAPH_BUDGET_KB"
+fi
+
+# The universal/Intel and non-macOS paths remain text-free. Preserve the
+# separate graph-free core/FFI and graph-only measurements above.
+if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
+    cargo build --locked --release -p zeppelin-embed-ffi --features graph-cypher,text \
+        --target-dir "$TARGET_ROOT/size-budget-text"
+    measure_artifact "full text ffi" \
+        "$TARGET_ROOT/size-budget-text/release/libzeppelin_embed_ffi.a" gate "$TEXT_BUDGET_KB"
 fi
 
 CONSUMER_MANIFEST="$PROJECT_ROOT/tools/size-consumer/Cargo.toml"

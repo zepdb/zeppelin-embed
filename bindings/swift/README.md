@@ -49,6 +49,9 @@ The separate graph package is retired. The default package resolves the
 universal graph-free XCFramework on Apple silicon and Intel. Set
 `ZE_ENABLE_GRAPH=1` when resolving and building the package to select the
 checksum-pinned graph XCFramework and expose graph methods on `ZeppelinStore`.
-The graph XCFramework supports macOS 14+ on Apple silicon only. For local
+The graph XCFramework is the full macOS 14+ Apple silicon artifact and includes
+the model-backed text C ABI; the default universal, Intel and non-macOS artifacts
+are text-free. Its dynamic `ZeppelinEmbedGraph.framework` carries
+`Resources/mlx.metallib`, so SwiftPM consumers need no shader-copy step. For local
 artifact validation, also set `ZE_USE_LOCAL_XCFRAMEWORK=1`; the package selects
 `target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework`.

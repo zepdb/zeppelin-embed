@@ -23,11 +23,17 @@ case "$SELECTOR" in
     # Owner decision 2026-10-05: legacy arm64 and Intel share 5,632 KB.
     legacy) SUFFIX=""; NAME=ZeppelinEmbed; SIZE_BUDGET_KB=5632; MACOS_DEPLOYMENT_TARGET=11.0 ;;
     graph-cypher)
-        SUFFIX=-graph-cypher; NAME=ZeppelinEmbedGraph; SIZE_BUDGET_KB=12288
-        MACOS_DEPLOYMENT_TARGET=14.0; features=(--features graph-cypher)
+        # ZE-506 decision 2026-10-19: arm64 graph+text is gated at 28,672 KB.
+        # ZE_TEXT_SIZE_BUDGET_KB is a local-only override; CI never sets it.
+        SUFFIX=-graph-cypher; NAME=ZeppelinEmbedGraph; SIZE_BUDGET_KB="${ZE_TEXT_SIZE_BUDGET_KB:-28672}"
+        MACOS_DEPLOYMENT_TARGET=14.0; features=(--features graph-cypher,text)
         PIN_MARKER=graph-xcframework-checksum ;;
     *) echo "unknown artifact: $SELECTOR" >&2; exit 2 ;;
 esac
+if [[ ! "$SIZE_BUDGET_KB" =~ ^[0-9]+$ ]]; then
+    echo "error: ZE_TEXT_SIZE_BUDGET_KB must be a non-negative integer" >&2
+    exit 2
+fi
 BUILD_DIR="$ROOT_DIR/target/xcframework$SUFFIX"
 WORK_DIR="$BUILD_DIR/work"
 HEADERS_DIR="$WORK_DIR/headers"
@@ -74,7 +80,7 @@ rm -f "$ARCHIVE_ZIP"
 mkdir -p "$HEADERS_DIR"
 python3 "$ROOT_DIR/scripts/release/core_header.py" \
     "$ROOT_DIR/crates/zeppelin-embed-ffi/include/zeppelin_embed.h" \
-    "$HEADERS_DIR" --artifact "$SELECTOR"
+    "$HEADERS_DIR" --artifact "$SELECTOR" || exit 1
 
 {
     echo "# ZE-107 $SELECTOR XCFramework slice evidence"
@@ -122,7 +128,15 @@ check_export_allowlist() {
     awk '{ symbol=$NF; sub(/^_/, "", symbol); if (symbol ~ /^ze_/) print symbol }' \
         "$symbols" | LC_ALL=C sort -u > "$observed"
     if [ "$SELECTOR" = graph-cypher ]; then
-        grep -E '^ze_' "$ALLOWLIST" | grep -Ev '^ze_text_' | LC_ALL=C sort -u > "$expected"
+        python3 - "$ROOT_DIR" <<'EXPORTS' | grep -E '^ze_' | LC_ALL=C sort -u > "$expected"
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts/release'))
+import importlib.util
+spec = importlib.util.spec_from_file_location('artifact', Path(sys.argv[1]) / 'scripts/release/check-graph-artifact.py')
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+print('\n'.join(module.expected_symbols('graph-cypher', static=True)))
+EXPORTS
     else
         grep -E '^ze_' "$ALLOWLIST" | grep -Ev '^ze_text_' | LC_ALL=C sort -u > "$expected"
     fi
@@ -216,7 +230,7 @@ attempt_slice() {
     local label="$1"
     local target="$2"
     local sdk="$3"
-    local sdk_path log archive status
+    local sdk_path log archive status release_rustflags
     log="$WORK_DIR/$label.build.log"
     archive="$BUILD_DIR/cargo/$target/release/libzeppelin_embed_ffi.a"
     sdk_path="$(xcrun --sdk "$sdk" --show-sdk-path 2>&1)"
@@ -236,13 +250,19 @@ attempt_slice() {
     # embedded bitcode that -Cembed-bitcode=no on our own crates cannot
     # reach. See the RUST_NIGHTLY_TOOLCHAIN comment above for why this one
     # step alone runs on a pinned nightly.
+    release_rustflags="-Cembed-bitcode=no"
+    if [ "$SELECTOR" = graph-cypher ]; then
+        # rustc uses -nodefaultlibs; build-std lacks __divsc3 and arm64 libSystem
+        # does not export it. Link Xcode's compiler runtime for MLX's C routines.
+        release_rustflags="$release_rustflags -Clink-arg=$(xcrun clang -print-libgcc-file-name)"
+    fi
     if [ -n "$PREBUILT_ARCHIVE" ]; then
         archive="$PREBUILT_ARCHIVE"
         lipo "$archive" -verify_arch arm64 || return 1
         echo "explicit prebuilt graph archive: $archive" > "$log"
         status=0
     elif SDKROOT="$sdk_path" MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
-        RUSTFLAGS="-Cembed-bitcode=no" \
+        RUSTFLAGS="$release_rustflags" \
         CARGO_BUILD_JOBS=3 cargo "+$RUST_NIGHTLY_TOOLCHAIN" build -Z build-std=std,panic_unwind \
         --locked -p zeppelin-embed-ffi --release --no-default-features --target "$target" \
         --target-dir "$BUILD_DIR/cargo" ${features[@]+"${features[@]}"} \
@@ -280,16 +300,50 @@ if [ "$SELECTOR" = legacy ]; then
     attempt_slice "macos-x86_64" "x86_64-apple-darwin" "macosx" || exit 1
 fi
 
-macos_archive="$WORK_DIR/libzeppelin_embed_ffi-macos.a"
 if [ "$SELECTOR" = graph-cypher ]; then
-    cp "${built_archives[0]}" "$macos_archive" || exit 1
+    release_dir="$BUILD_DIR/cargo/aarch64-apple-darwin/release"
+    if [ -n "$PREBUILT_ARCHIVE" ]; then release_dir="$(dirname "$PREBUILT_ARCHIVE")"; fi
+    framework="$WORK_DIR/$NAME.framework"
+    version="$framework/Versions/A"
+    mkdir -p "$version/Headers" "$version/Modules" "$version/Resources" || exit 1
+    cp "$release_dir/libzeppelin_embed_ffi.dylib" "$version/$NAME" || exit 1
+    install_name_tool -id "@rpath/$NAME.framework/Versions/A/$NAME" "$version/$NAME" || exit 1
+    minimum_macos="$(vtool -show-build "$version/$NAME" | awk '/minos/ { print $2; exit }')"
+    if [ "$minimum_macos" != 14.0 ]; then
+        echo "ERROR: full framework targets macOS $minimum_macos, expected 14.0" >&2
+        exit 1
+    fi
+    python3 "$ROOT_DIR/scripts/release/core_header.py" \
+        "$ROOT_DIR/crates/zeppelin-embed-ffi/include/zeppelin_embed.h" \
+        "$version/Headers" --artifact graph-cypher --framework || exit 1
+    mv "$version/Headers/module.modulemap" "$version/Modules/" || exit 1
+    python3 "$ROOT_DIR/scripts/release/stage-metallib.py" "$release_dir" \
+        "$version/Resources/mlx.metallib" || exit 1
+    cp "$PRIVACY_MANIFEST" "$version/Resources/" || exit 1
+    python3 - "$version/Resources/Info.plist" <<'FRAMEWORK_PLIST'
+import plistlib
+import sys
+with open(sys.argv[1], 'wb') as handle:
+    plistlib.dump(dict(CFBundleExecutable='ZeppelinEmbedGraph',
+                      CFBundleIdentifier='com.zepdb.ZeppelinEmbedGraph',
+                      CFBundleName='ZeppelinEmbedGraph', CFBundlePackageType='FMWK',
+                      CFBundleVersion='1', CFBundleShortVersionString='1.0',
+                      CFBundleSupportedPlatforms=['MacOSX'], LSMinimumSystemVersion='14.0'), handle)
+FRAMEWORK_PLIST
+    ln -s A "$framework/Versions/Current" || exit 1
+    for item in "$NAME" Headers Modules Resources; do
+        ln -s "Versions/Current/$item" "$framework/$item" || exit 1
+    done
+    codesign --force --sign - "$framework" || exit 1
+    xcodebuild -create-xcframework -framework "$framework" -output "$ARTIFACT" || exit 1
 else
+    macos_archive="$WORK_DIR/libzeppelin_embed_ffi-macos.a"
     lipo -create "${built_archives[@]}" -output "$macos_archive" || exit 1
+    xcodebuild -create-xcframework \
+        -library "$macos_archive" \
+        -headers "$HEADERS_DIR" \
+        -output "$ARTIFACT" || exit 1
 fi
-xcodebuild -create-xcframework \
-    -library "$macos_archive" \
-    -headers "$HEADERS_DIR" \
-    -output "$ARTIFACT" || exit 1
 
 # xcodebuild emits AvailableLibraries in an arbitrary order, so two builds of
 # identical inputs differ only by a permutation of that array. The entries have
@@ -334,6 +388,18 @@ print(f"{library['LibraryIdentifier']}/{library['LibraryPath']}")
 VERIFY_PLIST
 )" || exit 1
 packaged_library="$ARTIFACT/$packaged_library_relative"
+if [ "$SELECTOR" = graph-cypher ]; then
+    packaged_library="$packaged_library/Versions/A/$NAME"
+    python3 - "$ROOT_DIR" "$packaged_library" <<'FRAMEWORK_EXPORTS'
+import importlib.util
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location('artifact', Path(sys.argv[1]) / 'scripts/release/check-graph-artifact.py')
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module.check_exports(Path(sys.argv[2]), 'graph-cypher')
+FRAMEWORK_EXPORTS
+    test "$?" -eq 0 || exit 1
+fi
 packaged_archs="$(lipo -archs "$packaged_library")" || exit 1
 expected_archs="arm64"
 if [ "$SELECTOR" = legacy ]; then expected_archs="arm64 x86_64"; fi
@@ -348,12 +414,19 @@ while IFS= read -r slice_dir; do
     cp "$PRIVACY_MANIFEST" "$slice_dir/PrivacyInfo.xcprivacy"
 done < <(find "$ARTIFACT" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)
 
-find "$ARTIFACT" -exec touch -t 202001010000 {} +
+zip_options=(-X -q)
+if [ "$SELECTOR" = graph-cypher ]; then zip_options+=(-y); fi
+# -h stamps the framework symlinks themselves; zip -y stores their mtimes.
+find "$ARTIFACT" -exec touch -h -t 202001010000 {} +
 (
     cd "$BUILD_DIR"
     find "$(basename "$ARTIFACT")" -print | LC_ALL=C sort | \
-        zip -X -q "$ARCHIVE_ZIP" -@
+        zip "${zip_options[@]}" "$ARCHIVE_ZIP" -@
 )
+if ! zipinfo -T "$ARCHIVE_ZIP" | awk '$1 ~ /^[-dl]/ && $7 != "20200101.000000" { print; bad = 1 } END { exit bad }'; then
+    echo "ERROR: zip entries above are not stamped 20200101.000000; the zip is not reproducible" >&2
+    exit 1
+fi
 checksum="$(shasum -a 256 "$ARCHIVE_ZIP" | awk '{print $1}')"
 echo "$checksum" > "$BUILD_DIR/checksum.txt"
 xcframework_kb="$(du -sk "$ARTIFACT" | awk '{print $1}')"

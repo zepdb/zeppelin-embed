@@ -16,7 +16,7 @@ done
 features=()
 case "$ARTIFACT" in
     legacy) SUFFIX=""; MACOS_DEPLOYMENT_TARGET=11.0 ;;
-    graph-cypher) SUFFIX="-graph-cypher"; MACOS_DEPLOYMENT_TARGET=14.0; features=(--features graph-cypher) ;;
+    graph-cypher) SUFFIX="-graph-cypher"; MACOS_DEPLOYMENT_TARGET=14.0; features=(--features graph-cypher,text) ;;
     *) echo "unknown artifact: $ARTIFACT" >&2; exit 2 ;;
 esac
 BUILD_DIR="$ROOT_DIR/target/macos-sdk$SUFFIX"
@@ -70,9 +70,13 @@ for path in sys.argv[2:-1]:
     m.check_exports(Path(path), sys.argv[-1])
 CHECK
 
-if grep -En 'ZeText|ze_text_' "$STAGE_DIR/include/zeppelin_embed.h"; then
+if [ "$ARTIFACT" = legacy ] && grep -En 'ZeText|ze_text_' "$STAGE_DIR/include/zeppelin_embed.h"; then
     echo "ERROR: core SDK header exposes the optional text ABI" >&2
     exit 1
+fi
+
+if [ "$ARTIFACT" = graph-cypher ]; then
+    python3 "$ROOT_DIR/scripts/release/stage-metallib.py" "$RUST_OUTPUT" "$STAGE_DIR/lib/mlx.metallib"
 fi
 
 minimum_macos="$(vtool -show-build "$STAGE_DIR/lib/$LIBRARY_NAME.dylib" | \

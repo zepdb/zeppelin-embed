@@ -56,13 +56,15 @@ def artifact_tools():
     return module
 
 
-def check_packaged_headers(headers, artifact, work):
+def check_packaged_headers(headers, artifact, work, framework=False):
     spec = importlib.util.spec_from_file_location('headers', Path(__file__).with_name('core_header.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     expected = work / ('expected-' + artifact)
-    module.write_artifact_headers(ROOT / 'crates/zeppelin-embed-ffi/include/zeppelin_embed.h', expected, artifact)
+    module.write_artifact_headers(ROOT / 'crates/zeppelin-embed-ffi/include/zeppelin_embed.h', expected, artifact, framework=framework)
     for path in expected.iterdir():
+        if framework and path.name == 'module.modulemap':
+            continue
         actual = headers / path.name
         if not actual.is_file() or actual.read_bytes() != path.read_bytes():
             raise ValueError(f'packaged header/module mismatch: {actual}')
@@ -80,6 +82,27 @@ def check_xcframework(path, artifact, work, output):
     if entry.get('SupportedPlatform') != 'macos':
         raise ValueError('unexpected XCFramework platform')
     directory = path / entry['LibraryIdentifier']
+    if artifact == 'graph-cypher':
+        framework = directory / entry['LibraryPath']
+        if framework.name != 'ZeppelinEmbedGraph.framework':
+            raise ValueError('full XCFramework must contain ZeppelinEmbedGraph.framework')
+        library = framework / 'Versions/A/ZeppelinEmbedGraph'
+        check_packaged_headers(framework / 'Headers', artifact, work, framework=True)
+        module = framework / 'Modules/module.modulemap'
+        expected_module = work / 'expected-graph-cypher/module.modulemap'
+        if module.read_bytes() != expected_module.read_bytes():
+            raise ValueError('full framework module map mismatch')
+        resource = framework / 'Resources/mlx.metallib'
+        if not resource.is_file() or resource.stat().st_size == 0:
+            raise ValueError('full framework is missing mlx.metallib')
+        if subprocess.check_output(['lipo', '-archs', str(library)], text=True).split() != ['arm64']:
+            raise ValueError('full framework must be arm64 only')
+        deployment = subprocess.check_output(['vtool', '-show-build', str(library)], text=True)
+        if not re.search(r'\bminos 14\.0\b', deployment):
+            raise ValueError('full framework deployment target must be macOS 14.0')
+        artifact_tools().check_exports(library, artifact)
+        # The release gate measures the Cargo static archive, not this dylib.
+        return {'arm64': dict(artifact_tools().measure(library, output), deployment=deployment)}
     check_packaged_headers(directory / entry['HeadersPath'], artifact, work)
     library = directory / entry['LibraryPath']
     observed = subprocess.check_output(['lipo', '-archs', str(library)], text=True).split()
@@ -96,8 +119,8 @@ def check_xcframework(path, artifact, work, output):
             run(['lipo', library, '-thin', arch, '-output', thin])
         tools.check_exports(thin, artifact)
         measured = tools.measure(thin, output)
-        # Owner decisions: graph 2026-09-27; legacy 2026-10-05, all slices.
-        measured['budget_kib'] = 12288 if artifact == 'graph-cypher' else 5632
+        # Legacy remains a universal static artifact under the 2026-10-05 gate.
+        measured['budget_kib'] = 5632
         measured['budget_pass'] = measured['section_kib'] <= measured['budget_kib']
         slices[arch] = measured
     return slices
@@ -129,7 +152,7 @@ def run_c_consumer(sdk, work, output):
         tools.check_exports(library, 'graph-cypher')
         command = ['clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
                    '-mmacosx-version-min=14.0', '-I', sdk / 'include',
-                   work / 'consumer.c', library, '-framework', 'Security', '-liconv',
+                   work / 'consumer.c', library, '-framework', 'Security', '-liconv', *artifact_tools().FULL_LINK_FLAGS,
                    '-Wl,-rpath,' + str(sdk / 'lib'), '-o', binary]
         run(command, cwd=work)
         fixtures = work / ('fixtures-' + kind)
@@ -145,8 +168,8 @@ def run_c_consumer(sdk, work, output):
             raise ValueError('installed dylib loaded path was not observed')
         report[kind] = dict(library=tools.measure(library, output), consumer=tools.measure(binary, output),
                             reachability=consumer_receipt(result.stdout))
-        if report[kind]['library']['section_kib'] > 12288:
-            raise ValueError('graph FFI section budget exceeded')
+        if report[kind]['library']['section_kib'] > 28672:
+            raise ValueError('full text FFI section budget exceeded')
     return report
 
 
@@ -164,7 +187,8 @@ def run_rust_consumer(sdk, work, output):
     binary = work / 'rust-consumer'
     env = dict(os.environ, MACOSX_DEPLOYMENT_TARGET='14.0')
     run(['rustc', '--edition=2024', source, '-C', 'link-arg=' + str(obj),
-         '-C', 'link-arg=' + str(library), '-l', 'framework=Security', '-l', 'iconv', '-o', binary], env=env)
+         '-C', 'link-arg=' + str(library), '-l', 'framework=Security', '-l', 'iconv',
+         '-l', 'c++', '-l', 'framework=Foundation', '-l', 'framework=Metal', '-l', 'framework=CoreML', '-l', 'framework=Accelerate', '-o', binary], env=env)
     fixture = work / 'rust-fixture'
     fixture.mkdir()
     result = run([binary, fixture], cwd=work, capture_output=True, text=True)
@@ -205,7 +229,7 @@ def run_swift_consumer(xcframework, work, output, disable_swift_sandbox=False):
     package.mkdir()
     shutil.copytree(ROOT / 'bindings/swift', package / 'bindings/swift')
     # One full graph archive, exported through the unified C module.
-    shutil.copytree(xcframework, package / 'target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework')
+    shutil.copytree(xcframework, package / 'target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework', symlinks=True)
     manifest = (ROOT / 'Package.swift').read_text()
     (package / 'Package.swift').write_text(manifest)
     consumer = work / 'swift-consumer'
@@ -294,10 +318,11 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         package = json.loads(result.stdout)
         targets = {target['name']: target for target in package['targets']}
-        self.assertEqual(targets['CZeppelinEmbed']['url'],
+        self.assertEqual(targets['ZeppelinEmbedGraph']['url'],
                          'https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbedGraph.xcframework.zip')
-        self.assertEqual(targets['CZeppelinEmbed']['checksum'],
+        self.assertEqual(targets['ZeppelinEmbedGraph']['checksum'],
                          pin((ROOT / 'Package.swift').read_text(), graph=True))
+        self.assertEqual(targets['CZeppelinEmbed']['path'], 'bindings/swift/Sources/CZeppelinEmbedGraph')
         self.assertEqual(targets['ZeppelinEmbed']['settings'],
                          [{'kind': {'define': {'_0': 'ZE_GRAPH'}}, 'tool': 'swift'}])
 
@@ -332,11 +357,14 @@ class ContractTests(unittest.TestCase):
 
     def test_xcframework_failure_stops_packaging(self):
         script = (ROOT / 'scripts/xcframework/build.sh').read_text()
-        statement = re.search(r'^xcodebuild -create-xcframework.*?(?=\n\n)', script, re.S | re.M).group()
-        result = subprocess.run(['bash', '-c',
-            'xcodebuild() { return 42; }; macos_archive=x; HEADERS_DIR=x; ARTIFACT=x;\n'
-            + statement + '\nexit 0'], capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0, 'packaging continued after xcodebuild failed')
+        statements = re.findall(r'^[ \t]*xcodebuild -create-xcframework(?:[^\n]*\\\n)*[^\n]*', script, re.M)
+        self.assertEqual(len(statements), 2)
+        for statement in statements:
+            with self.subTest(statement=statement):
+                result = subprocess.run(['bash', '-c',
+                    'xcodebuild() { return 42; }; framework=x; macos_archive=x; HEADERS_DIR=x; ARTIFACT=x;\n'
+                    + statement + '\nexit 0'], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, 'packaging did not stop with exit 1 after xcodebuild failed')
 
     def test_profile_import_from_another_cwd(self):
         script = ROOT / 'scripts/graph-profile-parity.py'
@@ -383,7 +411,7 @@ def run_c_profile_consumer(sdk, work, output):
         consumer = work / ('profile-' + flavor)
         run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror', '-arch', 'arm64', '-mmacosx-version-min=14.0',
              '-I', sdk / 'include', '-I', work, ROOT / 'crates/zeppelin-embed-ffi/tests/c/graph_profile_parity.c',
-             library, '-framework', 'Security', '-liconv', '-Wl,-rpath,' + str(sdk / 'lib'), '-o', consumer])
+             library, '-framework', 'Security', '-liconv', *artifact_tools().FULL_LINK_FLAGS, '-Wl,-rpath,' + str(sdk / 'lib'), '-o', consumer])
         fixture = work / ('profile-fixture-' + flavor)
         fixture.mkdir()
         result = run([consumer, fixture], capture_output=True, text=True)
@@ -444,8 +472,7 @@ def qualify(args):
             tar.extractall(work, filter='data')
         with zipfile.ZipFile(args.legacy_xcframework or args.artifact_root / 'xcframework/ZeppelinEmbed.xcframework.zip') as legacy_zip:
             legacy_zip.extractall(work)
-        with zipfile.ZipFile(archive) as zip_file:
-            zip_file.extractall(work)
+        run(['ditto', '-x', '-k', archive, work])
         sdk = work / 'zeppelin-embed-graph-cypher-macos-arm64'
         shutil.copy(ROOT / 'crates/zeppelin-embed-ffi/tests/c/graph_artifact_consumer.c', work / 'consumer.c')
         check_packaged_headers(sdk / 'include', 'graph-cypher', work)
@@ -491,7 +518,7 @@ def qualify(args):
     report['legacy_languages'] = run_legacy_consumers(args, output)
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     require_structured_execution(report)
-    if any(not measured['budget_pass'] for slices in report['xcframeworks'].values() for measured in slices.values()):
+    if any(measured.get('budget_pass') is False for slices in report['xcframeworks'].values() for measured in slices.values()):
         raise ValueError('installed execution completed; section budget failed (see report.json)')
 
 

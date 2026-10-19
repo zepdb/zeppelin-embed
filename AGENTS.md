@@ -91,6 +91,21 @@ core and FFI archives on every platform, including arm64 and Intel, have a
 5,632 KB gate. The complete graph FFI archive remains gated at 12,288 KB;
 its graph-contained core archive is reported separately, without a second gate.
 
+Orchestrator decision 2026-10-19 (ZE-506, epic E16), flagged to the owner
+for veto: the macOS arm64 full artifact (core, FFI, Cypher and text
+together) has its own 28,672 KB gate, using the same post-strip
+linked-section measurement. It measured 26,814 KB on the release toolchain
+and 26,898 KB on stable, so the gate leaves about 6.5% headroom. The cost is
+MLX: graph-only FFI is 9,033 KB, so text adds about 17.8 MB of linked
+sections, plus an 88 MB `mlx.metallib` runtime resource that ships beside
+the library and is outside the gate. The owner's 2026-09-11 figure of about
+24,000 KB covered text without graph; text-only arm64 FFI measures
+22,615 KB. The Node arm64 text+graph archive uses the same gate.
+No third XCFramework is added. The graph-free 5,632 KB and graph
+12,288 KB gates are unchanged. `ZE_TEXT_SIZE_BUDGET_KB` is a local-only
+override; CI never sets it. Raw commands and numbers:
+`tasks/evidence/ze-506-text-release.md`. No dependency is added.
+
 The gate was 2 MB from Task 01 through Track L. The repository owner raised it
 to 5 MB on 2026-08-23 by explicit instruction, so that lexical-engine
 structures are sized for retrieval quality and decode speed rather than for

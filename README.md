@@ -139,6 +139,12 @@ arm64. The Swift graph subpackage is not yet remotely resolvable through
 SwiftPM (ZE-322). Node does not yet expose structured graph query,
 node/relationship getters or resource APIs.
 
+The model-backed text C ABI ships in the macOS 14+ arm64 full artifact
+(`ZeppelinEmbedGraph` / graph-cypher SDK); the universal, Intel and non-macOS
+artifacts are text-free. The full XCFramework embeds MLX shaders in its dynamic
+framework resources; C SDK consumers keep `mlx.metallib` beside the dylib or,
+for static linking, copy it beside the executable.
+
 ## Platform support
 
 | Package | macOS 11+, Apple silicon | Windows 10/11 x64 |

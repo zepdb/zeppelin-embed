@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   build-xcframework:
-    name: Build universal macOS XCFramework
+    name: Build macOS XCFrameworks (universal core or arm64 full)
     runs-on: macos-14
     env:
       CARGO_BUILD_JOBS: "3"
@@ -150,6 +150,14 @@ jobs:
           sw_vers
           uname -a
           python3 scripts/release/check-installed-graph.py --artifact-root dist --enforce-checksum --output tasks/evidence/ze-71-installed
+      - name: Installed text execution (C static, C dylib and SwiftPM)
+        run: python3 scripts/release/check-installed-text.py --artifact-root dist --output tasks/evidence/ze-506-installed
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ze-506-installed-evidence
+          path: tasks/evidence/ze-506-installed
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: ze-71-installed-evidence

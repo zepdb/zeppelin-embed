@@ -9,6 +9,12 @@ import re
 import subprocess
 import tempfile
 
+spec = importlib.util.spec_from_file_location('core_header', Path(__file__).with_name('core_header.py'))
+headers = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(headers)
+TEXT_FUNCTIONS = headers.TEXT_FUNCTIONS
+FULL_LINK_FLAGS = ['-lc++', '-framework', 'Foundation', '-framework', 'Metal', '-framework', 'CoreML', '-framework', 'Accelerate']
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -19,21 +25,41 @@ def load_packager():
     return module
 
 
-def expected_symbols(artifact):
+# Existing Objective-C bridge definitions carried by the static archive only.
+# They are internal glue, not public FFI declarations; dylibs hide them.
+TEXT_STATIC_INTERNALS = {
+    'ze_coreml_close', 'ze_coreml_compute_plan', 'ze_coreml_open', 'ze_coreml_predict', 'ze_coreml_sequence',
+    'ze_coreml_string_free', 'ze_model_download', 'ze_model_file_sha256', 'ze_model_token_allowed',
+}
+
+
+# mlx-c error-handler globals the full dylib exports; known, not hidden here.
+MLX_DYLIB_GLOBALS = {'default_mlx_error_handler', 'noop_mlx_error_handler_data_deleter'}
+
+
+def expected_symbols(artifact, static=False):
     if artifact not in ('legacy', 'graph-cypher'):
         raise ValueError(f'unknown artifact: {artifact}')
     # Both allowlists retain the frozen response-free ABI. Graph-free graph
     # entry points are explicit unsupported-build stubs, not missing exports.
     name = 'symbols.graph.allowlist' if artifact == 'graph-cypher' else 'symbols.allowlist'
-    return {s for s in (ROOT / 'crates/zeppelin-embed-ffi' / name).read_text().splitlines()
+    symbols = {s for s in (ROOT / 'crates/zeppelin-embed-ffi' / name).read_text().splitlines()
             if s.startswith('ze_') and not s.startswith('ze_text_')}
+    if artifact == 'graph-cypher':
+        return symbols | TEXT_FUNCTIONS | (TEXT_STATIC_INTERNALS if static else set())
+    return symbols
 
 
 def check_exports(archive, artifact):
     result = subprocess.run([load_packager().llvm_tool('llvm-nm'), '--extern-only', '--defined-only', str(archive)], text=True, capture_output=True, check=True)
     raw = result.stdout
-    observed = {s.lstrip('_') for s in re.findall(r'\b_?ze_\w+\b', raw)}
-    expected = expected_symbols(artifact)
+    static = archive.suffix == '.a'
+    # Archives also carry every MLX/Rust global; dylibs export only the ABI.
+    observed = {line.split()[-1].lstrip('_') for line in raw.splitlines()
+                if len(line.split()) == 3 and (not static or re.fullmatch(r'_?ze_\w+', line.split()[-1]))}
+    expected = expected_symbols(artifact, static=static)
+    if artifact == 'graph-cypher' and not static:
+        expected |= MLX_DYLIB_GLOBALS
     if observed != expected:
         raise RuntimeError(f'{artifact} exports: missing={sorted(expected-observed)}, unexpected={sorted(observed-expected)}')
 
@@ -72,14 +98,14 @@ def check_artifact(legacy, graph, output):
     command = ['clang', '-std=c11', '-Wall', '-Wextra', '-Werror', '-mmacosx-version-min=14.0',
                '-I', str(ROOT / 'crates/zeppelin-embed-ffi/include'),
                str(ROOT / 'crates/zeppelin-embed-ffi/tests/c/graph_artifact_consumer.c'),
-               str(output / 'graph-cypher.a'), '-framework', 'Security', '-liconv', '-o', str(consumer)]
+               str(output / 'graph-cypher.a'), '-framework', 'Security', '-liconv', *FULL_LINK_FLAGS, '-o', str(consumer)]
     subprocess.run(command, check=True)
     with tempfile.TemporaryDirectory() as fixtures:
         subprocess.run([str(consumer.resolve()), fixtures], check=True)
     report['c_consumer'] = dict(command=command, **measure(consumer, output))
     negative = subprocess.run(['clang', '-x', 'c', '-', '-Wl,-force_load,' + str((output/'legacy.a').resolve()),
                               '-Wl,-force_load,' + str((output/'graph-cypher.a').resolve()),
-                              '-framework', 'Security', '-liconv', '-o', str(output/'duplicate')],
+                              '-framework', 'Security', '-liconv', *FULL_LINK_FLAGS, '-o', str(output/'duplicate')],
                              input='int main(void) { return 0; }', text=True, capture_output=True)
     (output/'duplicate-link.txt').write_text(negative.stdout + negative.stderr)
     if negative.returncode == 0 or 'duplicate symbol' not in negative.stderr:

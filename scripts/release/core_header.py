@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the public header for a core-only Zeppelin Embed binary."""
+"""Write public headers for text-free legacy and arm64 full binaries."""
 
 from __future__ import annotations
 
@@ -12,6 +12,14 @@ TEXT_FUNCTIONS = {
     "ze_text_open",
     "ze_text_query",
     "ze_text_query_result_free",
+    "ze_text_open_model",
+    "ze_text_delete",
+    "ze_text_health",
+    "ze_text_maintain_budgeted",
+    "ze_text_ingest_v2",
+    "ze_text_query_v2",
+    "ze_text_query_outcome_free",
+    "ze_text_observed_compute_units",
 }
 TEXT_TYPES = {
     "ZeTextDocument",
@@ -20,6 +28,13 @@ TEXT_TYPES = {
     "ZeTextQueryHit",
     "ZeTextQueryRequest",
     "ZeTextQueryResult",
+    "ZeTextOpenModelRequest",
+    "ZeTextHealthReport",
+    "ZeTextIngestRequestV2",
+    "ZeTextIngestReport",
+    "ZeTextQueryRequestV2",
+    "ZeTextQueryOutcome",
+    "ZeTextObservedComputeUnits",
 }
 
 
@@ -90,21 +105,30 @@ def write_core_header(source: Path, destination: Path) -> None:
     destination.write_text(contents)
 
 
-def write_artifact_headers(source: Path, destination: Path, artifact: str) -> None:
+def write_artifact_headers(source: Path, destination: Path, artifact: str, framework: bool = False) -> None:
     if artifact not in ("legacy", "graph-cypher"):
         raise ValueError(f"unknown artifact: {artifact}")
     destination.mkdir(parents=True, exist_ok=True)
-    write_core_header(source, destination / "zeppelin_embed.h")
+    if artifact == "graph-cypher":
+        (destination / "zeppelin_embed.h").write_bytes(source.read_bytes())
+    else:
+        write_core_header(source, destination / "zeppelin_embed.h")
     graph = destination / "zeppelin_graph_contracts.h"
     if artifact == "graph-cypher":
         graph.write_bytes(source.with_name("zeppelin_graph_contracts.h").read_bytes())
         (destination / "zeppelin_embed_graph.h").write_text(
             '#include "zeppelin_embed.h"\n#include "zeppelin_graph_contracts.h"\n')
-        module = 'module CZeppelinEmbed {\n    umbrella header "zeppelin_embed_graph.h"\n    export *\n}\n'
+        module = 'module CZeppelinEmbed {\n    umbrella header "zeppelin_embed_graph.h"\n    link framework "Foundation"\n    link framework "Metal"\n    link framework "CoreML"\n    link framework "Accelerate"\n    link "c++"\n    export *\n}\n'
     else:
         if graph.exists():
             raise RuntimeError("legacy staging contains graph declarations")
         module = 'module CZeppelinEmbed {\n    header "zeppelin_embed.h"\n    export *\n}\n'
+    if framework:
+        if artifact != "graph-cypher":
+            raise ValueError("only the full arm64 artifact is a framework")
+        module = ('framework module ZeppelinEmbedGraph {\n'
+                  '    umbrella header "zeppelin_embed_graph.h"\n'
+                  '    link framework "ZeppelinEmbedGraph"\n    export *\n}\n')
     (destination / "module.modulemap").write_text(module)
 
 
@@ -113,9 +137,10 @@ def main() -> None:
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--artifact", choices=["legacy", "graph-cypher"])
+    parser.add_argument("--framework", action="store_true")
     arguments = parser.parse_args()
     if arguments.artifact:
-        write_artifact_headers(arguments.source, arguments.destination, arguments.artifact)
+        write_artifact_headers(arguments.source, arguments.destination, arguments.artifact, framework=arguments.framework)
     else:
         write_core_header(arguments.source, arguments.destination)
 

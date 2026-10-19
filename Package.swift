@@ -24,6 +24,9 @@ let binaryChecksum = "4016bfdeaecae0617ef3f3e879b80451601b53902194fc384ec6eb67a5
 
 let graphBinaryChecksum = "b33dae4c31e46043c338faa1ae913132ae9a951bdf052f8f211d680ebd73f9e7" // ze:graph-xcframework-checksum
 
+// Framework discovery uses the framework's name; preserve the public C import
+// through a source re-export when selecting the dynamic full artifact.
+let binaryTargetName = graph && !useLocalFFI ? "ZeppelinEmbedGraph" : "CZeppelinEmbed"
 let cTarget: Target
 if useLocalFFI {
     cTarget = .systemLibrary(
@@ -32,14 +35,14 @@ if useLocalFFI {
     )
 } else if useLocalXCFramework {
     cTarget = .binaryTarget(
-        name: "CZeppelinEmbed",
+        name: binaryTargetName,
         path: graph
             ? "target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework"
             : "target/xcframework/ZeppelinEmbed.xcframework"
     )
 } else {
     cTarget = .binaryTarget(
-        name: "CZeppelinEmbed",
+        name: binaryTargetName,
         url: graph
             ? "https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbedGraph.xcframework.zip"
             : "https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbed.xcframework.zip",
@@ -71,6 +74,10 @@ let package = Package(
     ],
     targets: [
         cTarget,
+    ] + (graph && !useLocalFFI ? [
+        .target(name: "CZeppelinEmbed", dependencies: ["ZeppelinEmbedGraph"],
+                path: "bindings/swift/Sources/CZeppelinEmbedGraph"),
+    ] : []) + [
         .target(
             name: "ZeppelinEmbed",
             dependencies: ["CZeppelinEmbed"],
