@@ -6,11 +6,14 @@ from __future__ import annotations
 import argparse
 import base64
 import importlib.util
+import hashlib
 import json
 import math
 import struct
 import subprocess
+import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 import torch
@@ -28,6 +31,7 @@ class Tensor:
     shape: tuple[int, ...]
     data: bytes
     digest: int
+    dtype: int = 0
 
 
 @dataclass(frozen=True)
@@ -74,7 +78,7 @@ def checkpoint_tensor(path: Path, name: str) -> torch.Tensor:
         return source.get_tensor(name)
 
 
-def load_tensors(root: Path, role_name: str, dense_out: int) -> tuple[Tensor, ...]:
+def load_tensors(root: Path, role_name: str, dense_out: int, precision: str = "fp32") -> tuple[Tensor, ...]:
     model = root / "model.safetensors"
     if not model.is_file():
         raise ValueError(f"checkpoint has no model.safetensors: {root}")
@@ -92,14 +96,20 @@ def load_tensors(root: Path, role_name: str, dense_out: int) -> tuple[Tensor, ..
         )
     tensors = []
     for name, value in values:
-        value = value.detach().to(dtype=torch.float32).contiguous()
-        data = value.numpy().astype("<f4", copy=False).tobytes(order="C")
+        dtype, numpy_dtype, dtype_id = {
+            "fp32": (torch.float32, "<f4", 0), "fp16": (torch.float16, "<f2", 1)
+        }[precision]
+        value = value.detach().to(dtype=dtype).contiguous()
+        if not torch.isfinite(value).all():
+            raise ValueError(f"non-finite {precision} tensor: {role_name}/{name}")
+        data = value.numpy().astype(numpy_dtype, copy=False).tobytes(order="C")
         tensors.append(
             Tensor(
                 name=f"{role_name}/{name}",
                 shape=tuple(value.shape),
                 data=data,
                 digest=xxhash.xxh3_64_intdigest(data),
+                dtype=dtype_id,
             )
         )
     return tuple(tensors)
@@ -119,6 +129,7 @@ def load_tower(
     role: int,
     role_name: str,
     confirmed_prefix: str,
+    precision: str = "fp32",
 ) -> Tower:
     config = json_file(root / "config.json")
     declared_prefix = declared_query_prefix(root) if confirmed_prefix else ""
@@ -146,7 +157,7 @@ def load_tower(
         pooling = 2
     dense_config = root / "2_Dense" / "config.json"
     dense_out = int(json_file(dense_config)["out_features"]) if dense_config.is_file() else 0
-    tensors = load_tensors(root, role_name, dense_out)
+    tensors = load_tensors(root, role_name, dense_out, precision)
     weights = b"".join(tensor.data for tensor in tensors)
     return Tower(
         role=role,
@@ -328,7 +339,7 @@ def encode_tokenizer(root: Path, architecture: int) -> bytes:
 
 def tensor_descriptor(tensor: Tensor, offset: int) -> bytes:
     output = bytearray(string(tensor.name))
-    output += bytes([0, len(tensor.shape), 0, 0])
+    output += bytes([tensor.dtype, len(tensor.shape), 0, 0])
     for dimension in tensor.shape:
         output += u32(dimension)
     output += u64(offset)
@@ -342,7 +353,8 @@ def bake(args: argparse.Namespace) -> None:
         raise ValueError("--query-max-tokens requires --query")
     document_root = Path(args.document).resolve()
     if args.query:
-        document = load_tower(document_root, args.document_id, 0, "document", "")
+        document = load_tower(document_root, args.document_id, 0, "document", "",
+                              args.document_precision)
         query = load_tower(Path(args.query).resolve(), args.query_id, 1, "query", args.query_prefix)
         towers = (document, query)
         alignment = bytes.fromhex(args.alignment_digest)
@@ -353,6 +365,7 @@ def bake(args: argparse.Namespace) -> None:
             0,
             "document",
             args.query_prefix,
+            args.document_precision,
         )
         towers = (document,)
         alignment = b""
@@ -408,6 +421,67 @@ def bake(args: argparse.Namespace) -> None:
             sort_keys=True,
         )
     )
+
+
+def release(args: argparse.Namespace) -> None:
+    # Match the downloader's conservative single-component path contract.
+    if (not args.name or args.name in (".", "..")
+            or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for c in args.name)):
+        raise ValueError("--name must be a safe single file stem")
+    pack = Path(args.pack).resolve()
+    pair_bytes = (pack / "PAIR.json").read_bytes()
+    pair = json.loads(pair_bytes)
+    out = Path(args.out).resolve()
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise FileExistsError(f"release output must be absent or empty: {out}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # Stage outside the upload directory; never publish an incomplete manifest.
+    with tempfile.TemporaryDirectory(prefix="ze-model-release-", dir=out.parent) as temporary:
+        stage = Path(temporary)
+        bake(argparse.Namespace(
+            document=str(pack / pair["document"]["path"]), document_id=pair["document"]["name"],
+            query=str(pack / pair["query"]["path"]), query_id=pair["query"]["name"],
+            query_prefix=pair["query"]["prefix"], query_max_tokens=96, document_max_tokens=8192,
+            document_precision=args.document_precision, alpha=0.5,
+            alignment_digest=hashlib.sha256(pair_bytes).hexdigest(),
+            output=str(stage / f"{args.name}.zem")))
+        coreml_export(argparse.Namespace(query=str(pack / pair["query"]["path"]), tokens=96,
+                                       output=str(stage / f"{args.name}.mlpackage")))
+        # The exporter also writes source package/receipt; only compiled bytes ship.
+        payload = [stage / f"{args.name}.zem"]
+        compiled = stage / f"{args.name}.mlmodelc"
+        compiled_files = sorted(p for p in compiled.rglob("*") if p.is_file())
+        if not compiled_files:
+            raise ValueError("CoreML compiler produced no files")
+        payload.extend(compiled_files)
+        files = []
+        for path in sorted(payload):
+            with path.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            files.append({"path": path.relative_to(stage).as_posix(),
+                          "size": path.stat().st_size, "sha256": digest})
+        manifest = {"format": 1, "name": args.name, "bundle": f"{args.name}.zem",
+                    "query_coreml": f"{args.name}.mlmodelc", "files": files}
+        (stage / "zeppelin-model.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        sizes = {"document_precision": args.document_precision,
+                 "bundle_bytes": (stage / f"{args.name}.zem").stat().st_size,
+                 "query_coreml_bytes": sum(p.stat().st_size for p in compiled_files)}
+        (stage / "README.md").write_text(
+            f"# {args.name}\n\nModel card pending ZE-500.\n\n"
+            f"Document weights: {args.document_precision}; CoreML query: fp16, 96 tokens.\n"
+            "The bundle retains FP32 MLX query weights and both tokenizers.\n\n"
+            f"Sizes (bytes): bundle {sizes['bundle_bytes']}; compiled query {sizes['query_coreml_bytes']}.\n")
+        payload.extend([stage / "zeppelin-model.json", stage / "README.md"])
+        checksums = []
+        for path in sorted(payload):
+            with path.open("rb") as source:
+                checksums.append(f"{hashlib.file_digest(source, 'sha256').hexdigest()}  {path.relative_to(stage).as_posix()}\n")
+        (stage / "SHA256SUMS").write_text("".join(checksums))
+        out.mkdir(exist_ok=True)
+        for path in [stage / f"{args.name}.zem", compiled, stage / "zeppelin-model.json",
+                     stage / "README.md", stage / "SHA256SUMS"]:
+            shutil.move(str(path), out / path.name)
+        print(json.dumps(sizes, sort_keys=True))
 
 
 def _linear(torch_module, tensors: dict[str, torch.Tensor], base: str):
@@ -598,7 +672,9 @@ def coreml_export(args: argparse.Namespace) -> None:
                 "query": str(root), "tokens": sequence,
                 "precision": "FLOAT16", "compute_units": "CPU_AND_NE",
                 "torch": torch.__version__, "coremltools": ct.__version__}
-    model.user_defined_metadata.update({key: str(value) for key, value in metadata.items()})
+    # Absolute build paths vary per run and must not enter the compiled model.
+    model.user_defined_metadata.update({key: str(value) for key, value in metadata.items()
+                                        if key not in ("output", "compiled", "query")})
     output.parent.mkdir(parents=True, exist_ok=True)
     model.save(str(output))
     subprocess.run(["xcrun", "coremlcompiler", "compile", str(output),
@@ -682,6 +758,7 @@ def parser() -> argparse.ArgumentParser:
     )
     bake_parser.add_argument("--document", required=True)
     bake_parser.add_argument("--document-id", required=True)
+    bake_parser.add_argument("--document-precision", choices=("fp32", "fp16"), default="fp32")
     bake_parser.add_argument("--query")
     bake_parser.add_argument("--query-id")
     bake_parser.add_argument("--query-max-tokens", type=int)
@@ -690,6 +767,12 @@ def parser() -> argparse.ArgumentParser:
     bake_parser.add_argument("--alignment-digest", default="")
     bake_parser.add_argument("--alpha", type=float, default=0.5)
     bake_parser.add_argument("--output", required=True)
+    release_parser = commands.add_parser("release", description="Build an upload-ready release from an offline model pack.")
+    release_parser.add_argument("--pack", required=True)
+    release_parser.add_argument("--out", required=True)
+    release_parser.add_argument("--name", required=True)
+    release_parser.add_argument("--document-precision", choices=("fp32", "fp16"), required=True)
+    release_parser.add_argument("--query-coreml-precision", choices=("fp16",), default="fp16")
     export = commands.add_parser("coreml-export")
     export.add_argument("--query", required=True)
     export.add_argument("--tokens", type=int, default=96,
@@ -719,6 +802,9 @@ def main() -> None:
         return
     if args.command == "coreml-run":
         coreml_run(args)
+        return
+    if args.command == "release":
+        release(args)
         return
     if args.query and not args.query_id:
         raise ValueError("--query-id is required with --query")

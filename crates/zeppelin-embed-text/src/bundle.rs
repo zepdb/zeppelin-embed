@@ -298,6 +298,30 @@ impl Bundle {
         if !Arc::ptr_eq(&document, &query) {
             verify_weights_digest(&query, &tensor_order, &tensors, bytes)?;
         }
+        for (prefix, tokenizer) in [
+            ("document/", &document_tokenizer),
+            (
+                if Arc::ptr_eq(&document, &query) {
+                    "document/"
+                } else {
+                    "query/"
+                },
+                &query_tokenizer,
+            ),
+        ] {
+            let name = format!("{prefix}embeddings.word_embeddings.weight");
+            // Metadata-only bundles are used by tokenizer parity tooling;
+            // missing runtime tensors remain a hard error in MlxRuntime::load.
+            if let Some(tensor) = tensors.get(&name) {
+                let rows = tensor.shape.first().copied().unwrap_or(0) as usize;
+                if tokenizer.vocabulary_len() > rows {
+                    return Err(BundleError::Format(format!(
+                        "{name} has {rows} rows for tokenizer vocabulary of {}",
+                        tokenizer.vocabulary_len()
+                    )));
+                }
+            }
+        }
         let bundle = Self {
             mapping,
             document,

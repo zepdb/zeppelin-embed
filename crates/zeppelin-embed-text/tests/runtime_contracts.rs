@@ -178,7 +178,8 @@ fn mapped_model_tensor_metadata_is_rejected_with_qualified_error_context() {
         .position(|s| s == name)
         .expect("first descriptor");
     let dtype = offset + name.len();
-    for (code, width) in [(1_u8, 8_u32), (2, 8), (3, 16), (4, 4)] {
+    // F32 and F16 (code 1) load; every other dtype is refused.
+    for (code, width) in [(2_u8, 8_u32), (3, 16), (4, 4)] {
         let mut bytes = original.to_vec();
         bytes[dtype] = code;
         // Preserve the byte count while changing the scalar representation.

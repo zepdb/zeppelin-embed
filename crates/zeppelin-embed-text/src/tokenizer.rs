@@ -31,6 +31,10 @@ pub(crate) struct ModelTokenizer {
 }
 
 impl ModelTokenizer {
+    pub(crate) fn vocabulary_len(&self) -> usize {
+        self.scores.len()
+    }
+
     pub(crate) const fn evaluation_revision(&self) -> &'static str {
         match self.kind {
             TokenizerKind::WordPiece => ";ze-text-wordpiece=2",

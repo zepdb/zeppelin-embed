@@ -149,24 +149,12 @@ impl MlxRuntime {
             let descriptor = bundle
                 .tensor(&qualified)
                 .ok_or_else(|| RuntimeError::MissingTensor(qualified.clone()))?;
-            if descriptor.dtype != TensorDtype::F32 {
+            if !matches!(descriptor.dtype, TensorDtype::F32 | TensorDtype::F16) {
                 return Err(RuntimeError::UnsupportedDtype(qualified));
             }
             let raw = bundle
                 .tensor_bytes(descriptor)
                 .map_err(|error| RuntimeError::Shape(error.to_string()))?;
-            let mut values = Vec::with_capacity(raw.len() / 4);
-            for bytes in raw.chunks_exact(4) {
-                let value = bytes
-                    .try_into()
-                    .ok()
-                    .map(u32::from_le_bytes)
-                    .map(f32::from_bits)
-                    .ok_or_else(|| {
-                        RuntimeError::Shape(format!("tensor {qualified} is truncated"))
-                    })?;
-                values.push(value);
-            }
             let shape = descriptor
                 .shape
                 .iter()
@@ -175,7 +163,37 @@ impl MlxRuntime {
                 .map_err(|_| {
                     RuntimeError::Shape(format!("tensor {qualified} dimension exceeds i32"))
                 })?;
-            tensors.insert(name.to_owned(), Array::from_slice(&values, &shape));
+            let array = match descriptor.dtype {
+                TensorDtype::F16 => {
+                    // Use aligned native-endian storage, without another crate.
+                    let values = raw
+                        .chunks_exact(2)
+                        .map(|bytes| {
+                            bytes.try_into().map(u16::from_le_bytes).map_err(|_| {
+                                RuntimeError::Shape(format!("tensor {qualified} is truncated"))
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    // SAFETY: Bundle validated shape * 2 == raw.len(); values
+                    // holds aligned IEEE half bits and MLX copies the buffer.
+                    unsafe {
+                        Array::from_raw_data(values.as_ptr().cast(), &shape, mlx_rs::Dtype::Float16)
+                    }
+                }
+                TensorDtype::F32 => {
+                    let values = raw
+                        .chunks_exact(4)
+                        .map(|bytes| {
+                            bytes.try_into().map(f32::from_le_bytes).map_err(|_| {
+                                RuntimeError::Shape(format!("tensor {qualified} is truncated"))
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Array::from_slice(&values, &shape)
+                }
+                _ => return Err(RuntimeError::UnsupportedDtype(qualified)),
+            };
+            tensors.insert(name.to_owned(), array);
         }
         let (device, gpu) = match compute_units {
             ComputeUnits::Cpu => (Device::cpu(), false),
@@ -304,6 +322,11 @@ impl MlxRuntime {
             Architecture::Bert => bert::forward(self, tokens),
             Architecture::Gte | Architecture::ArcticQuery => gte::forward(self, tokens),
         }?;
+        // The public embedding buffer is f32, even when tower computation is
+        // f16. Convert only the final output, retaining half-precision weights.
+        let output = output
+            .as_dtype_device(mlx_rs::Dtype::Float32, self.stream()?)
+            .map_err(|error| RuntimeError::Mlx(error.to_string()))?;
         // CLS pooling and MRL truncation can leave gaps between logical
         // rows. mlx-rs's slice accessor reads consecutive memory and does
         // not gather by stride. Flatten our unit-inner-stride output on

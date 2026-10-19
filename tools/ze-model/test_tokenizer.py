@@ -92,7 +92,7 @@ class WordPieceExport(unittest.TestCase):
                           root / "model.safetensors")
             args = SimpleNamespace(document=str(roots[0]), query=str(roots[1]),
                                    document_id="document", query_id="query", query_prefix="",
-                                   query_max_tokens=None, document_max_tokens=None,
+                                   query_max_tokens=None, document_max_tokens=None, document_precision="fp32",
                                    alignment_digest="01", alpha=0.5, output=str(Path(directory) / "pair.zem"))
             EXPORT["bake"](args)
             body = Path(args.output).read_bytes()

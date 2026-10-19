@@ -37,6 +37,14 @@ fn with_tokenizer(kind: u8, flags: u8, vocabulary: &[(&str, f64)], max_tokens: u
     bytes.extend_from_slice(&original[end..8192]);
     bytes.resize(8192, 0);
     bytes.extend_from_slice(&original[8192..]);
+    // Tokenizer-only fixture: hide the 7-row word embedding so the
+    // vocabulary-fits-embedding check does not apply to these vocabularies.
+    let name = b"document/embeddings.word_embeddings.weight";
+    let at = bytes
+        .windows(name.len())
+        .position(|s| s == name)
+        .expect("word embedding descriptor");
+    bytes[at + name.len() - 1] = b'X';
     // Empty prefix means max_tokens immediately precedes the two backend IDs.
     let max = reference::POOLING_OFFSET - 9;
     bytes[max..max + 4].copy_from_slice(&max_tokens.to_le_bytes());

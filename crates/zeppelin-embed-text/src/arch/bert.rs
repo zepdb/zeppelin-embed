@@ -155,12 +155,15 @@ pub(crate) fn attention(
         .reshape_device(&[batch, sequence, heads, head_dim], stream)
         .and_then(|value| value.transpose_axes_device(&[0, 2, 1, 3], stream))
         .map_err(mlx)?;
+    // Form the bias in f32 first: casting its 1e9 scale to f16 before
+    // multiplying would turn unmasked positions into 0 * infinity (NaN).
+    let mask = mask.as_dtype_device(query.dtype(), stream).map_err(mlx)?;
     mlx_rs::fast::scaled_dot_product_attention_device(
         &query,
         &key,
         &value,
         1.0 / (head_dim as f32).sqrt(),
-        mask,
+        &mask,
         stream,
     )
     .and_then(|value| value.transpose_axes_device(&[0, 2, 1, 3], stream))

@@ -6,6 +6,32 @@ use zeppelin_embed_text::bundle::{Bundle, BundleError};
 mod common;
 
 #[test]
+fn tokenizer_vocabulary_must_fit_each_towers_word_embedding_rows() {
+    let directory = tempdir().expect("tempdir");
+    for role in [0, 1] {
+        let mut document = common::FixtureTower::document("document");
+        let mut query = common::FixtureTower::query("query");
+        let vocabulary = &[
+            "[PAD]", "[UNK]", "[CLS]", "[SEP]", "the", "bronze", "zeppelin", "extra",
+        ];
+        if role == 0 {
+            document.vocabulary = vocabulary;
+        } else {
+            query.vocabulary = vocabulary;
+        }
+        let path = directory.path().join(format!("oversized-{role}.zem"));
+        common::write_unchecked_fixture_bundle(&path, &[document, query], &[1]);
+        let error = Bundle::open(&path)
+            .err()
+            .expect("oversized vocabulary must be refused");
+        assert!(
+            matches!(&error, BundleError::Format(detail) if detail.contains("vocabulary") && detail.contains(if role == 0 { "document/" } else { "query/" })),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn a_bundle_with_a_corrupted_tensor_digest_is_refused_before_any_tensor_is_mapped() {
     let directory = tempdir().expect("tempdir");
     let path = directory.path().join("corrupt.zem");
