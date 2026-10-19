@@ -866,3 +866,16 @@ class ZeTextQueryOutcome(ct.Structure):
         ("embedding_calls", ct.c_uint64),
         ("timings_ns", ct.c_uint64 * 8),
     ]
+
+
+class ZeTextObservedComputeUnits(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("cpu_ops", ct.c_uint64),
+        ("gpu_ops", ct.c_uint64),
+        ("neural_engine_ops", ct.c_uint64),
+        ("other_ops", ct.c_uint64),
+        ("has_observed_compute_units", ct.c_uint32),
+        ("reserved", ct.c_uint32),
+    ]

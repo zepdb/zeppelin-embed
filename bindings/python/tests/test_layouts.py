@@ -7,6 +7,7 @@ import ctypes as ct
 from zeppelin_embed import _structures as s
 
 LAYOUTS: dict[str, tuple[int, int, dict[str, int]]] = {
+    "ZeTextObservedComputeUnits": (48, 8, {"abi_size": 0, "abi_reserved": 4, "cpu_ops": 8, "gpu_ops": 16, "neural_engine_ops": 24, "other_ops": 32, "has_observed_compute_units": 40, "reserved": 44}),
     "ZeOpenRequest": (64, 8, {"abi_size": 0, "abi_reserved": 4, "path": 8, "path_len": 16, "access_mode": 24, "durability_mode": 28, "commit_tier": 32, "reader_drain_timeout_ms": 40, "max_resident_bytes": 48, "max_temp_bytes": 56}),
     "ZeStateReport": (16, 4, {"abi_size": 0, "abi_reserved": 4, "state": 8, "reserved": 12}),
     "ZeStatsReport": (144, 8, {"abi_size": 0, "abi_reserved": 4, "resident_owned_bytes": 8, "mapped_bytes": 16, "mapped_resident_bytes": 24, "segment_bytes": 32, "active_segment_bytes": 40, "active_row_count": 48, "tombstone_count": 56, "tombstone_bytes": 64, "wal_bytes": 72, "cache_bytes": 80, "temporary_bytes": 88, "query_pool_bytes": 96, "open_files": 104, "active_queries": 112, "active_snapshot_leases": 120, "phys_footprint": 128, "has_phys_footprint": 136, "reserved": 140}),

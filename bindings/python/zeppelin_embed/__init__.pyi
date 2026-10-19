@@ -37,6 +37,7 @@ from ._types import MaintenanceStatus as MaintenanceStatus
 from ._types import MutationReport as MutationReport
 from ._types import NamespaceSpec as NamespaceSpec
 from ._types import Normalization as Normalization
+from ._types import ObservedComputeUnits as ObservedComputeUnits
 from ._types import PartitionReport as PartitionReport
 from ._types import PurgeReport as PurgeReport
 from ._types import PurgeTokenReport as PurgeTokenReport

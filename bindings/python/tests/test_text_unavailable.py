@@ -32,6 +32,7 @@ def test_text_entry_points_raise_typed_platform_error(
             lambda: store.query_text("text"),
             lambda: store.delete_text([1]),
             lambda: store.health(),
+            lambda: store.observed_compute_units(),
         ]:
             with pytest.raises(ze.TextUnavailable):
                 call()

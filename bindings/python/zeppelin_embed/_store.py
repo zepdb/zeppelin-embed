@@ -46,6 +46,7 @@ from ._types import (
     MutationReport,
     NamespaceSpec,
     Normalization,
+    ObservedComputeUnits,
     PartitionReport,
     PurgeReport,
     PurgeTokenReport,
@@ -1380,6 +1381,24 @@ class Store:
         """Delete every chunk of the supplied caller document ids."""
         self._require_text_store()
         return self.delete(doc_ids)
+
+    def observed_compute_units(self) -> ObservedComputeUnits | None:
+        """Load CoreML planned placement on demand; None without a CoreML query model."""
+        self._require_text_store()
+        handle = self._live_handle()
+        report = s.sized(s.ZeTextObservedComputeUnits)
+        raise_for_status(
+            self._call(LIBRARY.ze_text_observed_compute_units, handle, ct.byref(report)),
+            handle,
+        )
+        if not report.has_observed_compute_units:
+            return None
+        return ObservedComputeUnits(
+            cpu_ops=int(report.cpu_ops),
+            gpu_ops=int(report.gpu_ops),
+            neural_engine_ops=int(report.neural_engine_ops),
+            other_ops=int(report.other_ops),
+        )
 
     def health(self) -> TextHealthReport:
         self._require_text_store()

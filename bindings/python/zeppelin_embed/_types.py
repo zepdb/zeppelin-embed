@@ -339,6 +339,16 @@ class TextHit:
 
 
 @dataclass(frozen=True)
+class ObservedComputeUnits:
+    """CoreML planned operation placement, not an execution trace."""
+
+    cpu_ops: int
+    gpu_ops: int
+    neural_engine_ops: int
+    other_ops: int
+
+
+@dataclass(frozen=True)
 class TextQueryResult:
     hits: tuple[TextHit, ...]
     embedding_epoch: int

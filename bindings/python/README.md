@@ -69,6 +69,8 @@ into token windows. Queries return stored text, core diagnostics, backend facts,
 and stage timings when the native runtime enables them. Text `maintain` executes
 one budgeted native maintenance call.
 
+Explicit `store.observed_compute_units()` loads the CoreML compute plan on demand and returns planned placement counts (not an execution trace), or `None` without a CoreML query model.
+
 ## Development
 
 The package is built from the repository because the wheel build compiles

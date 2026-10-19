@@ -104,6 +104,7 @@ if TEXT_AVAILABLE:
     _bind("ze_text_open_model", [ct.POINTER(s.ZeTextOpenModelRequest), ct.POINTER(Handle)])
     _bind("ze_text_delete", [Handle, ct.POINTER(s.ZeDeleteRequest), ct.POINTER(s.ZeMutationReport)])
     _bind("ze_text_health", [Handle, ct.POINTER(s.ZeTextHealthReport)])
+    _bind("ze_text_observed_compute_units", [Handle, ct.POINTER(s.ZeTextObservedComputeUnits)])
     for name in ("ze_text_maintain", "ze_text_maintain_budgeted"):
         _bind(name, [Handle, ct.POINTER(s.ZeMaintainRequest), ct.POINTER(s.ZeMaintainReport)])
     _bind("ze_text_ingest_v2", [Handle, ct.POINTER(s.ZeTextIngestRequestV2), ct.POINTER(s.ZeTextIngestReport)])
