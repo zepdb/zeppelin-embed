@@ -17,8 +17,8 @@ release and a compatible correction is a patch release.
 
 ### Changed
 
-- The Node darwin-arm64 addon now requires macOS 13.5 (was 11.0), the MLX
-  floor. The Intel addon still targets macOS 11.0. The npm tarball grows by
+- The Node darwin-arm64 addon now requires macOS 13.0 (was 11.0), the MLX
+  Metal 3.0 floor. The Intel addon still targets macOS 11.0. The npm tarball grows by
   about 88 MB unpacked for the Metal shader library.
 - The Python arm64 wheel now requires macOS 13 or newer instead of macOS 14.
 

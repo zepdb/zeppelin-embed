@@ -64,9 +64,10 @@ if (isDarwin) {
   const nodePrefix = resolve(dirname(process.execPath), '..');
   const nodeHeaders = join(nodePrefix, 'include', 'node');
   for (const slice of MACOS_SLICES) {
-    // MLX's Metal kernels need Metal 3.0, the macOS 13.5 floor MLX publishes.
+    // MLX's Metal kernels need Metal 3.0, available from macOS 13.0; ZE-522
+    // proved MLX builds and runs there (bfloat kernels are omitted).
     const environment = {...process.env, MACOSX_DEPLOYMENT_TARGET:
-      process.env.MACOSX_DEPLOYMENT_TARGET || (slice.clangArch === 'arm64' ? '13.5' : '11.0')};
+      process.env.MACOSX_DEPLOYMENT_TARGET || (slice.clangArch === 'arm64' ? '13.0' : '11.0')};
     const staticLibrary = join(
       targetDirectory,
       slice.rustTarget,

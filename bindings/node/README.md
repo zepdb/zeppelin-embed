@@ -447,10 +447,10 @@ removing both its JavaScript and native entries from the CommonJS cache and
 asserting two native initializations, independent live stores, and persisted
 results after close and reopen. Ordinary repeated `require` also works.
 
-The macOS arm64 addon (including MLX text) targets macOS 13.5, the floor MLX
-publishes (its Metal shaders compile for Metal 3.0); the Intel addon targets
-macOS 11.0. The Electron 44.4.1 app bundle declares macOS 13.0 as its minimum,
-so on arm64 the addon requires macOS 13.5 or later. CI executes on macos-14,
+The macOS arm64 addon (including MLX text) targets macOS 13.0, the Metal 3.0
+floor for MLX's shaders; the Intel addon targets macOS 11.0. The Electron
+44.4.1 app bundle also declares macOS 13.0 as its minimum, so on arm64 the
+addon requires macOS 13.0 or later. CI executes on macos-14,
 not every older OS. The addon performs no runtime network requests
 except `TextStore.openModel`, which downloads a pinned model unless `offline`
 is set; installation and CI may download packages and Electron.
@@ -646,7 +646,7 @@ keep Wallflower's event loop free.
 
 ## TextStore (macOS arm64)
 
-Requires macOS 13.5 or later on Apple silicon. `TextStore` embeds text locally and searches dense, lexical or hybrid legs. The
+Requires macOS 13.0 or later on Apple silicon. `TextStore` embeds text locally and searches dense, lexical or hybrid legs. The
 arm64 prebuild includes MLX and its `mlx.metallib` beside the addon; keep both
 files together when repackaging. Intel macOS and Windows builds throw a typed
 `ZeppelinError` with code `ZE_ERR_UNSUPPORTED` and the message
