@@ -10,6 +10,11 @@ use crate::tower::{Architecture, TokenBatch, TowerRole, TowerSpec};
 use zeppelin_embed::epoch::ComputeUnits;
 
 const MAX_EVAL_ROWS: usize = 32;
+// ZE-525 native FP16 probes on M3 Max under GPU contention: at 4,096 tokens,
+// warm evaluations took up to ~0.53 s; a cold 8 x 512 evaluation took ~2.96 s.
+// Throughput/token was flat above this budget, with contention-dependent
+// timeouts at larger shapes. An over-budget row must run alone.
+const MAX_EVAL_TOKENS: usize = 4_096;
 
 /// One tower evaluated on a single owned MLX GPU stream.
 pub struct MlxRuntime {
@@ -111,7 +116,7 @@ mod astra_18_tests {
 }
 
 impl MlxRuntime {
-    /// Returns the hard ceiling for one Metal evaluation command buffer.
+    /// Returns the row ceiling; the padded-token budget can split earlier.
     #[doc(hidden)]
     #[must_use]
     pub const fn max_eval_rows() -> usize {
@@ -246,11 +251,6 @@ impl MlxRuntime {
         checkpoint: &mut impl FnMut() -> Result<(), E>,
     ) -> Result<EmbeddingBatch, E> {
         checkpoint()?;
-        if tokens.rows <= MAX_EVAL_ROWS {
-            let result = self.eval_chunk(tokens);
-            checkpoint()?;
-            return result.map_err(Into::into);
-        }
         let dims = self.tower.embedding.dims as usize;
         let capacity = tokens
             .rows
@@ -260,30 +260,8 @@ impl MlxRuntime {
         let mut start = 0_usize;
         while start < tokens.rows {
             checkpoint()?;
-            let end = start.saturating_add(MAX_EVAL_ROWS).min(tokens.rows);
-            let row_start = start.checked_mul(tokens.tokens_per_row).ok_or_else(|| {
-                RuntimeError::Shape("token batch chunk offset overflow".to_owned())
-            })?;
-            let row_end = end
-                .checked_mul(tokens.tokens_per_row)
-                .ok_or_else(|| RuntimeError::Shape("token batch chunk end overflow".to_owned()))?;
-            let token_ids = tokens
-                .token_ids
-                .get(row_start..row_end)
-                .ok_or_else(|| RuntimeError::Shape("token batch chunk is truncated".to_owned()))?
-                .to_vec();
-            let attention_mask = tokens
-                .attention_mask
-                .get(row_start..row_end)
-                .ok_or_else(|| RuntimeError::Shape("attention chunk is truncated".to_owned()))?
-                .to_vec();
-            let chunk = TokenBatch::new(
-                token_ids,
-                attention_mask,
-                end.saturating_sub(start),
-                tokens.tokens_per_row,
-            )
-            .map_err(|detail| RuntimeError::Shape(detail.to_owned()))?;
+            let chunk = next_eval_chunk(tokens, start)?;
+            let end = start.saturating_add(chunk.rows);
             let result = self.eval_chunk(&chunk);
             checkpoint()?;
             values.extend(result?.into_values());
@@ -291,6 +269,58 @@ impl MlxRuntime {
         }
         EmbeddingBatch::new(values, tokens.rows, dims).map_err(Into::into)
     }
+}
+
+/// Greedily retain caller order, padding only to this evaluation's longest row.
+fn next_eval_chunk(tokens: &TokenBatch, start: usize) -> Result<TokenBatch, RuntimeError> {
+    let expected = tokens
+        .rows
+        .checked_mul(tokens.tokens_per_row)
+        .ok_or_else(|| RuntimeError::Shape("token batch shape overflow".to_owned()))?;
+    if tokens.tokens_per_row == 0 || start >= tokens.rows || tokens.token_ids.len() != expected {
+        return Err(RuntimeError::Shape(
+            "token batch chunk is truncated".to_owned(),
+        ));
+    }
+    if tokens.attention_mask.len() != expected {
+        return Err(RuntimeError::Shape(
+            "attention chunk is truncated".to_owned(),
+        ));
+    }
+    let mut rows = 0;
+    let mut width = 1;
+    for mask in tokens
+        .attention_mask
+        .chunks_exact(tokens.tokens_per_row)
+        .skip(start)
+        .take(MAX_EVAL_ROWS)
+    {
+        // Keep masked holes and token positions; remove only trailing padding.
+        let row_width = mask
+            .iter()
+            .rposition(|value| *value != 0.0)
+            .map_or(1, |position| position + 1);
+        let next_width = width.max(row_width);
+        if rows > 0 && rows + 1 > MAX_EVAL_TOKENS / next_width {
+            break;
+        }
+        rows += 1;
+        width = next_width;
+    }
+    let mut token_ids = Vec::with_capacity(rows * width);
+    let mut attention_mask = Vec::with_capacity(rows * width);
+    for (ids, mask) in tokens
+        .token_ids
+        .chunks_exact(tokens.tokens_per_row)
+        .zip(tokens.attention_mask.chunks_exact(tokens.tokens_per_row))
+        .skip(start)
+        .take(rows)
+    {
+        token_ids.extend(ids.iter().take(width).copied());
+        attention_mask.extend(mask.iter().take(width).copied());
+    }
+    TokenBatch::new(token_ids, attention_mask, rows, width)
+        .map_err(|detail| RuntimeError::Shape(detail.to_owned()))
 }
 
 impl ModelRuntime for MlxRuntime {
@@ -318,6 +348,14 @@ impl ModelRuntime for MlxRuntime {
 
 impl MlxRuntime {
     fn eval_chunk(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
+        #[cfg(test)]
+        let started = {
+            assert!(
+                tokens.rows == 1 || tokens.rows * tokens.tokens_per_row <= MAX_EVAL_TOKENS,
+                "only a single row may exceed the evaluation token budget"
+            );
+            std::time::Instant::now()
+        };
         let output = match self.tower.architecture {
             Architecture::Bert => bert::forward(self, tokens),
             Architecture::Gte | Architecture::ArcticQuery => gte::forward(self, tokens),
@@ -354,6 +392,14 @@ impl MlxRuntime {
             .try_as_slice::<f32>()
             .map_err(|error| RuntimeError::Mlx(error.to_string()))?
             .to_vec();
+        #[cfg(test)]
+        eprintln!(
+            "ZE-525 eval rows={} padded_length={} padded_tokens={} completed_ms={:.3}",
+            tokens.rows,
+            tokens.tokens_per_row,
+            tokens.rows * tokens.tokens_per_row,
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         EmbeddingBatch::new(values, tokens.rows, self.tower.embedding.dims as usize)
     }
 }
@@ -435,4 +481,103 @@ fn required_tensor_names(tower: &TowerSpec) -> Vec<String> {
         names.push("dense.bias".to_owned());
     }
     names
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
+mod eval_budget_tests {
+    use super::*;
+
+    #[test]
+    fn eval_splits_bound_padded_tokens_and_preserve_rows() {
+        let tokens = TokenBatch::new(
+            (0..32).flat_map(|row| vec![row; 512]).collect(),
+            vec![1.0; 32 * 512],
+            32,
+            512,
+        )
+        .expect("32 full 512-token rows");
+        let mut start = 0;
+        let mut ids = Vec::new();
+        let mut shapes = Vec::new();
+        while start < tokens.rows {
+            let chunk = next_eval_chunk(&tokens, start).expect("bounded split");
+            shapes.push((chunk.rows, chunk.tokens_per_row));
+            start += chunk.rows;
+            ids.extend(chunk.token_ids);
+        }
+        assert_eq!(shapes, vec![(8, 512); 4]);
+        assert_eq!(ids, tokens.token_ids, "splitting preserves caller order");
+
+        let mut mixed = tokens;
+        // First eight rows fill the budget. The remaining rows need only 16
+        // positions, including a masked hole that must not shift later tokens.
+        for row in 8..32 {
+            mixed.attention_mask[row * 512 + 16..(row + 1) * 512].fill(0.0);
+            mixed.attention_mask[row * 512 + 3] = 0.0;
+        }
+        let first = next_eval_chunk(&mixed, 0).expect("long split");
+        let rest = next_eval_chunk(&mixed, first.rows).expect("trimmed split");
+        assert_eq!((first.rows, first.tokens_per_row), (8, 512));
+        assert_eq!((rest.rows, rest.tokens_per_row), (24, 16));
+        for (row, ids) in rest.token_ids.chunks_exact(16).enumerate() {
+            assert_eq!(ids, vec![(row + 8) as i32; 16]);
+        }
+        assert_eq!(rest.attention_mask[..16], mixed.attention_mask[4096..4112]);
+        let short =
+            TokenBatch::new(vec![2; 33 * 128], vec![1.0; 33 * 128], 33, 128).expect("short rows");
+        assert_eq!(next_eval_chunk(&short, 0).expect("row ceiling").rows, 32);
+        for rows in [1, 2] {
+            let over_budget = TokenBatch::new(
+                (0..rows)
+                    .flat_map(|row| vec![row as i32 + 2; 4097])
+                    .collect(),
+                vec![1.0; rows * 4097],
+                rows,
+                4097,
+            )
+            .expect("over-budget rows");
+            for start in 0..rows {
+                let chunk = next_eval_chunk(&over_budget, start).expect("long row runs alone");
+                assert_eq!((chunk.rows, chunk.tokens_per_row), (1, 4097));
+                assert_eq!(chunk.token_ids, vec![start as i32 + 2; 4097]);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires ZE_TEXT_BUNDLE pointing to the release FP16 bundle and native Metal"]
+    fn release_fp16_max_length_batch_completes_with_eval_timings() {
+        let path = std::env::var_os("ZE_TEXT_BUNDLE").expect("set ZE_TEXT_BUNDLE");
+        let bundle = Arc::new(Bundle::open(path).expect("release bundle"));
+        let max_tokens = bundle.document_tower().embedding.max_tokens as usize;
+        assert_eq!(
+            bundle
+                .tensor("document/embeddings.word_embeddings.weight")
+                .expect("document weights")
+                .dtype,
+            TensorDtype::F16
+        );
+        let dims = bundle.document_tower().embedding.dims as usize;
+        let mut runtime =
+            MlxRuntime::load(bundle, TowerRole::Document).expect("FP16 document tower");
+        for (rows, width) in [(32, 1024), (2, max_tokens)] {
+            let tokens = TokenBatch::new(
+                (0..rows)
+                    .flat_map(|row| vec![row as i32 + 2; width])
+                    .collect(),
+                vec![1.0; rows * width],
+                rows,
+                width,
+            )
+            .expect("worst-case batch with distinct rows");
+            // eval_chunk asserts the actual shape's budget (allowing single
+            // rows), then prints wall time after forced eval and the host copy.
+            for _ in 0..3 {
+                let output = runtime.embed_batch(&tokens).expect("long-row evaluation");
+                assert_eq!((output.rows(), output.dims()), (rows, dims));
+                assert!(output.values().iter().all(|value| value.is_finite()));
+            }
+        }
+    }
 }

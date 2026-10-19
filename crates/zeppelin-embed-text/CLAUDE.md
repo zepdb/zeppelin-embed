@@ -46,9 +46,13 @@
   mutex serializes MLX creation, evaluation, and destruction because the
   pinned Rust binding documents task-local defaults but no cross-thread C ABI
   safety guarantee; the parallel public-path test otherwise crashes in MLX.
-- A single MLX evaluation covers at most 32 rows and completes before the next
-  chunk is built. This bounds Metal command-buffer lifetime below the macOS
-  watchdog on real, long-document batches.
+- A single MLX evaluation covers at most 32 rows and targets 4,096 padded
+  tokens, measured by ZE-525's native release-FP16 probes. A row longer than
+  that budget runs alone, trimmed to its own length; size alone is not refused.
+  Each contiguous split trims trailing padding and completes before the next
+  split is built. The release document tower supports 8,192 model tokens;
+  ingest's default chunk size counts approximate source words, not model tokens.
+  Full-ingest watchdog/throughput qualification is tracked in ZE-525 evidence.
 - MLX CPU/GPU and CoreML placement remain runtime epoch fields. CoreML exports
   fixed-shape query towers through `tools/ze-model`; accepting backend drift
   within tolerance remains an open owner decision.
