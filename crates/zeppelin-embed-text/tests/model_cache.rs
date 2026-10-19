@@ -119,7 +119,16 @@ impl Fixture {
                     stream,
                     "HTTP/1.1 {code} Fixture\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
                 );
-                let _ = stream.write_all(data);
+                if !is_manifest && data.len() > 64 * 1024 {
+                    for chunk in data.chunks(64 * 1024) {
+                        if stream.write_all(chunk).is_err() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(110));
+                    }
+                } else {
+                    let _ = stream.write_all(data);
+                }
             }
         });
         Self {
@@ -163,6 +172,13 @@ fn downloads_verified_bundle_then_reuses_cache_and_offline_hit_without_requests(
     };
     let bundle = resolve_model(&model, &options).unwrap();
     assert_eq!(std::fs::read(&bundle).unwrap(), b"abc");
+    assert!(
+        bundle
+            .parent()
+            .unwrap()
+            .join(".zeppelin-verified")
+            .is_file()
+    );
     assert_eq!(server.requests.load(Ordering::SeqCst), 2);
     assert_eq!(resolve_model(&model, &options).unwrap(), bundle);
     options.offline = true;
@@ -261,6 +277,31 @@ fn rejects_unsafe_paths_and_inconsistent_manifest_before_using_bundle() {
         assert!(
             matches!(resolve_model(&model, &options), Err(ModelError::Invalid(_))),
             "{path}"
+        );
+    }
+    // Cache metadata must never be admitted as a manifest payload.
+    for reserved in [".zeppelin-verified", ".zeppelin-verified.tmp"] {
+        let valid = String::from_utf8(manifest("tiny.zem", SHA_ABC, 3)).unwrap();
+        let bytes = valid.replace(
+            "\"files\":[",
+            &format!(r#""files":[{{"path":"{reserved}","size":3,"sha256":"{SHA_ABC}"}},"#),
+        );
+        let model = model(bytes.as_bytes());
+        let cache = tempfile::tempdir().unwrap();
+        cached(cache.path(), &model, bytes.as_bytes());
+        assert!(
+            matches!(
+                resolve_model(
+                    &model,
+                    &ModelOpenOptions {
+                        cache_dir: Some(cache.path().into()),
+                        offline: true,
+                        ..Default::default()
+                    }
+                ),
+                Err(ModelError::Invalid(_))
+            ),
+            "{reserved}"
         );
     }
     let valid = String::from_utf8(manifest("tiny.zem", SHA_ABC, 3)).unwrap();
@@ -600,4 +641,298 @@ fn http_cross_host_redirect_never_sends_token_and_still_downloads() {
         0,
         "no token after redirect"
     );
+}
+
+#[test]
+fn marker_is_published_and_stat_changes_force_verification() {
+    let bytes = manifest("tiny.zem", SHA_ABC, 3);
+    let model = model(&bytes);
+    let cache = tempfile::tempdir().unwrap();
+    cached(cache.path(), &model, &bytes);
+    let options = ModelOpenOptions {
+        cache_dir: Some(cache.path().into()),
+        offline: true,
+        ..Default::default()
+    };
+    let bundle = resolve_model(&model, &options).unwrap();
+    let marker = bundle.parent().unwrap().join(".zeppelin-verified");
+    assert!(marker.is_file(), "publish must write a verified marker");
+    for changed in [b"xyz".as_slice(), b"ab".as_slice()] {
+        std::fs::write(&bundle, changed).unwrap();
+        let error = resolve_model(&model, &options).unwrap_err();
+        assert!(matches!(error, ModelError::Verification(_)));
+        assert!(
+            error
+                .to_string()
+                .contains(bundle.parent().unwrap().to_str().unwrap())
+        );
+        std::fs::write(&bundle, b"abc").unwrap();
+        resolve_model(&model, &options).unwrap();
+    }
+    // A missing/invalid marker requires full verification, not quarantine.
+    std::fs::write(&marker, b"invalid marker").unwrap();
+    resolve_model(&model, &options).unwrap();
+    assert_ne!(std::fs::read(&marker).unwrap(), b"invalid marker");
+}
+
+#[test]
+fn corrupt_and_partial_entries_are_repaired_online_and_report_path_offline() {
+    let bytes = manifest("tiny.zem", SHA_ABC, 3);
+    let model = model(&bytes);
+    let server = Fixture::new(bytes.clone(), b"abc".to_vec(), 3, 200);
+    for missing in [false, true] {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cached(cache.path(), &model, &bytes);
+        if missing {
+            std::fs::remove_file(entry.join("zeppelin-model.json")).unwrap();
+        } else {
+            std::fs::write(entry.join("tiny.zem"), b"xyz").unwrap();
+        }
+        let mut options = ModelOpenOptions {
+            cache_dir: Some(cache.path().into()),
+            endpoint: Some(server.endpoint.clone()),
+            allow_http: true,
+            offline: true,
+            ..Default::default()
+        };
+        let error = resolve_model(&model, &options).unwrap_err();
+        assert!(matches!(error, ModelError::Verification(_)), "{error}");
+        assert!(error.to_string().contains(entry.to_str().unwrap()));
+        options.offline = false;
+        let callback = |_, _| {
+            assert!(
+                !entry.exists(),
+                "old entry must be quarantined before download"
+            );
+            assert!(
+                std::fs::read_dir(entry.parent().unwrap())
+                    .unwrap()
+                    .any(|e| e
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains(".corrupt-"))
+            );
+        };
+        options.progress = Some(&callback);
+        let bundle = resolve_model(&model, &options).unwrap();
+        assert_eq!(std::fs::read(bundle).unwrap(), b"abc");
+        assert!(
+            !std::fs::read_dir(entry.parent().unwrap())
+                .unwrap()
+                .any(|e| e
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".corrupt-"))
+        );
+    }
+}
+
+#[test]
+fn byte_progress_is_monotonic_throttled_and_finishes_at_total_on_caller_thread() {
+    let body = vec![b'x'; 512 * 1024];
+    let total = body.len() as u64;
+    let bytes = manifest("tiny.zem", &sha(&body), total);
+    let model = model(&bytes);
+    let server = Fixture::new(bytes, body, total as usize, 200);
+    let cache = tempfile::tempdir().unwrap();
+    let reports = std::cell::RefCell::new(Vec::new());
+    let caller = std::thread::current().id();
+    let callback = |done, size| {
+        assert_eq!(std::thread::current().id(), caller);
+        reports
+            .borrow_mut()
+            .push((done, size, std::time::Instant::now()));
+    };
+    resolve_model(
+        &model,
+        &ModelOpenOptions {
+            cache_dir: Some(cache.path().into()),
+            endpoint: Some(server.endpoint.clone()),
+            allow_http: true,
+            progress: Some(&callback),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let reports = reports.borrow();
+    assert_eq!(reports.last().map(|r| (r.0, r.1)), Some((total, total)));
+    assert!(
+        reports.iter().any(|r| r.0 > 0 && r.0 < total),
+        "must report within a file"
+    );
+    for pair in reports.windows(2) {
+        assert!(pair[0].0 <= pair[1].0);
+    }
+    let intermediate: Vec<_> = reports.iter().filter(|r| r.0 > 0 && r.0 < total).collect();
+    for pair in intermediate.windows(2) {
+        assert!(pair[1].0 - pair[0].0 >= 64 * 1024);
+        assert!(pair[1].2.duration_since(pair[0].2) >= std::time::Duration::from_millis(100));
+    }
+}
+
+#[test]
+#[ignore = "manual 700 MiB cache-open measurement"]
+fn measure_large_cache_open() {
+    let cache = tempfile::tempdir().unwrap();
+    let body = vec![0u8; 700 * 1024 * 1024];
+    let bytes = manifest("tiny.zem", &sha(&body), body.len() as u64);
+    let model = model(&bytes);
+    let entry = cached(cache.path(), &model, &bytes);
+    std::fs::write(entry.join("tiny.zem"), &body).unwrap();
+    drop(body);
+    let options = ModelOpenOptions {
+        cache_dir: Some(cache.path().into()),
+        offline: true,
+        ..Default::default()
+    };
+    for pass in 0..3 {
+        let _ = std::fs::remove_file(entry.join(".zeppelin-verified"));
+        let start = std::time::Instant::now();
+        resolve_model(&model, &options).unwrap();
+        let full = start.elapsed();
+        let start = std::time::Instant::now();
+        resolve_model(&model, &options).unwrap();
+        println!(
+            "pass={pass} bytes={} full_rehash_us={} marker_open_us={}",
+            700 * 1024 * 1024u64,
+            full.as_micros(),
+            start.elapsed().as_micros()
+        );
+    }
+}
+
+#[test]
+fn partial_cache_offline_is_corrupt_with_entry_path() {
+    let bytes = manifest("tiny.zem", SHA_ABC, 3);
+    let model = model(&bytes);
+    let cache = tempfile::tempdir().unwrap();
+    let entry = cached(cache.path(), &model, &bytes);
+    std::fs::remove_file(entry.join("zeppelin-model.json")).unwrap();
+    let error = resolve_model(
+        &model,
+        &ModelOpenOptions {
+            cache_dir: Some(cache.path().into()),
+            offline: true,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error, ModelError::Verification(_)), "{error}");
+    assert!(error.to_string().contains(entry.to_str().unwrap()));
+}
+
+#[test]
+fn failed_repair_preserves_quarantine_and_does_not_publish_partial_bytes() {
+    let bytes = manifest("tiny.zem", SHA_ABC, 3);
+    let model = model(&bytes);
+    let cache = tempfile::tempdir().unwrap();
+    let entry = cached(cache.path(), &model, &bytes);
+    std::fs::write(entry.join("tiny.zem"), b"xyz").unwrap();
+    let callback = |_, _| {
+        assert!(!entry.exists());
+        let quarantined = std::fs::read_dir(entry.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.to_string_lossy().contains(".corrupt-"))
+            .unwrap();
+        assert_eq!(std::fs::read(quarantined.join("tiny.zem")).unwrap(), b"xyz");
+    };
+    let error = resolve_model(
+        &model,
+        &ModelOpenOptions {
+            cache_dir: Some(cache.path().into()),
+            endpoint: Some("http://127.0.0.1:1".into()),
+            allow_http: true,
+            progress: Some(&callback),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error, ModelError::Download(_)), "{error}");
+    assert!(!entry.exists());
+    assert!(!entry.with_extension("partial").exists());
+
+    let parent = entry.parent().unwrap();
+    // Cleanup covers old files as well as the directory from the failed repair,
+    // and must leave other revisions alone.
+    std::fs::write(
+        parent.join(format!("{}.corrupt-old-file", model.revision)),
+        b"old",
+    )
+    .unwrap();
+    let other_revision = parent.join("another-revision.corrupt-123");
+    std::fs::create_dir(&other_revision).unwrap();
+    let server = Fixture::new(bytes, b"abc".to_vec(), 3, 200);
+    let bundle = resolve_model(
+        &model,
+        &ModelOpenOptions {
+            cache_dir: Some(cache.path().into()),
+            endpoint: Some(server.endpoint.clone()),
+            allow_http: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(bundle).unwrap(), b"abc");
+    let prefix = format!("{}.corrupt-", model.revision);
+    assert!(!std::fs::read_dir(parent).unwrap().any(|item| {
+        item.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&prefix)
+    }));
+    assert!(other_revision.is_dir());
+}
+
+#[test]
+fn stale_marker_temp_is_replaced_when_opening_valid_cache_offline() {
+    let bytes = manifest("tiny.zem", SHA_ABC, 3);
+    let model = model(&bytes);
+    let cache = tempfile::tempdir().unwrap();
+    let entry = cached(cache.path(), &model, &bytes);
+    let temporary = entry.join(".zeppelin-verified.tmp");
+    std::fs::write(&temporary, b"interrupted marker write").unwrap();
+    let bundle = resolve_model(
+        &model,
+        &ModelOpenOptions {
+            cache_dir: Some(cache.path().into()),
+            offline: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(bundle, entry.join("tiny.zem"));
+    let marker = std::fs::read_to_string(entry.join(".zeppelin-verified")).unwrap();
+    assert!(marker.starts_with(&format!("ze-verified-1\n{}\n", model.manifest_sha256)));
+    assert!(!temporary.exists());
+}
+
+#[test]
+fn read_only_cache_opens_without_marker_but_still_rejects_corruption() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bytes = manifest("tiny.zem", SHA_ABC, 3);
+    let model = model(&bytes);
+    let cache = tempfile::tempdir().unwrap();
+    let entry = cached(cache.path(), &model, &bytes);
+    let options = ModelOpenOptions {
+        cache_dir: Some(cache.path().into()),
+        offline: true,
+        ..Default::default()
+    };
+    std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let first = resolve_model(&model, &options);
+    let second = resolve_model(&model, &options);
+    let marker_exists = entry.join(".zeppelin-verified").exists();
+    // The existing file remains writable so corruption can be checked under 0555.
+    std::fs::write(entry.join("tiny.zem"), b"xyz").unwrap();
+    let corrupt = resolve_model(&model, &options);
+    std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(first.unwrap(), entry.join("tiny.zem"));
+    assert_eq!(second.unwrap(), entry.join("tiny.zem"));
+    assert!(!marker_exists);
+    assert!(matches!(corrupt, Err(ModelError::Verification(_))));
 }

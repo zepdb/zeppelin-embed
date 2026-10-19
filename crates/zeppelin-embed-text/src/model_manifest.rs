@@ -75,6 +75,11 @@ impl Manifest {
         for file in &files {
             if !valid_path(&file.path)
                 || file.path == "zeppelin-model.json"
+                || file
+                    .path
+                    .split('/')
+                    .next()
+                    .is_some_and(|p| p == crate::model::VERIFIED || p == ".zeppelin-verified.tmp")
                 || !valid_sha(&file.sha256, 64)
                 || !paths.insert(file.path.clone())
             {

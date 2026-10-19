@@ -28,6 +28,11 @@ int ze_model_token_allowed(const char *url, const char *authorized_host) {
     NSString *authorizedHost;
     NSString *authorization;
     dispatch_semaphore_t finished;
+    dispatch_semaphore_t progressConsumed;
+    BOOL completed;
+    BOOL reportsProgress;
+    uint64_t lastReportedBytes;
+    NSTimeInterval lastReportedTime;
 }
 @end
 
@@ -89,10 +94,19 @@ int ze_model_token_allowed(const char *url, const char *authorized_host) {
         bytes += (uint64_t)written;
         cursor += written; left -= (NSUInteger)written;
     }
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (reportsProgress && bytes - lastReportedBytes >= 65536 && now - lastReportedTime >= 0.1) {
+        lastReportedBytes = bytes;
+        // Rendezvous with the blocked caller: Rust Fn need not be Send/Sync.
+        dispatch_semaphore_signal(finished);
+        dispatch_semaphore_wait(progressConsumed, DISPATCH_TIME_FOREVER);
+        lastReportedTime = NSProcessInfo.processInfo.systemUptime;
+    }
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     (void)session; (void)task;
     if (error != nil && result == 0) { result = -1; failure = error.localizedDescription; }
+    completed = YES;
     dispatch_semaphore_signal(finished);
 }
 @end
@@ -100,7 +114,8 @@ int ze_model_token_allowed(const char *url, const char *authorized_host) {
 // Output buffers are caller-owned: digest[32], error[error_cap].
 int ze_model_download(const char *url, const char *path, const char *token,
                       const char *authorized_endpoint, int allow_http,
-                      uint64_t limit, unsigned char *digest, uint64_t *bytes,
+                      uint64_t limit, void (*progress)(void *, uint64_t), void *context,
+                      unsigned char *digest, uint64_t *bytes,
                       char *error, size_t error_cap) {
     @autoreleasepool {
         ZEModelDownload *delegate = nil;
@@ -122,6 +137,9 @@ int ze_model_download(const char *url, const char *path, const char *token,
                 delegate->authorization = [@"Bearer " stringByAppendingString:[NSString stringWithUTF8String:token]];
             }
             delegate->finished = dispatch_semaphore_create(0);
+            delegate->progressConsumed = dispatch_semaphore_create(0);
+            delegate->reportsProgress = progress != NULL;
+            delegate->lastReportedTime = NSProcessInfo.processInfo.systemUptime;
             CC_SHA256_Init(&delegate->hash);
             NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
             config.URLCache = nil;
@@ -138,7 +156,12 @@ int ze_model_download(const char *url, const char *path, const char *token,
             BOOL allowed = ze_model_token_allowed(url, delegate->authorizedHost.UTF8String);
             [request setValue:allowed ? delegate->authorization : nil forHTTPHeaderField:@"Authorization"];
             [[session dataTaskWithRequest:request] resume];
-            dispatch_semaphore_wait(delegate->finished, DISPATCH_TIME_FOREVER);
+            for (;;) {
+                dispatch_semaphore_wait(delegate->finished, DISPATCH_TIME_FOREVER);
+                if (delegate->completed) { break; }
+                if (progress != NULL) { progress(context, delegate->lastReportedBytes); }
+                dispatch_semaphore_signal(delegate->progressConsumed);
+            }
             [session finishTasksAndInvalidate];
             int result = delegate->result;
             if (result == 0 && fsync(delegate->fd) != 0) { result = -1; delegate->failure = @"cannot sync model download"; }

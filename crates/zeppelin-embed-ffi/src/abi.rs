@@ -942,8 +942,10 @@ pub struct ZeTextOpenModelRequest {
     /// sends tokens only to HTTPS huggingface.co. Tokens never travel over HTTP.
     /// Unknown bits are invalid.
     pub flags: u32,
-    /// Optional synchronous file-boundary progress callback (done, total bytes).
-    /// Initially (0, 0) means downloading the manifest. Must not unwind or
+    /// Optional synchronous byte progress on the calling thread (done, total bytes).
+    /// Intermediate reports require both 64 KiB and 100 ms; each verified file also
+    /// reports completion. Total is the sum of manifest file sizes; initially (0, 0)
+    /// means downloading the manifest. Must not unwind or
     /// reenter model resolution. The callback and user_data live until return.
     pub progress:
         Option<unsafe extern "C" fn(user_data: *mut std::ffi::c_void, done: u64, total: u64)>,

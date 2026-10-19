@@ -32,8 +32,10 @@ pub struct ModelOpenOptions<'a> {
     /// Default false: only HTTPS huggingface.co requests may receive the token.
     /// This opt-in never authorizes HTTP or other redirect hosts.
     pub send_token_to_endpoint: bool,
-    /// Synchronous status at file boundaries: verified bytes done / total.
-    /// Called with zero bytes before downloading the manifest (total unknown: zero).
+    /// Synchronous byte progress on the calling thread: downloaded bytes / total.
+    /// Intermediate reports require both 64 KiB and 100 ms since the last report;
+    /// each verified file also reports completion. Total is the manifest file sizes.
+    /// Initially (0, 0) means downloading the manifest. Must not reenter resolution.
     pub progress: Option<&'a dyn Fn(u64, u64)>,
 }
 
@@ -80,12 +82,17 @@ impl From<std::io::Error> for ModelError {
 use crate::model_manifest::Manifest;
 use std::ffi::{CStr, CString, c_char};
 use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
+use std::os::unix::{
+    ffi::OsStrExt,
+    fs::{MetadataExt, OpenOptionsExt},
+};
 use std::path::Path;
 
 const MANIFEST: &str = "zeppelin-model.json";
 const MAX_MANIFEST: u64 = 1024 * 1024;
+pub(crate) const VERIFIED: &str = ".zeppelin-verified";
 
 unsafe extern "C" {
     fn ze_model_download(
@@ -95,6 +102,8 @@ unsafe extern "C" {
         authorized_endpoint: *const c_char,
         allow_http: i32,
         limit: u64,
+        progress: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64)>,
+        context: *mut std::ffi::c_void,
         digest: *mut u8,
         bytes: *mut u64,
         error: *mut c_char,
@@ -139,7 +148,11 @@ fn digest_hex(digest: &[u8]) -> String {
     }
     hex
 }
+#[cfg(test)]
+thread_local! { static HASHED_FILES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 fn hash_file(path: &Path) -> Result<(String, u64), ModelError> {
+    #[cfg(test)]
+    HASHED_FILES.with(|count| count.set(count.get() + 1));
     if !fs::symlink_metadata(path)?.file_type().is_file() {
         return Err(ModelError::Verification(format!(
             "not a regular file: {}",
@@ -167,7 +180,7 @@ fn check_hash(actual: &str, expected: &str, path: &Path) -> Result<(), ModelErro
 fn load_manifest(entry: &Path, model: &ModelRef) -> Result<Manifest, ModelError> {
     let path = entry.join(MANIFEST);
     if fs::symlink_metadata(&path)?.len() > MAX_MANIFEST {
-        return Err(invalid("manifest exceeds 1 MiB"));
+        return Err(ModelError::Verification("manifest exceeds 1 MiB".into()));
     }
     let (hash, _) = hash_file(&path)?;
     check_hash(&hash, &model.manifest_sha256, &path)?;
@@ -191,6 +204,13 @@ fn verify_entry(entry: &Path, model: &ModelRef) -> Result<PathBuf, ModelError> {
     if !remaining.is_empty() {
         return Err(ModelError::Verification("incomplete cache entry".into()));
     }
+    let marker = marker_contents(entry, model, &manifest)?;
+    match fs::read(entry.join(VERIFIED)) {
+        Ok(bytes) if bytes == marker.as_bytes() => return Ok(entry.join(manifest.bundle)),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
     for file in &manifest.files {
         let path = entry.join(&file.path);
         let (hash, size) = hash_file(&path)?;
@@ -202,7 +222,72 @@ fn verify_entry(entry: &Path, model: &ModelRef) -> Result<PathBuf, ModelError> {
         }
         check_hash(&hash, &file.sha256, &path)?;
     }
+    if marker_contents(entry, model, &manifest)? != marker {
+        return Err(ModelError::Verification(
+            "files changed during verification".into(),
+        ));
+    }
+    match write_marker(entry, &marker) {
+        Ok(()) => {}
+        // The marker only speeds up opens; fully verified read-only caches remain usable.
+        Err(ModelError::Io(e))
+            if e.kind() == std::io::ErrorKind::PermissionDenied
+                || e.raw_os_error() == Some(libc::EROFS) => {}
+        Err(e) => return Err(e),
+    }
     Ok(entry.join(manifest.bundle))
+}
+
+// Canonical text comparison avoids a second parser. The manifest pin is verified
+// independently on every open; payload hashes can be skipped only for exact stats.
+fn marker_contents(
+    entry: &Path,
+    model: &ModelRef,
+    manifest: &Manifest,
+) -> Result<String, ModelError> {
+    use std::fmt::Write;
+    let mut marker = format!(
+        "ze-verified-1\n{}\n",
+        model.manifest_sha256.to_ascii_lowercase()
+    );
+    for file in &manifest.files {
+        let path = entry.join(&file.path);
+        let stat = fs::symlink_metadata(&path)?;
+        if !stat.file_type().is_file() || stat.len() != file.size {
+            return Err(ModelError::Verification(format!(
+                "size or type mismatch: {}",
+                path.display()
+            )));
+        }
+        let mtime_ns = i128::from(stat.mtime()) * 1_000_000_000 + i128::from(stat.mtime_nsec());
+        let _ = writeln!(
+            marker,
+            "{}\t{}\t{}\t{}",
+            file.path,
+            stat.len(),
+            mtime_ns,
+            stat.ino()
+        );
+    }
+    Ok(marker)
+}
+fn write_marker(entry: &Path, marker: &str) -> Result<(), ModelError> {
+    let temporary = entry.join(format!("{VERIFIED}.tmp"));
+    match fs::remove_file(&temporary) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    file.write_all(marker.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(temporary, entry.join(VERIFIED))?;
+    File::open(entry)?.sync_all()?;
+    Ok(())
 }
 fn verify_tree(
     root: &Path,
@@ -222,7 +307,9 @@ fn verify_tree(
             }
             verify_tree(root, &path, remaining)?;
         } else if !kind.is_file()
-            || !remaining.remove(path.strip_prefix(root).map_err(|_| invalid("cache path"))?)
+            || (path != root.join(VERIFIED)
+                && path != root.join(format!("{VERIFIED}.tmp"))
+                && !remaining.remove(path.strip_prefix(root).map_err(|_| invalid("cache path"))?))
         {
             return Err(ModelError::Verification(
                 "unlisted file or symlink in cache".into(),
@@ -238,12 +325,17 @@ fn download(
     allow_http: bool,
     token: Option<&CString>,
     authorized_endpoint: &CString,
+    progress: Option<&dyn Fn(u64)>,
 ) -> Result<(String, u64), ModelError> {
     let url = cstring(url.as_bytes())?;
     let path = cstring(path.as_os_str().as_bytes())?;
     let mut digest = [0; 32];
     let mut bytes = 0;
     let mut error = [0 as c_char; 1024];
+    let mut context = DownloadProgress {
+        callback: progress,
+        panic: None,
+    };
     // SAFETY: all input strings and output buffers remain valid throughout the
     // synchronous call; the shim retains no Rust pointers after returning.
     let result = unsafe {
@@ -254,12 +346,17 @@ fn download(
             authorized_endpoint.as_ptr(),
             i32::from(allow_http),
             limit,
+            progress.map(|_| report_download as unsafe extern "C" fn(_, _)),
+            (&mut context as *mut DownloadProgress<'_>).cast(),
             digest.as_mut_ptr(),
             &mut bytes,
             error.as_mut_ptr(),
             error.len(),
         )
     };
+    if let Some(panic) = context.panic {
+        std::panic::resume_unwind(panic);
+    }
     if result != 0 {
         // The shim always NUL terminates this nonempty error buffer.
         let detail = unsafe { CStr::from_ptr(error.as_ptr()) }
@@ -272,6 +369,22 @@ fn download(
         });
     }
     Ok((digest_hex(&digest), bytes))
+}
+
+struct DownloadProgress<'a> {
+    callback: Option<&'a dyn Fn(u64)>,
+    panic: Option<Box<dyn std::any::Any + Send>>,
+}
+unsafe extern "C" fn report_download(context: *mut std::ffi::c_void, bytes: u64) {
+    // SAFETY: download owns this context until the synchronous native call returns.
+    // The shim invokes it only on that same calling thread, without overlapping calls.
+    let context = unsafe { &mut *context.cast::<DownloadProgress<'_>>() };
+    if context.panic.is_none()
+        && let Some(callback) = context.callback
+    {
+        context.panic =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(bytes))).err();
+    }
 }
 
 // Closing the descriptor releases flock, including on any error path.
@@ -310,7 +423,8 @@ impl Drop for Staging {
 }
 
 /// Resolves to a verified bundle without starting MLX or opening a store.
-/// A corrupt existing entry fails validation; it is never silently repaired.
+/// Corrupt entries are quarantined and downloaded again online; offline returns
+/// Verification with the entry path. The revision lock covers verification and repair.
 /// Repo components use `%2F` as the cache separator (unambiguous and path-safe).
 pub fn resolve_model(
     model: &ModelRef,
@@ -341,13 +455,37 @@ pub fn resolve_model(
     let revision = model.revision.to_ascii_lowercase();
     let entry = parent.join(&revision);
     let offline = options.offline || std::env::var_os("ZE_MODEL_OFFLINE").is_some_and(|v| v == "1");
-    if offline && !entry.try_exists()? {
+    if offline
+        && fs::symlink_metadata(&entry).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    {
         return Err(ModelError::OfflineMiss);
     }
     fs::create_dir_all(&parent)?;
     let _lock = CacheLock::acquire(&parent.join(format!("{revision}.lock")))?;
     match fs::symlink_metadata(&entry) {
-        Ok(_) => return verify_entry(&entry, model),
+        Ok(_) => match verify_entry(&entry, model) {
+            Ok(bundle) => return Ok(bundle),
+            Err(error) => {
+                let detail = match error {
+                    ModelError::Verification(detail) => detail,
+                    ModelError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => e.to_string(),
+                    other => return Err(other),
+                };
+                if offline {
+                    return Err(ModelError::Verification(format!(
+                        "{}: {detail}",
+                        entry.display()
+                    )));
+                }
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| invalid("system time precedes Unix epoch"))?
+                    .as_nanos();
+                let path = parent.join(format!("{revision}.corrupt-{timestamp}"));
+                fs::rename(&entry, &path)?;
+                File::open(&parent)?.sync_all()?;
+            }
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
@@ -398,6 +536,7 @@ pub fn resolve_model(
         allow_http,
         token.as_ref(),
         &authorized_endpoint,
+        None,
     )?;
     check_hash(&hash, &model.manifest_sha256, &staging.0.join(MANIFEST))?;
     let manifest = Manifest::parse(&fs::read(staging.0.join(MANIFEST))?)?;
@@ -415,6 +554,11 @@ pub fn resolve_model(
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        let progress = |bytes| {
+            if let Some(callback) = options.progress {
+                callback(done + bytes, total);
+            }
+        };
         let (hash, size) = download(
             &format!("{base}/{}", file.path),
             &path,
@@ -422,6 +566,7 @@ pub fn resolve_model(
             allow_http,
             token.as_ref(),
             &authorized_endpoint,
+            options.progress.map(|_| &progress as &dyn Fn(u64)),
         )?;
         if size != file.size {
             return Err(ModelError::Verification(format!(
@@ -435,7 +580,89 @@ pub fn resolve_model(
             callback(done, total);
         }
     }
+    write_marker(&staging.0, &marker_contents(&staging.0, model, &manifest)?)?;
     fs::rename(&staging.0, &entry)?;
     File::open(&parent)?.sync_all()?;
+    remove_quarantines(&parent, &revision)?;
     Ok(entry.join(manifest.bundle))
+}
+
+// Called after publish while the per-revision lock is still held.
+fn remove_quarantines(parent: &Path, revision: &str) -> Result<(), ModelError> {
+    let prefix = format!("{revision}.corrupt-");
+    for item in fs::read_dir(parent)? {
+        let item = item?;
+        if !item.file_name().as_bytes().starts_with(prefix.as_bytes()) {
+            continue;
+        }
+        if item.file_type()?.is_dir() {
+            fs::remove_dir_all(item.path())?;
+        } else {
+            fs::remove_file(item.path())?;
+        }
+    }
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn quarantine_cleanup_removes_old_files_and_directories_for_only_this_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path();
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let old_dir = parent.join(format!("{revision}.corrupt-old-dir"));
+        let old_file = parent.join(format!("{revision}.corrupt-old-file"));
+        let other = parent.join("another-revision.corrupt-123");
+        let entry = parent.join(revision);
+        fs::create_dir(&old_dir).unwrap();
+        fs::write(old_dir.join("payload"), b"corrupt").unwrap();
+        fs::write(&old_file, b"corrupt").unwrap();
+        fs::create_dir(&other).unwrap();
+        fs::create_dir(&entry).unwrap();
+        // A retry must also clean up quarantines left by earlier attempts.
+        remove_quarantines(parent, revision).unwrap();
+        assert!(!old_dir.exists());
+        assert!(!old_file.exists());
+        assert!(other.is_dir());
+        assert!(entry.is_dir());
+    }
+
+    #[test]
+    fn marker_skips_payload_hashes_and_mtime_change_rehashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = dir.path();
+        fs::write(entry.join("tiny.zem"), b"abc").unwrap();
+        let bytes = br#"{"format":1,"name":"tiny","bundle":"tiny.zem","query_coreml":null,"files":[{"path":"tiny.zem","size":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]}"#;
+        fs::write(entry.join(MANIFEST), bytes).unwrap();
+        let model = ModelRef {
+            repo: "fixture/tiny".into(),
+            revision: "0".repeat(40),
+            manifest_sha256: hash_file(&entry.join(MANIFEST)).unwrap().0,
+        };
+        verify_entry(entry, &model).unwrap();
+        HASHED_FILES.with(|count| count.set(0));
+        verify_entry(entry, &model).unwrap();
+        assert_eq!(
+            HASHED_FILES.with(|count| count.get()),
+            1,
+            "only the small manifest is hashed"
+        );
+        let file = File::options()
+            .write(true)
+            .open(entry.join("tiny.zem"))
+            .unwrap();
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        HASHED_FILES.with(|count| count.set(0));
+        verify_entry(entry, &model).unwrap();
+        assert_eq!(
+            HASHED_FILES.with(|count| count.get()),
+            2,
+            "mtime change must hash the payload"
+        );
+    }
 }
