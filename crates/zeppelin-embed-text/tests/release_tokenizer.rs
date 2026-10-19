@@ -1,39 +1,17 @@
 #![allow(clippy::expect_used)]
 
-use std::path::Path;
-use std::process::Command;
-use tempfile::tempdir;
 use zeppelin_embed_text::bundle::Bundle;
+use zeppelin_embed_text::{ModelOpenOptions, ModelRef, resolve_model};
 
 #[path = "goldens/clean71_release.rs"]
 mod golden;
 
 #[test]
-#[ignore = "needs ZE_CLEAN71_PACK with the release pair's tokenizer.json files"]
+#[ignore = "requires the pinned HF model in ZE_MODEL_CACHE or the default cache; no MLX"]
 fn release_tokenizer_ids_match_hf_0_19_1_for_both_towers() {
-    let pack = std::env::var_os("ZE_CLEAN71_PACK").expect("ZE_CLEAN71_PACK must be set");
-    let directory = tempdir().expect("fixture directory");
-    let bundle_path = directory.path().join("release-tokenizers.zem");
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tools/ze-model/release-tokenizer-goldens.py");
-    let output = Command::new("python3")
-        .arg(script)
-        .arg("--pack")
-        .arg(pack)
-        .arg("--query-sha")
-        .arg(golden::QUERY_SHA256)
-        .arg("--document-sha")
-        .arg(golden::DOCUMENT_SHA256)
-        .arg("--fixture-out")
-        .arg(&bundle_path)
-        .output()
-        .expect("run production tokenizer bake encoders");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let bundle = Bundle::open(bundle_path).expect("open baked release tokenizers");
+    let path = resolve_model(&ModelRef::default_model(), &ModelOpenOptions::default())
+        .expect("resolve published release model");
+    let bundle = Bundle::open(path).expect("open published release tokenizers");
     for (role, digest, maximum, cases) in [
         (
             "query",

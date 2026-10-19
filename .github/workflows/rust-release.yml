@@ -12,7 +12,13 @@ permissions:
   contents: read
 
 jobs:
+  text-checks:
+    uses: ./.github/workflows/text-ci.yml
+    with:
+      source_ref: ${{ inputs.release_tag }}
+
   publish:
+    needs: text-checks
     name: Publish zeppelin-embed to crates.io
     runs-on: ubuntu-latest
     environment: crates-io
@@ -47,7 +53,7 @@ jobs:
 
   publish-text:
     name: Publish zeppelin-embed-text to crates.io
-    needs: publish
+    needs: [publish, text-checks]
     runs-on: macos-26
     environment: crates-io
     steps:

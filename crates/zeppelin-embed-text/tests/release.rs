@@ -12,7 +12,13 @@ use zeppelin_embed_text::tower::{TokenBatch, TowerRole};
 use zeppelin_embed_text::{IngestOptions, Legs, QueryOptions, TextDocument, TextStore};
 
 fn release_bundle() -> PathBuf {
-    let directory = PathBuf::from(std::env::var_os("ZE498_RELEASE").expect("set ZE498_RELEASE"));
+    let Some(directory) = std::env::var_os("ZE498_RELEASE").map(PathBuf::from) else {
+        return zeppelin_embed_text::resolve_model(
+            &zeppelin_embed_text::ModelRef::default_model(),
+            &Default::default(),
+        )
+        .expect("resolve published release model");
+    };
     let mut paths = std::fs::read_dir(directory)
         .expect("release directory")
         .map(|p| p.expect("entry").path())
@@ -26,7 +32,7 @@ fn release_bundle() -> PathBuf {
 }
 
 #[test]
-#[ignore = "requires ZE498_RELEASE and native MLX/CoreML execution; ZE_QUERY_COREML must be unset"]
+#[ignore = "requires cached HF model (or ZE498_RELEASE) and native MLX/CoreML; ZE_QUERY_COREML must be unset"]
 fn release_opens_ingests_three_documents_and_queries_all_legs() {
     assert!(std::env::var_os("ZE_QUERY_COREML").is_none());
     let bundle = release_bundle();
@@ -66,7 +72,7 @@ fn word(input: &mut Cursor<Vec<u8>>) -> [u8; 4] {
 }
 
 #[test]
-#[ignore = "requires ZE498_RELEASE (FP16), ZE498_PACK, ZE498_PYTHON and native MLX"]
+#[ignore = "requires cached HF model (or ZE498_RELEASE), ZE498_PACK, ZE498_PYTHON and native MLX"]
 fn fp16_release_document_tower_matches_pack_fp32_goldens() {
     let bundle = Arc::new(Bundle::open(release_bundle()).expect("release bundle"));
     assert_eq!(

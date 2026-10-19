@@ -2,7 +2,7 @@
 
 use zeppelin_embed_text::{
     DEFAULT_MODEL_MANIFEST_SHA256, DEFAULT_MODEL_REPO, DEFAULT_MODEL_REVISION, IngestOptions, Legs,
-    ModelOpenOptions, ModelRef, QueryOptions, TextDocument, TextStore,
+    ModelOpenOptions, ModelRef, QueryOptions, TextDocument, TextStore, resolve_model,
 };
 
 #[test]
@@ -39,17 +39,36 @@ fn open_default_model_offline_miss_uses_the_resolver() {
 }
 
 #[test]
+#[ignore = "downloads the pinned HF model into ZE_MODEL_CACHE or the default cache; no MLX"]
+fn real_default_model_downloads_verifies_and_reopens_offline() {
+    let model = ModelRef::default_model();
+    let bundle =
+        resolve_model(&model, &ModelOpenOptions::default()).expect("resolve published model");
+    assert!(
+        !zeppelin_embed_text::bundle::Bundle::open(&bundle)
+            .expect("verified model bundle")
+            .is_symmetric()
+    );
+    assert_eq!(
+        resolve_model(
+            &model,
+            &ModelOpenOptions {
+                offline: true,
+                ..Default::default()
+            },
+        )
+        .expect("reuse verified model offline"),
+        bundle
+    );
+}
+
+#[test]
 #[ignore = "needs network, real Hugging Face model download and MLX/Metal outside sandbox"]
 fn real_default_model_downloads_and_answers_queries() {
     let root = tempfile::tempdir().expect("tempdir");
-    let store = TextStore::open_default_model(
-        root.path().join("store"),
-        ModelOpenOptions {
-            cache_dir: Some(root.path().join("cache")),
-            ..Default::default()
-        },
-    )
-    .expect("download and open published default");
+    let store =
+        TextStore::open_default_model(root.path().join("store"), ModelOpenOptions::default())
+            .expect("download and open published default");
     store
         .ingest_text(
             &[

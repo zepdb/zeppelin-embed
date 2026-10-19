@@ -1,0 +1,119 @@
+name: Text CI
+
+on:
+  push:
+    branches: [main]
+    paths: &text-paths
+      - 'crates/zeppelin-embed-text/**'
+      - 'crates/zeppelin-embed-ffi/**'
+      - 'crates/zeppelin-embed/**'
+      - 'bindings/swift/**'
+      - 'Package.swift'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/xcframework/**'
+      - 'scripts/release/**'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/text-ci.yml'
+      - '.github/workflows/rust-release.yml'
+  pull_request:
+    branches: [main]
+    paths: *text-paths
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Release tag to validate; empty checks out the triggering ref
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: '3'
+  MACOSX_DEPLOYMENT_TARGET: '13.0'
+
+jobs:
+  text:
+    name: Text build, lint, tests and Swift TextStoreTests (arm64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: clippy,llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen@0.29.4
+      - name: Check Apple silicon and bundled Metal tools
+        run: |
+          test "$(uname -m)" = arm64
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx --find metallib
+      - run: cargo build --locked -p zeppelin-embed-text -p zeppelin-embed-ffi --features text
+      - run: cargo clippy --locked -p zeppelin-embed-text -p zeppelin-embed-ffi --all-targets --features text -- -D warnings
+      - name: Run all non-ignored text and FFI text tests
+        run: |
+          cargo test --locked -p zeppelin-embed-text
+          cargo test --locked -p zeppelin-embed-ffi --features text
+      - name: Install the release script's pinned toolchain
+        run: |
+          rustup toolchain install nightly-2026-07-01 --profile minimal
+          rustup component add rust-src llvm-tools-preview --toolchain nightly-2026-07-01
+      - name: Build full graph+text XCFramework
+        run: scripts/xcframework/build.sh --artifact graph-cypher
+      - name: Run all Swift TextStoreTests against the full XCFramework
+        env:
+          ZE_USE_LOCAL_XCFRAMEWORK: '1'
+          ZE_ENABLE_GRAPH: '1'
+        run: swift test --scratch-path target/swift-text-ci --jobs 3 --filter TextStoreTests
+
+  real-model:
+    name: Pinned HF model verification and tokenizer parity (arm64, no MLX)
+    runs-on: macos-14
+    env:
+      ZE_MODEL_CACHE: ${{ github.workspace }}/.model-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Read the pinned model revision
+        id: model
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import pathlib, re
+          source = pathlib.Path('crates/zeppelin-embed-text/src/model.rs').read_text()
+          revision = re.search(r'pub const DEFAULT_MODEL_REVISION: &str = "([0-9a-f]{40})";', source)
+          if revision is None:
+              raise SystemExit('missing immutable DEFAULT_MODEL_REVISION')
+          print('revision=' + revision.group(1))
+          PY
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.ZE_MODEL_CACHE }}
+          key: text-model-${{ runner.os }}-${{ runner.arch }}-${{ steps.model.outputs.revision }}
+      - name: Check Apple silicon and bundled Metal tools
+        run: |
+          test "$(uname -m)" = arm64
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx --find metallib
+      - name: Download, verify and reopen the published model offline (no MLX)
+        run: >-
+          cargo test --locked -p zeppelin-embed-text --test default_model
+          real_default_model_downloads_verifies_and_reopens_offline -- --ignored --exact
+      - name: Compare both published tokenizers with the committed HF oracle (no MLX)
+        env:
+          ZE_MODEL_OFFLINE: '1'
+        run: cargo test --locked -p zeppelin-embed-text --test release_tokenizer -- --ignored

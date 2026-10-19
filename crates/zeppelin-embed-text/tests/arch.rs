@@ -18,16 +18,37 @@ mod astra_08_embeddings;
 mod astra_08_wordpiece;
 
 #[test]
-#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
+fn legacy_model_fixtures_require_explicit_directory() {
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "astra_08_source_tokenizer_unicode_ids_match",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env_remove("ZE_TEXT_TEST_BUNDLE_DIR")
+        .output()
+        .expect("run fixture test without an override");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("set ZE_TEXT_TEST_BUNDLE_DIR"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "requires ZE_TEXT_TEST_BUNDLE_DIR with original LEAF/Arctic fixtures; inference needs native MLX/Metal"]
 fn astra_08_reembedded_unicode_documents_match_reference() {
     use zeppelin_embed::epoch::{EmbeddingEpoch, StoreEpoch};
     use zeppelin_embed::fts::tokenizer::TokenizerConfig;
     use zeppelin_embed::lifecycle::{OpenOptions, Store};
     use zeppelin_embed_text::{IngestOptions, TextDocument, TextStore};
 
-    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let root = PathBuf::from(
+        std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+            .expect("set ZE_TEXT_TEST_BUNDLE_DIR to the original LEAF/Arctic fixtures"),
+    );
     let bundle_path = root.join("leaf-v1.5-pair.zem");
     let bundle = Arc::new(Bundle::open(&bundle_path).expect("pinned pair bundle"));
     let cases = astra_08_embeddings::DOCUMENT_CASES;
@@ -152,11 +173,12 @@ fn astra_08_reembedded_unicode_documents_match_reference() {
 }
 
 #[test]
-#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
+#[ignore = "requires ZE_TEXT_TEST_BUNDLE_DIR with original LEAF/Arctic fixtures; inference needs native MLX/Metal"]
 fn astra_08_source_tokenizer_unicode_ids_match() {
-    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let root = PathBuf::from(
+        std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+            .expect("set ZE_TEXT_TEST_BUNDLE_DIR to the original LEAF/Arctic fixtures"),
+    );
     let bundle = Bundle::open(root.join("leaf-v1.5-pair.zem")).expect("pinned pair bundle");
     for &(text, expected) in astra_08_wordpiece::QUERY_CASES {
         let tokens = bundle.tokenize_query(text).expect("public tokenizer");
@@ -176,11 +198,12 @@ fn astra_08_source_tokenizer_unicode_ids_match() {
 }
 
 #[test]
-#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
+#[ignore = "requires ZE_TEXT_TEST_BUNDLE_DIR with original LEAF/Arctic fixtures; inference needs native MLX/Metal"]
 fn astra_08_source_tokenizer_normalization_order_matches() {
-    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let root = PathBuf::from(
+        std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+            .expect("set ZE_TEXT_TEST_BUNDLE_DIR to the original LEAF/Arctic fixtures"),
+    );
     let bundle = Bundle::open(root.join("leaf-v1.5-pair.zem")).expect("pinned pair bundle");
     // Source references cover NFD before stripping Mn (but not Mc), scalar
     // lowercase instead of contextual final sigma, and NFD rather than NFKD.
@@ -215,11 +238,12 @@ fn astra_08_source_tokenizer_normalization_order_matches() {
 }
 
 #[test]
-#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
+#[ignore = "requires ZE_TEXT_TEST_BUNDLE_DIR with original LEAF/Arctic fixtures; inference needs native MLX/Metal"]
 fn astra_08_ascii_tokenization_is_unchanged() {
-    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let root = PathBuf::from(
+        std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+            .expect("set ZE_TEXT_TEST_BUNDLE_DIR to the original LEAF/Arctic fixtures"),
+    );
     let bundle = Bundle::open(root.join("leaf-v1.5-pair.zem")).expect("pinned pair bundle");
     for index in [0, 18, 19, 20] {
         let (text, expected) = astra_08_wordpiece::QUERY_CASES[index];
@@ -236,11 +260,12 @@ fn astra_08_ascii_tokenization_is_unchanged() {
 }
 
 #[test]
-#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
+#[ignore = "requires ZE_TEXT_TEST_BUNDLE_DIR with original LEAF/Arctic fixtures; inference needs native MLX/Metal"]
 fn arctic_v15_batched_cls_matches_reference_across_padding_and_chunk_boundary() {
-    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let root = PathBuf::from(
+        std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+            .expect("set ZE_TEXT_TEST_BUNDLE_DIR to the original LEAF/Arctic fixtures"),
+    );
     let bundle = Arc::new(Bundle::open(root.join("leaf-v1.5-pair.zem")).expect("pair bundle"));
     let mut runtime = MlxRuntime::load(bundle, TowerRole::Document).expect("document runtime");
     let golden = include_str!("goldens/arctic_m_v15_documents.json");
@@ -330,7 +355,7 @@ fn batched_one_dimension_truncation_matches_each_individual_row() {
 }
 
 #[test]
-#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
+#[ignore = "requires ZE_TEXT_TEST_BUNDLE_DIR with original LEAF/Arctic fixtures; inference needs native MLX/Metal"]
 fn bert_with_dense_head_matches_the_fp32_reference_vectors_for_mdbr_leaf_ir_to_1e_4() {
     matches_reference(
         "leaf-v1.5-pair.zem",
@@ -341,7 +366,7 @@ fn bert_with_dense_head_matches_the_fp32_reference_vectors_for_mdbr_leaf_ir_to_1
 }
 
 #[test]
-#[ignore = "requires the external ze-model-bundles-v2-c1 fixture"]
+#[ignore = "requires ZE_TEXT_TEST_BUNDLE_DIR with original LEAF/Arctic fixtures; inference needs native MLX/Metal"]
 fn gte_matches_the_fp32_reference_vectors_for_arctic_m_v2_to_1e_4() {
     matches_reference(
         "arctic-m-v2-symmetric.zem",
@@ -369,9 +394,10 @@ fn an_unknown_architecture_id_fails_typed_at_load() {
 }
 
 fn matches_reference(bundle_name: &str, role: TowerRole, golden: &str) {
-    let root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let root = PathBuf::from(
+        std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+            .expect("set ZE_TEXT_TEST_BUNDLE_DIR to the original LEAF/Arctic fixtures"),
+    );
     let bundle = Arc::new(Bundle::open(root.join(bundle_name)).expect("open baked test bundle"));
     let mut runtime = MlxRuntime::load(Arc::clone(&bundle), role).expect("load MLX tower");
     let token_ids = json_i32_array(golden, "token_ids");

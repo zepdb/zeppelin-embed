@@ -17,11 +17,12 @@ const QUERIES: [&str; 3] = [
 ];
 
 #[test]
-#[ignore = "requires external MLX and CoreML model fixtures"]
+#[ignore = "requires ZE_TEXT_TEST_BUNDLE_DIR with original LEAF/CoreML fixtures and native MLX/Metal/ANE"]
 fn gpu_cpu_and_ane_query_vectors_agree_within_tolerance_on_the_golden_queries() {
-    let bundle_root = std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/private/tmp/ze-model-bundles-v2-c1"));
+    let bundle_root = PathBuf::from(
+        std::env::var_os("ZE_TEXT_TEST_BUNDLE_DIR")
+            .expect("set ZE_TEXT_TEST_BUNDLE_DIR to the original LEAF/Arctic fixtures"),
+    );
     let bundle = Arc::new(
         Bundle::open(bundle_root.join("leaf-v1.5-pair.zem")).expect("open LEAF pair bundle"),
     );
