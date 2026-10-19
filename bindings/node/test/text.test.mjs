@@ -5,14 +5,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 const { TextStore } = createRequire(import.meta.url)('..');
 const bundle = fileURLToPath(new URL('../../../crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem', import.meta.url));
 
 test('TextStore exposes the text API', () => {
   assert.equal(typeof TextStore, 'function');
   for (const name of ['open', 'openAsync', 'openModel']) assert.equal(typeof TextStore[name], 'function');
-  for (const name of ['ingest', 'ingestAsync', 'query', 'queryAsync', 'delete', 'maintain', 'health', 'close']) {
-    assert.equal(typeof TextStore.prototype[name], 'function');
+  for (const name of ['ingest', 'ingestAsync', 'query', 'queryAsync', 'delete', 'maintain', 'health', 'observedComputeUnits', 'observedComputeUnitsAsync', 'close']) {
+    assert.equal(typeof TextStore.prototype[name], 'function', name);
   }
 });
 
@@ -50,6 +51,51 @@ async function fixture(run) {
     rmSync(root, {recursive: true, force: true});
   }
 }
+
+test('text observed compute units loads the tiny CoreML plan (ZE-521)', {skip: !supported}, async t => {
+  const [major, minor] = execFileSync('sw_vers', ['-productVersion'], {encoding: 'utf8'}).trim().split('.').map(Number);
+  if (major < 14 || (major === 14 && minor < 4)) {
+    t.skip('MLComputePlan requires macOS 14.4 or later');
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), 'ze521-compute-'));
+  const previous = process.env.ZE_QUERY_COREML;
+  try {
+    const model = fileURLToPath(new URL('../../../crates/zeppelin-embed-text/tests/fixtures/ze115/tiny.mlmodel', import.meta.url));
+    execFileSync('xcrun', ['coremlcompiler', 'compile', model, root]);
+    process.env.ZE_QUERY_COREML = join(root, 'tiny.mlmodelc');
+    const computeBundle = fileURLToPath(new URL('../../../crates/zeppelin-embed-ffi/tests/fixtures/compute_units.zem', import.meta.url));
+    // Each variant must load the plan on a fresh store.
+    for (const method of ['observedComputeUnits', 'observedComputeUnitsAsync']) {
+      const store = TextStore.open(join(root, method), computeBundle);
+      try {
+        const counts = await store[method]();
+        assert.notEqual(counts, null, method);
+        assert.deepEqual(Object.keys(counts).sort(), ['cpuOps', 'gpuOps', 'neuralEngineOps', 'otherOps']);
+        assert.equal(counts.cpuOps + counts.gpuOps + counts.neuralEngineOps + counts.otherOps, 1n);
+      } finally { store.close(); }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.ZE_QUERY_COREML; else process.env.ZE_QUERY_COREML = previous;
+    rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('text observed compute units is absent without CoreML (ZE-521)', {skip: !supported}, async () => {
+  const previous = process.env.ZE_QUERY_COREML;
+  process.env.ZE_QUERY_COREML = 'off';
+  try {
+    await fixture(async store => {
+      assert.equal(store.observedComputeUnits(), null);
+      assert.equal(await store.observedComputeUnitsAsync(), null);
+      store.close();
+      assert.throws(() => store.observedComputeUnits(), error => error.code === 'ZE_ERR_CLOSED');
+      await assert.rejects(store.observedComputeUnitsAsync(), error => error.code === 'ZE_ERR_CLOSED');
+    });
+  } finally {
+    if (previous === undefined) delete process.env.ZE_QUERY_COREML; else process.env.ZE_QUERY_COREML = previous;
+  }
+});
 
 test('lexical and hybrid return zero hits on fresh and deleted stores (ZE-518)', {skip: !supported}, () => fixture(async store => {
   for (const legs of ['lexical', 'hybrid']) {

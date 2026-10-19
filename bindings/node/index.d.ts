@@ -1342,6 +1342,12 @@ export interface TextHealthReport {
   readonly unresolvedFaultCount: bigint;
   readonly retainedThrough?: bigint;
 }
+export interface ObservedComputeUnits {
+  readonly cpuOps: bigint;
+  readonly gpuOps: bigint;
+  readonly neuralEngineOps: bigint;
+  readonly otherOps: bigint;
+}
 export declare class TextStore {
   private constructor();
   static open(path: string, bundlePath: string): TextStore;
@@ -1357,5 +1363,9 @@ export declare class TextStore {
   maintainAsync(budget?: TextMaintainBudget): Promise<TextMaintainReport>;
   health(): TextHealthReport;
   healthAsync(): Promise<TextHealthReport>;
+  /** Load CoreML planned placement on demand; null without a CoreML query model. */
+  observedComputeUnits(): ObservedComputeUnits | null;
+  /** Same inspection on a native worker, keeping the JS thread free. */
+  observedComputeUnitsAsync(): Promise<ObservedComputeUnits | null>;
   close(): void;
 }

@@ -241,7 +241,7 @@ napi_value TextOpen(napi_env env, napi_callback_info info) {
   });
 }
 
-enum class TextOp { Ingest, Query, Delete, Maintain, Health };
+enum class TextOp { Ingest, Query, Delete, Maintain, Health, ObservedComputeUnits };
 struct TextData {
   ze_handle handle;
   std::vector<std::string> texts;
@@ -257,6 +257,7 @@ struct TextData {
   ZeMaintainRequest maintenance{};
   ZeMaintainReport maintained{};
   ZeTextHealthReport health{};
+  ZeTextObservedComputeUnits observed_compute_units{};
   bool owns_outcome = false;
   explicit TextData(ze_handle h) : handle(h) {}
   ~TextData() {
@@ -282,7 +283,7 @@ napi_value TextCall(napi_env env, napi_callback_info info) {
     if (!store)
       return nullptr;
     auto data = std::make_shared<TextData>(store->handle);
-    if constexpr (Op != TextOp::Health) {
+    if constexpr (Op != TextOp::Health && Op != TextOp::ObservedComputeUnits) {
       if (argc < 1) {
         napi_throw_type_error(env, "ERR_MISSING_ARGS",
                               "text operation requires arguments");
@@ -383,6 +384,8 @@ napi_value TextCall(napi_env env, napi_callback_info info) {
           !GetOptionalUint64(env, args[0], "bytes", 67108864, &r.bytes))
         return nullptr;
       data->maintained.abi_size = sizeof(data->maintained);
+    } else if constexpr (Op == TextOp::ObservedComputeUnits) {
+      data->observed_compute_units.abi_size = sizeof(data->observed_compute_units);
     } else {
       data->health.abi_size = sizeof(data->health);
     }
@@ -406,6 +409,9 @@ napi_value TextCall(napi_env env, napi_callback_info info) {
                                              &data->maintained);
           if constexpr (Op == TextOp::Health)
             return ze_text_health(data->handle, &data->health);
+          if constexpr (Op == TextOp::ObservedComputeUnits)
+            return ze_text_observed_compute_units(data->handle,
+                                                  &data->observed_compute_units);
         },
         [data, env](ze_error_code status,
                     const std::string &message) -> napi_value {
@@ -474,6 +480,17 @@ napi_value TextCall(napi_env env, napi_callback_info info) {
                 !TextBig(env, result, "checkpointsResumed",
                          r.checkpoints_resumed))
               return nullptr;
+          } else if constexpr (Op == TextOp::ObservedComputeUnits) {
+            const auto &r = data->observed_compute_units;
+            if (!r.has_observed_compute_units) {
+              if (!NapiOk(env, napi_get_null(env, &result), "compute units absent"))
+                return nullptr;
+            } else if (!TextBig(env, result, "cpuOps", r.cpu_ops) ||
+                       !TextBig(env, result, "gpuOps", r.gpu_ops) ||
+                       !TextBig(env, result, "neuralEngineOps", r.neural_engine_ops) ||
+                       !TextBig(env, result, "otherOps", r.other_ops)) {
+              return nullptr;
+            }
           } else {
             const auto &r = data->health;
             if (!TextBig(env, result, "generation", r.generation) ||

@@ -847,6 +847,10 @@ class TextStore {
   async healthAsync() {
     try { return await this._native.textHealthAsync(); } catch (error) { throw translateError(error); }
   }
+  observedComputeUnits() { return callNative(() => this._native.textObservedComputeUnits()); }
+  async observedComputeUnitsAsync() {
+    try { return await this._native.textObservedComputeUnitsAsync(); } catch (error) { throw translateError(error); }
+  }
   close() { return callNative(() => this._native.close()); }
 }
 

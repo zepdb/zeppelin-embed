@@ -685,6 +685,8 @@ call. Cancellation of ingest may leave acknowledged partial writes.
 Ingest rejects overlong documents unless `chunkMax` is set; `chunkOverlap`
 controls overlap. Re-ingest with a higher revision replaces the previous chunks.
 
+Explicitly call `store.observedComputeUnits()` or `await store.observedComputeUnitsAsync()` to load the CoreML compute plan on demand: four `bigint` counts describe planned placement, not an execution trace; returns `null` without a CoreML query model.
+
 To download and cache a model, use the asynchronous `TextStore.openModel` with
 `{path, repo, revision, manifestSha256, cacheDir?, offline?, onProgress?}`.
 `revision` must be a pinned 40-hex commit and `manifestSha256` the manifest's
