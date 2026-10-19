@@ -18,11 +18,12 @@ use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::tokenizer::{Analyzer, TokenizerConfig};
 use zeppelin_embed::fusion::HybridQuery;
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestAck, IngestBatch, IngestDocument, Revision,
-    SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, ExpectedRevision, IngestAck, IngestBatch, IngestDocument,
+    Revision, SearchRequest,
 };
 use zeppelin_embed::lifecycle::{
     CancelToken, HybridPreparationError, OpenOptions, QueryControl, SearchOptions, Store,
+    StoreError,
 };
 use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceReport, MaintenanceStatus};
 
@@ -282,7 +283,13 @@ impl TextStore {
             )
             .map_err(TextError::Store)?,
         );
-        let versions = load_versions(&store)?;
+        let reconcile = match store.seal() {
+            Ok(_) => true,
+            // A read-only handle cannot reconcile; the next read-write open does.
+            Err(StoreError::ReadOnly) => false,
+            Err(error) => return Err(TextError::Seal(error)),
+        };
+        let versions = load_versions(&store, reconcile)?;
         let runtime =
             RuntimeClient::start(Arc::clone(&bundle), discover_query_coreml(&bundle_path))?;
         Ok(Self {
@@ -386,6 +393,7 @@ impl TextStore {
     ) -> Result<TextIngestReport, TextError> {
         validate_ingest_options(documents, options)?;
         let started = Instant::now();
+        let previous_versions = self.capture_versions(documents)?;
         let jobs = build_jobs(
             documents,
             options,
@@ -431,9 +439,9 @@ impl TextStore {
             self.store.seal().map_err(TextError::Seal)?;
             seals = seals.saturating_add(1);
         }
+        self.record_versions(documents, options.chunk_policy, &previous_versions)?;
         self.finish_ingest_maintenance(options)?;
         let generation = self.store.health().map_err(TextError::Store)?.generation;
-        self.record_versions(documents, options.chunk_policy)?;
         Ok(TextIngestReport {
             generation,
             documents: documents.len(),
@@ -456,6 +464,7 @@ impl TextStore {
     ) -> Result<TextIngestReport, TextError> {
         validate_ingest_options(documents, options)?;
         let started = Instant::now();
+        let previous_versions = self.capture_versions(documents)?;
         let jobs = build_jobs(
             documents,
             options,
@@ -677,9 +686,9 @@ impl TextStore {
         if let Some(error) = first_error {
             return Err(error);
         }
+        self.record_versions(documents, options.chunk_policy, &previous_versions)?;
         self.finish_ingest_maintenance(options)?;
         let generation = self.store.health().map_err(TextError::Store)?.generation;
-        self.record_versions(documents, options.chunk_policy)?;
         Ok(TextIngestReport {
             generation,
             documents: documents.len(),
@@ -704,26 +713,67 @@ impl TextStore {
         Ok(())
     }
 
+    fn capture_versions(
+        &self,
+        documents: &[TextDocument],
+    ) -> Result<BTreeMap<DocId, Revision>, TextError> {
+        let versions = self.versions.lock().map_err(|_| TextError::Pipeline {
+            stage: "version registry",
+            detail: "mutex poisoned".to_owned(),
+        })?;
+        let mut captured = BTreeMap::new();
+        for document in documents {
+            // Visit only this caller's old chunks, never the whole registry.
+            captured.extend(
+                versions
+                    .range(
+                        encode_chunk_id(document.id, 0)?..=encode_chunk_id(document.id, u32::MAX)?,
+                    )
+                    .map(|(&id, &revision)| (id, revision)),
+            );
+        }
+        Ok(captured)
+    }
+
     fn record_versions(
         &self,
         documents: &[TextDocument],
         chunk_policy: ChunkPolicy,
+        previous_versions: &BTreeMap<DocId, Revision>,
     ) -> Result<(), TextError> {
         let mut versions = self.versions.lock().map_err(|_| TextError::Pipeline {
             stage: "version registry",
             detail: "mutex poisoned".to_owned(),
         })?;
+        let mut stale = BTreeMap::new();
+        let mut replacements = BTreeMap::new();
         for document in documents {
             let chunk_count = chunks_for_text(document, chunk_policy)?.len();
+            stale.extend(
+                previous_versions
+                    .range(
+                        encode_chunk_id(document.id, 0)?..=encode_chunk_id(document.id, u32::MAX)?,
+                    )
+                    .filter_map(|(&id, &revision)| {
+                        ((id.get() & u128::from(u32::MAX)) >= chunk_count as u128
+                            && revision < Revision::new(document.revision)
+                            && versions.get(&id) == Some(&revision))
+                        .then_some((id, revision))
+                    }),
+            );
             for chunk in 0..chunk_count {
                 let id = encode_chunk_id(
                     document.id,
                     u32::try_from(chunk)
                         .map_err(|_| TextError::InvalidInput("chunk count exceeds u32"))?,
                 )?;
-                versions.insert(id, Revision::new(document.revision));
+                replacements.insert(id, Revision::new(document.revision));
             }
         }
+        // Readers may see stale chunks between the upsert and delete commits;
+        // multi-batch revisions are already not atomic.
+        versions.extend(replacements);
+        delete_stale_versions(&self.store, &mut versions, stale)?;
         Ok(())
     }
 
@@ -1419,7 +1469,7 @@ fn discover_query_coreml(bundle_path: &std::path::Path) -> Option<(std::path::Pa
     model.is_dir().then_some((model, tokens))
 }
 
-fn load_versions(store: &Store) -> Result<BTreeMap<DocId, Revision>, TextError> {
+fn load_versions(store: &Store, reconcile: bool) -> Result<BTreeMap<DocId, Revision>, TextError> {
     let snapshot = store.snapshot().map_err(TextError::Store)?;
     let mut versions = BTreeMap::new();
     for segment in snapshot.segments() {
@@ -1435,7 +1485,48 @@ fn load_versions(store: &Store) -> Result<BTreeMap<DocId, Revision>, TextError> 
             }
         }
     }
+    if !reconcile {
+        return Ok(versions);
+    }
+    let mut highest = BTreeMap::new();
+    for (&id, &revision) in &versions {
+        highest
+            .entry(id.get() >> CHUNK_BITS)
+            .and_modify(|current: &mut Revision| *current = (*current).max(revision))
+            .or_insert(revision);
+    }
+    let stale = versions
+        .iter()
+        .filter_map(|(&id, &revision)| {
+            highest
+                .get(&(id.get() >> CHUNK_BITS))
+                .is_some_and(|&current| revision < current)
+                .then_some((id, revision))
+        })
+        .collect();
+    delete_stale_versions(store, &mut versions, stale)?;
     Ok(versions)
+}
+
+fn delete_stale_versions(
+    store: &Store,
+    versions: &mut BTreeMap<DocId, Revision>,
+    stale: BTreeMap<DocId, Revision>,
+) -> Result<(), TextError> {
+    if !stale.is_empty() {
+        store
+            .delete(DeleteBatch::conditional(
+                stale
+                    .iter()
+                    .map(|(&id, &revision)| (id, Some(ExpectedRevision::Exactly(revision))))
+                    .collect(),
+            ))
+            .map_err(TextError::Ingest)?;
+        for id in stale.keys() {
+            versions.remove(id);
+        }
+    }
+    Ok(())
 }
 
 fn stage_start() -> Option<Instant> {
@@ -1879,6 +1970,51 @@ mod tests {
             compute_units: ComputeUnits::CpuAndGpu,
             os_build: None,
         }
+    }
+
+    #[test]
+    fn rebuilding_versions_removes_stale_chunks_after_wal_replay() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        let current = encode_chunk_id(41, 0).expect("current id");
+        let stale = encode_chunk_id(41, 1).expect("stale id");
+        let unrelated = encode_chunk_id(42, 0).expect("unrelated id");
+        let row = |id, revision| {
+            IngestDocument::new(
+                DocumentVersion::new(id, Revision::new(revision)),
+                vec![1.0, 0.0],
+            )
+        };
+        store
+            .ingest(IngestBatch::new(vec![
+                row(current, 1),
+                row(stale, 1),
+                row(unrelated, 7),
+            ]))
+            .expect("old revision and unrelated document");
+        store.seal().expect("seal old rows");
+        store
+            .ingest(IngestBatch::new(vec![row(current, 2)]))
+            .expect("unsealed replacement");
+        store.close().expect("close without stale cleanup");
+        drop(store);
+        let reopened = Store::open(directory.path(), OpenOptions::default()).expect("replay WAL");
+        reopened.seal().expect("publish replayed rows");
+        let versions = load_versions(&reopened, true).expect("rebuild and reconcile registry");
+        assert_eq!(
+            versions,
+            BTreeMap::from([(current, Revision::new(2)), (unrelated, Revision::new(7))])
+        );
+        assert!(
+            reopened
+                .get_documents(
+                    &[stale],
+                    zeppelin_embed::lifecycle::DocumentFields::default()
+                )
+                .expect("read removed stale chunk")
+                .iter()
+                .all(Option::is_none)
+        );
     }
 
     #[test]
