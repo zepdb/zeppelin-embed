@@ -63,7 +63,10 @@ let localLinkerSettings: [LinkerSetting]? = useLocalFFI
 // source shim needs its graph declarations enabled through the C compiler.
 let graphSwiftSettings: [SwiftSetting]? = graph
     ? [.define("ZE_GRAPH")] + (useLocalFFI
-        ? [.unsafeFlags(["-Xcc", "-DZE_GRAPH"])] : [])
+        ? [.unsafeFlags(["-Xcc", "-DZE_GRAPH"])]
+        // Release ticket ZE-513 enables ZE_TEXT for remote (release URL) graph
+        // builds in the same commit that re-pins the graph URL and checksum.
+        : (useLocalXCFramework ? [.define("ZE_TEXT")] : []))
     : nil
 
 let package = Package(

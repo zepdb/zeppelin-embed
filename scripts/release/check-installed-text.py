@@ -31,12 +31,14 @@ def build_swift_consumer(xcframework, work, disable_swift_sandbox=False):
     shim = package / 'Sources/CZeppelinEmbed'
     shim.mkdir()
     shutil.copyfile(ROOT / 'bindings/swift/Sources/CZeppelinEmbedGraph/Exports.swift', shim / 'Exports.swift')
+    shutil.copytree(ROOT / 'bindings/swift/Sources/ZeppelinEmbed', package / 'Sources/ZeppelinEmbed')
     (package / 'Package.swift').write_text('''// swift-tools-version: 5.10
 import PackageDescription
 let package = Package(name: "InstalledText", platforms: [.macOS(.v14)], targets: [
     .binaryTarget(name: "ZeppelinEmbedGraph", path: "ZeppelinEmbedGraph.xcframework"),
     .target(name: "CZeppelinEmbed", dependencies: ["ZeppelinEmbedGraph"]),
-    .executableTarget(name: "TextConsumer", dependencies: ["CZeppelinEmbed"])
+    .target(name: "ZeppelinEmbed", dependencies: ["CZeppelinEmbed"], swiftSettings: [.define("ZE_GRAPH"), .define("ZE_TEXT")]),
+    .executableTarget(name: "TextConsumer", dependencies: ["ZeppelinEmbed"])
 ])
 ''')
     env = os.environ.copy()

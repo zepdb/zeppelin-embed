@@ -325,6 +325,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(targets['CZeppelinEmbed']['path'], 'bindings/swift/Sources/CZeppelinEmbedGraph')
         self.assertEqual(targets['ZeppelinEmbed']['settings'],
                          [{'kind': {'define': {'_0': 'ZE_GRAPH'}}, 'tool': 'swift'}])
+        env['ZE_USE_LOCAL_XCFRAMEWORK'] = '1'
+        result = subprocess.run(['swift', 'package', '--package-path', str(ROOT),
+                                 'dump-package'], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        targets = {target['name']: target for target in json.loads(result.stdout)['targets']}
+        self.assertEqual(targets['ZeppelinEmbed']['settings'],
+                         [{'kind': {'define': {'_0': define}}, 'tool': 'swift'}
+                          for define in ('ZE_GRAPH', 'ZE_TEXT')])
 
     def test_installed_receipts_require_rust_and_resources(self):
         receipt = dict(executed=['batch', 'structured', 'get', 'cypher'],
