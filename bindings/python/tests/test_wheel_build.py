@@ -33,9 +33,15 @@ def test_wheel_build_features_and_runtime_assets(
     monkeypatch.setattr(setup["platform_module"], "machine", lambda: machine)
     target = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    output = target
+    if system == "darwin":
+        deployment_target = "13.0" if text else "11.0"
+        if not text:
+            monkeypatch.setenv("MACOSX_DEPLOYMENT_TARGET", deployment_target)
+        output /= f"macos-{deployment_target}"
     native = setup["_native_filename"]()
-    (target / "release").mkdir(parents=True)
-    (target / "release" / native).write_bytes(b"native")
+    (output / "release").mkdir(parents=True)
+    (output / "release" / native).write_bytes(b"native")
     out = tmp_path / "mlx-output"
     (out / "build/lib").mkdir(parents=True)
     (out / "build/lib/mlx.metallib").write_bytes(b"metal")
@@ -64,6 +70,8 @@ def test_wheel_build_features_and_runtime_assets(
     builder.ensure_finalized()
     builder.build_lib = str(tmp_path / "wheel")
     builder.run()
+    if system == "darwin":
+        assert cargo_environment["CARGO_TARGET_DIR"] == str(output)
     assert ("--features" in command) == text
     if text:
         assert command[command.index("--features") + 1] == "text"

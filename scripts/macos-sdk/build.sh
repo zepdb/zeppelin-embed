@@ -20,10 +20,11 @@ case "$ARTIFACT" in
     *) echo "unknown artifact: $ARTIFACT" >&2; exit 2 ;;
 esac
 BUILD_DIR="$ROOT_DIR/target/macos-sdk$SUFFIX"
+CARGO_DIR="$BUILD_DIR/cargo-macos-$MACOS_DEPLOYMENT_TARGET"
 STAGE_DIR="$BUILD_DIR/zeppelin-embed$SUFFIX-macos-arm64"
 ARCHIVE="$BUILD_DIR/zeppelin-embed$SUFFIX-macos-arm64.tar.gz"
 TARGET_TRIPLE="aarch64-apple-darwin"
-RUST_OUTPUT="$BUILD_DIR/cargo/$TARGET_TRIPLE/release"
+RUST_OUTPUT="$CARGO_DIR/$TARGET_TRIPLE/release"
 LIBRARY_NAME="libzeppelin_embed${SUFFIX//-/_}_ffi"
 
 mkdir -p "$BUILD_DIR"
@@ -37,13 +38,14 @@ if [ -n "$PREBUILT_DIR" ]; then
 else
     CARGO_BUILD_JOBS=3 MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
         cargo build --locked --release --no-default-features -p zeppelin-embed-ffi \
-        --target "$TARGET_TRIPLE" --target-dir "$BUILD_DIR/cargo" ${features[@]+"${features[@]}"}
+        --target "$TARGET_TRIPLE" --target-dir "$CARGO_DIR" ${features[@]+"${features[@]}"}
 fi
 
 static_library="$RUST_OUTPUT/libzeppelin_embed_ffi.a"
 dynamic_library="$RUST_OUTPUT/libzeppelin_embed_ffi.dylib"
 test -f "$static_library"
 test -f "$dynamic_library"
+python3 "$ROOT_DIR/scripts/release/check-macos-minos.py" "$MACOS_DEPLOYMENT_TARGET" "$static_library" "$dynamic_library"
 lipo "$static_library" -verify_arch arm64
 lipo "$dynamic_library" -verify_arch arm64
 

@@ -92,8 +92,8 @@ jobs:
             fi
           done
           python3 scripts/tests/native-packaging.py \
-            --archive target/aarch64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/aarch64-apple-darwin/libzeppelin_embed_ffi.a \
-            --archive target/x86_64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/x86_64-apple-darwin/libzeppelin_embed_ffi.a \
+            --archive target/macos-13.0/aarch64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/aarch64-apple-darwin/libzeppelin_embed_ffi.a \
+            --archive target/macos-11.0/x86_64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/x86_64-apple-darwin/libzeppelin_embed_ffi.a \
             --addon bindings/node/prebuilds/darwin-arm64/zeppelin_embed.node \
             --addon bindings/node/prebuilds/darwin-x64/zeppelin_embed.node
       - name: Install the graph header test generator

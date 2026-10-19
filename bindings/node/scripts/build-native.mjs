@@ -18,6 +18,7 @@ const ffiHeaders = join(repository, 'crates', 'zeppelin-embed-ffi', 'include');
 const source = join(packageDirectory, 'native', 'addon.cc');
 const exportsFile = join(packageDirectory, 'native', 'exports.txt');
 const packageNative = join(repository, 'scripts', 'release', 'package-native.py');
+const checkMacosMinos = join(repository, 'scripts', 'release', 'check-macos-minos.py');
 const targetDirectory = resolve(process.env.CARGO_TARGET_DIR || join(repository, 'target'));
 
 const isDarwin = process.platform === 'darwin';
@@ -68,8 +69,9 @@ if (isDarwin) {
     // proved MLX builds and runs there (bfloat kernels are omitted).
     const environment = {...process.env, MACOSX_DEPLOYMENT_TARGET:
       process.env.MACOSX_DEPLOYMENT_TARGET || (slice.clangArch === 'arm64' ? '13.0' : '11.0')};
+    environment.CARGO_TARGET_DIR = join(targetDirectory, `macos-${environment.MACOSX_DEPLOYMENT_TARGET}`);
     const staticLibrary = join(
-      targetDirectory,
+      environment.CARGO_TARGET_DIR,
       slice.rustTarget,
       'release',
       'libzeppelin_embed_ffi.a',
@@ -77,7 +79,7 @@ if (isDarwin) {
     const output = join(packageDirectory, 'prebuilds', slice.directory, 'zeppelin_embed.node');
 
     // `--target` is passed even for the host, so both slices land under
-    // `target/<triple>/release` and neither can pick up the other's artifacts
+    // `target/macos-<deployment>/<triple>/release` and neither can pick up the other's artifacts
     // from the bare `target/release` directory.
     const built = spawnSync('cargo',
       ['build', '--locked', '--release', '--target', slice.rustTarget, '-p', 'zeppelin-embed-ffi',
@@ -94,6 +96,7 @@ if (isDarwin) {
       mkdirSync(dirname(output), {recursive: true});
       copyFileSync(join(mlx[0].out_dir, 'build', 'lib', 'mlx.metallib'), join(dirname(output), 'mlx.metallib'));
     }
+    run(python, [checkMacosMinos, environment.MACOSX_DEPLOYMENT_TARGET, staticLibrary]);
     const archive = distributionArchive(staticLibrary, slice.rustTarget);
     mkdirSync(dirname(output), { recursive: true });
     run(
@@ -131,6 +134,7 @@ if (isDarwin) {
       { env: environment },
     );
     run('xcrun', ['strip', '-S', '-x', output]);
+    run(python, [checkMacosMinos, environment.MACOSX_DEPLOYMENT_TARGET, output]);
     console.log(`built ${slice.directory} -> ${output}`);
   }
 } else {

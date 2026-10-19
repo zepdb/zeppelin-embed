@@ -88,6 +88,14 @@ class BuildPyWithNative(build_py):
         super().run()
         if self.editable_mode:
             return
+        target_dir = _cargo_target_dir()
+        environment = os.environ.copy()
+        if sys.platform == "darwin":
+            deployment_target = environment.get("MACOSX_DEPLOYMENT_TARGET")
+            if not deployment_target:
+                raise RuntimeError("macOS native builds require MACOSX_DEPLOYMENT_TARGET")
+            target_dir /= f"macos-{deployment_target}"
+            environment["CARGO_TARGET_DIR"] = str(target_dir)
         cargo = os.environ.get("CARGO", "cargo")
         command = [
             cargo,
@@ -106,14 +114,27 @@ class BuildPyWithNative(build_py):
             cwd=WORKSPACE_ROOT,
             stdout=subprocess.PIPE,
             text=True,
-            env=os.environ.copy(),
+            env=environment,
         )
 
         native = _native_filename()
-        source = _cargo_target_dir() / "release" / native
+        source = target_dir / "release" / native
         if not source.is_file():
             raise RuntimeError(
                 f"Cargo did not produce the expected native library: {source}"
+            )
+        if sys.platform == "darwin":
+            # The staticlib exposes stale objects' minos; the dylib only records
+            # the final link target. Check both outputs of this Cargo build.
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(WORKSPACE_ROOT / "scripts/release/check-macos-minos.py"),
+                    deployment_target,
+                    str(target_dir / "release/libzeppelin_embed_ffi.a"),
+                    str(source),
+                ],
+                check=True,
             )
         destination = self._package_output(f".dylibs/{native}")
         destination.parent.mkdir(parents=True, exist_ok=True)

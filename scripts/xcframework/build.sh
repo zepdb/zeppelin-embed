@@ -35,6 +35,7 @@ if [[ ! "$SIZE_BUDGET_KB" =~ ^[0-9]+$ ]]; then
     exit 2
 fi
 BUILD_DIR="$ROOT_DIR/target/xcframework$SUFFIX"
+CARGO_DIR="$BUILD_DIR/cargo-macos-$MACOS_DEPLOYMENT_TARGET"
 WORK_DIR="$BUILD_DIR/work"
 HEADERS_DIR="$WORK_DIR/headers"
 ARTIFACT="$BUILD_DIR/$NAME.xcframework"
@@ -232,13 +233,13 @@ attempt_slice() {
     local sdk="$3"
     local sdk_path log archive status release_rustflags
     log="$WORK_DIR/$label.build.log"
-    archive="$BUILD_DIR/cargo/$target/release/libzeppelin_embed_ffi.a"
+    archive="$CARGO_DIR/$target/release/libzeppelin_embed_ffi.a"
     sdk_path="$(xcrun --sdk "$sdk" --show-sdk-path 2>&1)"
     {
         echo "## $label"
         echo
         echo '```text'
-        echo "artifact=$SELECTOR target=$target deployment=$MACOS_DEPLOYMENT_TARGET features=${features[*]-} target-dir=$BUILD_DIR/cargo"
+        echo "artifact=$SELECTOR target=$target deployment=$MACOS_DEPLOYMENT_TARGET features=${features[*]-} target-dir=$CARGO_DIR"
     } >> "$SLICE_EVIDENCE"
     # macOS has never required Apple Bitcode, and Xcode dropped bitcode
     # support entirely in Xcode 14 -- rustc's fat-LTO release profile embeds
@@ -265,7 +266,7 @@ attempt_slice() {
         RUSTFLAGS="$release_rustflags" \
         CARGO_BUILD_JOBS=3 cargo "+$RUST_NIGHTLY_TOOLCHAIN" build -Z build-std=std,panic_unwind \
         --locked -p zeppelin-embed-ffi --release --no-default-features --target "$target" \
-        --target-dir "$BUILD_DIR/cargo" ${features[@]+"${features[@]}"} \
+        --target-dir "$CARGO_DIR" ${features[@]+"${features[@]}"} \
         > "$log" 2>&1; then
         status=0
     else
@@ -281,6 +282,7 @@ attempt_slice() {
         echo "ERROR: required slice $label was not built (exit $status)" >&2
         return 1
     fi
+    python3 "$ROOT_DIR/scripts/release/check-macos-minos.py" "$MACOS_DEPLOYMENT_TARGET" "$archive" || return 1
     check_export_allowlist "$label-before-trimming" "$archive" || return 1
     # Strip any remaining embedded IR from a staging copy, never Cargo inputs.
     python3 "$ROOT_DIR/scripts/release/package-native.py" archive \
@@ -301,12 +303,13 @@ if [ "$SELECTOR" = legacy ]; then
 fi
 
 if [ "$SELECTOR" = graph-cypher ]; then
-    release_dir="$BUILD_DIR/cargo/aarch64-apple-darwin/release"
+    release_dir="$CARGO_DIR/aarch64-apple-darwin/release"
     if [ -n "$PREBUILT_ARCHIVE" ]; then release_dir="$(dirname "$PREBUILT_ARCHIVE")"; fi
     framework="$WORK_DIR/$NAME.framework"
     version="$framework/Versions/A"
     mkdir -p "$version/Headers" "$version/Modules" "$version/Resources" || exit 1
     cp "$release_dir/libzeppelin_embed_ffi.dylib" "$version/$NAME" || exit 1
+    python3 "$ROOT_DIR/scripts/release/check-macos-minos.py" "$MACOS_DEPLOYMENT_TARGET" "$version/$NAME" || exit 1
     install_name_tool -id "@rpath/$NAME.framework/Versions/A/$NAME" "$version/$NAME" || exit 1
     minimum_macos="$(vtool -show-build "$version/$NAME" | awk '/minos/ { print $2; exit }')"
     if [ "$minimum_macos" != 14.0 ]; then
