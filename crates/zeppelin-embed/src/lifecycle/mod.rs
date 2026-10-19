@@ -4701,7 +4701,7 @@ impl Store {
                 .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))?,
             )
             .map_err(QueryError::Store)?;
-        let mut prepared = if index.segments().is_empty() || expansions.is_empty() {
+        let mut prepared = if index.total_tokens() == 0 || expansions.is_empty() {
             None
         } else {
             Some(
@@ -7030,7 +7030,7 @@ fn exact_lexical_leg(
     let assembly = &prepared.assembly;
     let index = &assembly.index;
     let sources = &assembly.sources;
-    if index.segments().is_empty() {
+    if index.total_tokens() == 0 {
         return Ok((
             Vec::new(),
             Arc::clone(assembly),

@@ -140,6 +140,14 @@ pub(crate) fn search_lexical_filtered_refs_controlled<E: From<LexicalFilterError
             LexicalBranch::PostCheck
         }
     });
+    // No live term can match; BM25's average length is undefined here.
+    if index.total_tokens() == 0 {
+        check()?;
+        return Ok(LexicalSearchOutcome {
+            result: SearchResult::default(),
+            branch,
+        });
+    }
     let result = match branch {
         LexicalBranch::AllowListDrive => {
             search_allow_list_driven_controlled(index, query, k, params, allow_lists, &mut check)

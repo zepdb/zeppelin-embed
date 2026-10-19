@@ -47,7 +47,7 @@ impl Store {
                 let (prepared, _) = preparation.prepare_term(inputs, &cancellation)?;
                 (
                     &prepared.assembly,
-                    if prepared.assembly.index.segments().is_empty() {
+                    if prepared.assembly.index.total_tokens() == 0 {
                         None
                     } else {
                         Some(prepared.scoring()?.query())

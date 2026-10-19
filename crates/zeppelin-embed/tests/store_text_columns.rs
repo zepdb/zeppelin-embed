@@ -38,6 +38,137 @@ mod windows_threads;
 use windows_threads::all_thread_ids as os_thread_ids;
 
 #[test]
+fn empty_corpus_queries_return_no_hits() {
+    let term = TermQuery::flat(vec![b"bronze".to_vec()], &[DEFAULT_FIELD]);
+    let structured = LexicalQuery::term(term.clone());
+    for sealed in [false, true] {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        for deleted in [false, true] {
+            if deleted {
+                store
+                    .ingest(IngestBatch::new(vec![
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                            vec![1.0, 0.0],
+                        )
+                        .with_text("bronze zeppelin"),
+                    ]))
+                    .expect("ingest");
+                if sealed {
+                    store.seal().expect("seal");
+                }
+                store
+                    .delete(DeleteBatch::new(vec![DocId::new(1)]))
+                    .expect("delete");
+            }
+            let control = || QueryControl::Cancel(CancelToken::new());
+            assert!(
+                store
+                    .search_lexical(&term, 10, control())
+                    .expect("empty lexical")
+                    .candidates
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .search_lexical_structured(&structured, 10, 64, control())
+                    .expect("empty structured lexical")
+                    .candidates
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .search_hybrid(
+                        SearchRequest::new(&[1.0, 0.0]),
+                        &term,
+                        &HybridQuery::new(10),
+                        SearchOptions::default(),
+                        control(),
+                    )
+                    .expect("empty hybrid")
+                    .hits
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .search_hybrid_structured(
+                        SearchRequest::new(&[1.0, 0.0]),
+                        &structured,
+                        &HybridQuery::new(10),
+                        SearchOptions::default(),
+                        control(),
+                    )
+                    .expect("empty structured hybrid")
+                    .hits
+                    .is_empty()
+            );
+        }
+        store.close().expect("close");
+    }
+}
+
+#[test]
+fn tokenless_corpus_queries_keep_dense_hybrid_hits() {
+    for sealed in [false, true] {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text("   "),
+            ]))
+            .expect("ingest tokenless text");
+        if sealed {
+            store.seal().expect("seal");
+        }
+        let term = TermQuery::flat(vec![b"bronze".to_vec()], &[DEFAULT_FIELD]);
+        let structured = LexicalQuery::term(term.clone());
+        let control = || QueryControl::Cancel(CancelToken::new());
+        assert!(
+            store
+                .search_lexical(&term, 10, control())
+                .expect("tokenless lexical")
+                .candidates
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_lexical_structured(&structured, 10, 64, control())
+                .expect("tokenless structured lexical")
+                .candidates
+                .is_empty()
+        );
+        let hybrid = store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0]),
+                &term,
+                &HybridQuery::new(10),
+                SearchOptions::default(),
+                control(),
+            )
+            .expect("tokenless hybrid");
+        assert_eq!(hybrid.hits.len(), 1);
+        assert_eq!(hybrid.hits.first().expect("dense hit").key, DocId::new(1));
+        let hybrid = store
+            .search_hybrid_structured(
+                SearchRequest::new(&[1.0, 0.0]),
+                &structured,
+                &HybridQuery::new(10),
+                SearchOptions::default(),
+                control(),
+            )
+            .expect("tokenless structured hybrid");
+        assert_eq!(hybrid.hits.len(), 1);
+        assert_eq!(hybrid.hits.first().expect("dense hit").key, DocId::new(1));
+        store.close().expect("close");
+    }
+}
+
+#[test]
 fn hybrid_structured_accepts_terms_with_prefix() {
     use zeppelin_embed::fts::search::FieldWeights;
 

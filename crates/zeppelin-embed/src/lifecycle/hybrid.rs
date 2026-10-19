@@ -905,7 +905,7 @@ fn cross_score_lexical(
             .ok_or_else(|| lexical_invariant("hybrid lexical index/source count differs"))?
             .push((row, position));
     }
-    if batches.iter().all(Vec::is_empty) {
+    if batches.iter().all(Vec::is_empty) || assembly.index.total_tokens() == 0 {
         return Ok((scores, counters));
     }
     let (scoring, weighted) = match query {

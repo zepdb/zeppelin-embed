@@ -7,6 +7,45 @@ use zeppelin_embed_text::{IngestOptions, Legs, QueryOptions, TextDocument, TextS
 mod common;
 
 #[test]
+fn empty_text_store_queries_return_no_hits() {
+    let directory = tempdir().expect("store directory");
+    let path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&path);
+    let store = TextStore::open(directory.path().join("store"), &path, Default::default())
+        .expect("open empty text store");
+    for legs in [Legs::Lexical, Legs::Dense, Legs::Hybrid] {
+        let hits = store
+            .query_text("bronze zeppelin", QueryOptions::new(10).with_legs(legs))
+            .expect("fresh empty text query");
+        assert!(hits.is_empty(), "{legs:?}");
+    }
+    store.close().expect("close");
+}
+
+#[test]
+fn deleted_text_store_queries_return_no_hits() {
+    let directory = tempdir().expect("store directory");
+    let path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&path);
+    let store = TextStore::open(directory.path().join("store"), &path, Default::default())
+        .expect("open text store");
+    store
+        .ingest_text(
+            &[TextDocument::new(1, 1, "bronze zeppelin")],
+            IngestOptions::default(),
+        )
+        .expect("ingest");
+    store.delete_text(&[1]).expect("delete all text");
+    for legs in [Legs::Lexical, Legs::Dense, Legs::Hybrid] {
+        let hits = store
+            .query_text("bronze zeppelin", QueryOptions::new(10).with_legs(legs))
+            .expect("deleted text query");
+        assert!(hits.is_empty(), "{legs:?}");
+    }
+    store.close().expect("close");
+}
+
+#[test]
 fn astra_07_result_materialization_uses_one_admission() {
     let directory = tempdir().expect("text hydration fixture");
     let path = directory.path().join("fixture.zem");

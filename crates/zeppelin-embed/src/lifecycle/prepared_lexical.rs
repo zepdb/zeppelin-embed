@@ -141,7 +141,7 @@ impl<'query> PreparedLexicalQuery<'query> {
             let mut memory =
                 AccountedCounter::new(inputs.accounting, AllocationComponent::Temporary)
                     .map_err(QueryError::Store)?;
-            let scoring = if receipt.index.segments().is_empty() {
+            let scoring = if receipt.index.total_tokens() == 0 {
                 None
             } else {
                 let bytes = PreparedTermQuery::allocation_bytes_controlled(
@@ -209,7 +209,7 @@ impl<'query> PreparedLexicalQuery<'query> {
             let fields = query
                 .fields_controlled(&mut work)
                 .map_err(QueryError::Scan)?;
-            let query = if receipt.index.segments().is_empty() || expansions.is_empty() {
+            let query = if receipt.index.total_tokens() == 0 || expansions.is_empty() {
                 None
             } else {
                 let bytes = crate::fts::query::PreparedWeightedQuery::allocation_bytes_controlled(
