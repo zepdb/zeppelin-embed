@@ -8,6 +8,55 @@ use zeppelin_embed_text::bundle::Bundle;
 
 const HEADER_LEN: usize = 4096;
 
+#[cfg(target_os = "macos")]
+pub fn compile_coreml_plan_contract() -> (tempfile::TempDir, std::path::PathBuf) {
+    let root = tempfile::tempdir().expect("native contract directory");
+    let executable = root.path().join("coreml-plan-contracts");
+    let output = std::process::Command::new("xcrun")
+        .args([
+            "clang",
+            "-fobjc-arc",
+            "-fmodules",
+            "-framework",
+            "CoreML",
+            "-framework",
+            "Foundation",
+        ])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/coreml_plan_contracts.m"))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("compile native shim contract");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (root, executable)
+}
+
+#[cfg(target_os = "macos")]
+pub fn compute_plan_available() -> bool {
+    let output = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .expect("macOS version");
+    assert!(output.status.success());
+    let version = String::from_utf8(output.stdout).expect("macOS version text");
+    let mut components = version.trim().split('.');
+    let major: u32 = components
+        .next()
+        .expect("major version")
+        .parse()
+        .expect("major number");
+    let minor: u32 = components
+        .next()
+        .expect("minor version")
+        .parse()
+        .expect("minor number");
+    (major, minor) >= (14, 4)
+}
+
 #[derive(Clone)]
 pub struct FixtureTower<'a> {
     pub role: u8,
@@ -16,6 +65,7 @@ pub struct FixtureTower<'a> {
     pub architecture: u16,
     pub pooling: u8,
     pub dims: u32,
+    pub max_tokens: u32,
     pub vocabulary: &'a [&'a str],
     pub word_vectors: [[f32; 2]; 7],
 }
@@ -29,6 +79,7 @@ impl FixtureTower<'_> {
             architecture: 1,
             pooling: 1,
             dims: 2,
+            max_tokens: 16,
             vocabulary: &[
                 "[PAD]", "[UNK]", "[CLS]", "[SEP]", "the", "bronze", "zeppelin",
             ],
@@ -52,6 +103,7 @@ impl FixtureTower<'_> {
             architecture: 1,
             pooling: 1,
             dims: 2,
+            max_tokens: 16,
             vocabulary: &[
                 "[PAD]", "[UNK]", "[CLS]", "[SEP]", "the", "bronze", "zeppelin",
             ],
@@ -207,7 +259,7 @@ fn write_tower(output: &mut Vec<u8>, tower: &FixtureTower<'_>, tensors: &[Tensor
     push_u32(output, tower.dims);
     push_u16(output, 1);
     push_string(output, tower.prefix);
-    push_u32(output, 16);
+    push_u32(output, tower.max_tokens);
     push_u16(output, 2);
     push_u16(output, 2);
     output.push(0);

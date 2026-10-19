@@ -6,8 +6,48 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 use zeppelin_embed_text::runtime::ModelRuntime;
-use zeppelin_embed_text::runtime::coreml::{ComputeUnits, CoreMlRuntime};
+use zeppelin_embed_text::runtime::coreml::{ComputeUnits, CoreMlComputePlan, CoreMlRuntime};
 use zeppelin_embed_text::tower::TokenBatch;
+
+#[test]
+#[ignore = "requires ZE_CLEAN71_COREML_MODEL (real clean71 .mlmodelc), macOS 14.4+ and native execution outside the sandbox"]
+fn clean71_compute_plan_counts_ml_program_ops_and_records_extra_open_cost() {
+    let model = PathBuf::from(
+        std::env::var_os("ZE_CLEAN71_COREML_MODEL")
+            .expect("set ZE_CLEAN71_COREML_MODEL to the real clean71-fp16-s96.mlmodelc"),
+    );
+    assert!(
+        model.is_dir(),
+        "compiled clean71 model must exist: {}",
+        model.display()
+    );
+    let start = Instant::now();
+    let runtime = CoreMlRuntime::load(&model, 768, ComputeUnits::CpuAndNeuralEngine)
+        .expect("load real clean71 query tower without a compute plan");
+    let open_ms = start.elapsed().as_secs_f64() * 1000.;
+    assert_eq!(runtime.sequence(), 96);
+    let plan = CoreMlComputePlan::new(&model, ComputeUnits::CpuAndNeuralEngine);
+    let start = Instant::now();
+    let observed = plan
+        .observed_compute_units()
+        .expect("first lazy plan request")
+        .expect("compute plan requires macOS 14.4+");
+    let first_plan_ms = start.elapsed().as_secs_f64() * 1000.;
+    let start = Instant::now();
+    let cached = plan
+        .observed_compute_units()
+        .expect("second cached request");
+    let cached_ms = start.elapsed().as_secs_f64() * 1000.;
+    assert_eq!(cached, Some(observed));
+    assert!(
+        observed.cpu_ops + observed.gpu_ops + observed.neural_engine_ops + observed.other_ops > 0,
+        "real ML Program must report non-zero preferred-device operation counts"
+    );
+    println!(
+        "ZE516 model={} sequence=96 open_without_plan_ms={open_ms:.6} first_lazy_plan_ms={first_plan_ms:.6} second_cached_request_ms={cached_ms:.6} counts={observed:?}",
+        model.display()
+    );
+}
 
 fn word(input: &mut Cursor<Vec<u8>>) -> [u8; 4] {
     let mut bytes = [0; 4];

@@ -93,8 +93,8 @@ impl TokenBatch {
     /// Re-pads every row to exactly `width` tokens.
     ///
     /// `encode_batch` pads to the longest row it saw, which is what the
-    /// MLX path wants. A CoreML program is exported at one fixed
-    /// sequence length, so it needs an exact width instead. Rows longer
+    /// MLX path wants. CoreML's `embed_batch` pads internally to its fixed
+    /// sequence length; callers may also request exact padding here. Rows longer
     /// than `width` are a caller error, not something to silently trim:
     /// truncating a query would change what was asked.
     pub fn padded_to(&self, width: usize) -> Result<Self, crate::runtime::RuntimeError> {

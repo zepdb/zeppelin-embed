@@ -98,6 +98,8 @@ pub struct ObservedComputeUnits {
     pub gpu_ops: u64,
     /// Operations planned for the Neural Engine.
     pub neural_engine_ops: u64,
+    /// Operations planned for a device class unknown to this build.
+    pub other_ops: u64,
 }
 
 /// Loaded query runtime selection and available planned placement diagnostics.
@@ -107,7 +109,10 @@ pub struct QueryBackend {
     pub runtime: crate::runtime::RuntimeIdentity,
     /// Compute units requested when constructing that runtime.
     pub requested_compute_units: zeppelin_embed::epoch::ComputeUnits,
-    /// Preferred-device op counts from the compute plan; `None` means unknown.
+    /// Cached preferred-device op counts. Queries never load the plan; call
+    /// `TextStore::observed_compute_units()` once to populate counts carried by
+    /// subsequent diagnostics queries. An empty or busy cache yields `None`.
+    /// `TextStore::query_backend` always leaves this `None` without loading a plan.
     pub observed_compute_units: Option<ObservedComputeUnits>,
     /// Fixed CoreML input width, or `None` for dynamic MLX inputs.
     pub sequence_length: Option<usize>,

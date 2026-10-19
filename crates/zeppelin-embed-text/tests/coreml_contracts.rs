@@ -5,11 +5,87 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::{TempDir, tempdir};
-use zeppelin_embed_text::runtime::coreml::{ComputeUnits, CoreMlRuntime};
+use zeppelin_embed_text::runtime::coreml::{ComputeUnits, CoreMlComputePlan, CoreMlRuntime};
 use zeppelin_embed_text::runtime::{ModelRuntime, RuntimeError};
 use zeppelin_embed_text::tower::TokenBatch;
 
 mod common;
+use common::compute_plan_available;
+
+#[test]
+fn coreml_open_does_not_load_compute_plan() {
+    if !compute_plan_available() {
+        return;
+    }
+    let (_root, model) = compile_fixture();
+    let (_harness_root, executable) = common::compile_coreml_plan_contract();
+    let output = Command::new(executable)
+        .arg("open")
+        .arg(model)
+        .output()
+        .expect("native model open without plan");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn coreml_lazy_plan_retries_failure_and_caches_success() {
+    if !compute_plan_available() {
+        return;
+    }
+    let (_root, model) = compile_fixture();
+    let hidden = model.with_extension("hidden");
+    let plan = CoreMlComputePlan::new(&model, ComputeUnits::Cpu);
+    std::fs::rename(&model, &hidden).expect("hide compiled model");
+    assert!(matches!(
+        plan.observed_compute_units(),
+        Err(RuntimeError::Mlx(_))
+    ));
+    std::fs::rename(&hidden, &model).expect("restore model so retry can succeed");
+    let observed = plan
+        .observed_compute_units()
+        .expect("retry failed request")
+        .expect("available compute plan");
+    assert_eq!(observed.cpu_ops, 1);
+    std::fs::rename(&model, &hidden).expect("make reloading fail");
+    assert_eq!(
+        plan.observed_compute_units().expect("cached success"),
+        Some(observed)
+    );
+}
+
+#[test]
+fn coreml_unknown_preferred_device_counts_as_other() {
+    if !compute_plan_available() {
+        return;
+    }
+    run_plan_contract("unknown");
+}
+
+#[test]
+fn coreml_plan_timeout_and_load_errors_fail_loudly() {
+    if !compute_plan_available() {
+        return;
+    }
+    run_plan_contract("timeout");
+    run_plan_contract("failure");
+}
+
+fn run_plan_contract(mode: &str) {
+    let (_root, executable) = common::compile_coreml_plan_contract();
+    let output = Command::new(executable)
+        .arg(mode)
+        .output()
+        .expect("native shim contract");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 fn compile_fixture() -> (TempDir, PathBuf) {
     let root = tempdir().expect("CoreML compiler directory");
@@ -32,27 +108,6 @@ fn compile_fixture() -> (TempDir, PathBuf) {
     (root, model)
 }
 
-fn compute_plan_available() -> bool {
-    let output = Command::new("sw_vers")
-        .arg("-productVersion")
-        .output()
-        .expect("macOS version");
-    assert!(output.status.success());
-    let version = String::from_utf8(output.stdout).expect("macOS version text");
-    let mut components = version.trim().split('.');
-    let major: u32 = components
-        .next()
-        .expect("major version")
-        .parse()
-        .expect("major number");
-    let minor: u32 = components
-        .next()
-        .expect("minor version")
-        .parse()
-        .expect("minor number");
-    (major, minor) >= (14, 4)
-}
-
 #[test]
 fn coreml_compute_plan_reports_one_fixture_op_under_every_requested_policy() {
     let (_root, model) = compile_fixture();
@@ -62,18 +117,22 @@ fn coreml_compute_plan_reports_one_fixture_op_under_every_requested_policy() {
         ComputeUnits::CpuAndNeuralEngine,
         ComputeUnits::All,
     ] {
-        let runtime = CoreMlRuntime::load(&model, 2, policy).expect("actual compiled model");
-        let observed = runtime.observed_compute_units();
+        let plan = CoreMlComputePlan::new(&model, policy);
+        let observed = plan.observed_compute_units().expect("lazy compute plan");
         if compute_plan_available() {
             let observed = observed.expect("compute plan on macOS 14.4+");
             assert_eq!(
-                observed.cpu_ops + observed.gpu_ops + observed.neural_engine_ops,
+                observed.cpu_ops
+                    + observed.gpu_ops
+                    + observed.neural_engine_ops
+                    + observed.other_ops,
                 1
             );
             if policy == ComputeUnits::Cpu {
                 assert_eq!(observed.cpu_ops, 1);
                 assert_eq!(observed.gpu_ops, 0);
                 assert_eq!(observed.neural_engine_ops, 0);
+                assert_eq!(observed.other_ops, 0);
             }
         } else {
             assert_eq!(observed, None);
@@ -202,6 +261,46 @@ fn discovered_coreml_query_model_is_reported_and_used_by_the_store() {
 }
 
 #[test]
+fn coreml_store_open_refuses_sequence_below_bundle_query_max_tokens() {
+    let (_root, model) = compile_fixture();
+    let output = Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", "coreml_store_mismatch_child", "--nocapture"])
+        .env("ZE516_COREML_MISMATCH", "1")
+        .env("ZE_QUERY_COREML", &model)
+        .output()
+        .expect("isolated model discovery");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("ZE516 mismatched pair refused at open")
+    );
+}
+
+#[test]
+fn coreml_store_mismatch_child() {
+    if std::env::var_os("ZE516_COREML_MISMATCH").is_none() {
+        return;
+    }
+    let root = tempdir().expect("store root");
+    let bundle = root.path().join("document.zem");
+    common::write_symmetric_fixture_bundle(&bundle);
+    let result = zeppelin_embed_text::TextStore::open(
+        root.path().join("store"),
+        &bundle,
+        Default::default(),
+    );
+    assert!(
+        matches!(result, Err(zeppelin_embed_text::TextError::Runtime(RuntimeError::Shape(detail)))
+        if detail == "CoreML query sequence length 2 is below bundle query max_tokens 16")
+    );
+    println!("ZE516 mismatched pair refused at open");
+}
+
+#[test]
 fn coreml_store_child() {
     if std::env::var_os("ZE115_COREML_FIXTURE").is_none() {
         return;
@@ -209,7 +308,14 @@ fn coreml_store_child() {
     use zeppelin_embed_text::{IngestOptions, Legs, QueryOptions, TextDocument, TextStore};
     let root = tempdir().expect("store root");
     let model = root.path().join("document.zem");
-    common::write_symmetric_fixture_bundle(&model);
+    let mut query = common::FixtureTower::query("fixture-query");
+    query.max_tokens = 2;
+    query.prefix = "";
+    common::write_fixture_bundle(
+        &model,
+        &[common::FixtureTower::document("fixture-document"), query],
+        &[],
+    );
     let store = TextStore::open(root.path().join("store"), &model, Default::default())
         .expect("actual mixed runtime store");
     let backend = store.query_backend();
@@ -218,15 +324,7 @@ fn coreml_store_child() {
         backend.requested_compute_units,
         zeppelin_embed::epoch::ComputeUnits::CpuAndNeuralEngine
     );
-    if compute_plan_available() {
-        let observed = backend.observed_compute_units.expect("store compute plan");
-        assert_eq!(
-            observed.cpu_ops + observed.gpu_ops + observed.neural_engine_ops,
-            1
-        );
-    } else {
-        assert_eq!(backend.observed_compute_units, None);
-    }
+    assert_eq!(backend.observed_compute_units, None);
     assert_eq!(backend.sequence_length, Some(2));
     let report = store
         .ingest_text(
@@ -244,7 +342,28 @@ fn coreml_store_child() {
     assert_eq!(result.hits[0].doc_id, 7);
     assert_eq!(result.query_tokens, 2);
     assert_eq!(result.embedding_calls, 1);
-    assert_eq!(result.backend, Some(backend));
+    assert_eq!(result.backend, Some(backend), "queries never load a plan");
+    let mut diagnostic_backend = backend;
+    diagnostic_backend.observed_compute_units =
+        store.observed_compute_units().expect("explicit plan load");
+    if compute_plan_available() {
+        let counts = diagnostic_backend
+            .observed_compute_units
+            .expect("observed placement");
+        assert_eq!(
+            counts.cpu_ops + counts.gpu_ops + counts.neural_engine_ops + counts.other_ops,
+            1
+        );
+    }
+    let result = store
+        .query_text_with_diagnostics("", QueryOptions::new(1).with_legs(Legs::Dense))
+        .expect("query with cached placement");
+    assert_eq!(result.backend, Some(diagnostic_backend));
+    assert_eq!(
+        store.query_backend(),
+        backend,
+        "cheap snapshot never loads or returns the plan"
+    );
     store.close().expect("join MLX and CoreML owner");
     println!("ZE115 real CoreML store query completed");
 }

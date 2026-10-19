@@ -12,7 +12,8 @@
 //! swapping the backend cannot change what a vector means.
 
 use std::ffi::{CString, c_char};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use super::{EmbeddingBatch, ModelRuntime, RuntimeError, RuntimeIdentity};
 use crate::ObservedComputeUnits;
@@ -60,10 +61,15 @@ unsafe extern "C" {
     fn ze_coreml_open(
         path: *const c_char,
         compute_units: i32,
+        error: *mut *mut c_char,
+    ) -> *mut Handle;
+    fn ze_coreml_compute_plan(
+        path: *const c_char,
+        compute_units: i32,
         observed: *mut ObservedComputeUnits,
         has_observed: *mut i32,
         error: *mut *mut c_char,
-    ) -> *mut Handle;
+    ) -> i32;
     fn ze_coreml_predict(
         handle: *mut Handle,
         ids: *const i32,
@@ -92,6 +98,77 @@ fn take_error(raw: *mut c_char, fallback: &str) -> String {
     message
 }
 
+fn model_path(model: &Path) -> Result<CString, RuntimeError> {
+    let path = model
+        .to_str()
+        .ok_or_else(|| RuntimeError::Mlx("CoreML model path is not valid UTF-8".to_owned()))?;
+    CString::new(path).map_err(|_| RuntimeError::Mlx("CoreML model path contains NUL".to_owned()))
+}
+
+/// Lazy placement diagnostics independent of the loaded model and embed worker.
+/// A successful result is cached; failures leave the next request free to retry.
+pub struct CoreMlComputePlan {
+    model: PathBuf,
+    compute_units: ComputeUnits,
+    // Outer None means not loaded; Some(None) means unavailable before macOS 14.4.
+    observed: Mutex<Option<Option<ObservedComputeUnits>>>,
+}
+
+impl CoreMlComputePlan {
+    /// Records the model path and policy without loading any CoreML resources.
+    #[must_use]
+    pub fn new(model: &Path, compute_units: ComputeUnits) -> Self {
+        Self {
+            model: model.to_owned(),
+            compute_units,
+            observed: Mutex::new(None),
+        }
+    }
+
+    /// Returns cached counts without loading or waiting. An empty or unavailable
+    /// cache (including an in-progress load) yields `None` for query diagnostics.
+    pub(crate) fn cached_observed_compute_units(&self) -> Option<ObservedComputeUnits> {
+        let cached = self.observed.try_lock().ok()?;
+        (*cached).flatten()
+    }
+
+    /// Loads once on demand, serializing concurrent requests. Old macOS returns
+    /// `None`; a plan load failure or 30-second timeout returns an error.
+    pub fn observed_compute_units(&self) -> Result<Option<ObservedComputeUnits>, RuntimeError> {
+        let mut cached = self
+            .observed
+            .lock()
+            .map_err(|_| RuntimeError::Mlx("CoreML compute plan cache lock poisoned".to_owned()))?;
+        if let Some(observed) = *cached {
+            return Ok(observed);
+        }
+        let path = model_path(&self.model)?;
+        let mut error = std::ptr::null_mut();
+        let mut observed = ObservedComputeUnits::default();
+        let mut has_observed = 0;
+        // SAFETY: path is NUL-terminated; all output pointers remain live for
+        // this call. The shim's async callback never retains these pointers.
+        let code = unsafe {
+            ze_coreml_compute_plan(
+                path.as_ptr(),
+                self.compute_units.code(),
+                &mut observed,
+                &mut has_observed,
+                &mut error,
+            )
+        };
+        if code != 0 {
+            return Err(RuntimeError::Mlx(take_error(
+                error,
+                "CoreML compute plan failed to load",
+            )));
+        }
+        let observed = (has_observed != 0).then_some(observed);
+        *cached = Some(observed);
+        Ok(observed)
+    }
+}
+
 pub(crate) fn pad_query(tokens: &TokenBatch, sequence: usize) -> Result<TokenBatch, RuntimeError> {
     if tokens.tokens_per_row == 0 || tokens.tokens_per_row > sequence {
         return Err(RuntimeError::Shape(format!(
@@ -108,7 +185,6 @@ pub struct CoreMlRuntime {
     sequence: usize,
     dims: usize,
     compute_units: ComputeUnits,
-    observed_compute_units: Option<ObservedComputeUnits>,
 }
 
 // SAFETY: the handle is owned exclusively by this value, every call goes
@@ -132,25 +208,11 @@ impl CoreMlRuntime {
                 "CoreML dims must be non-zero".to_owned(),
             ));
         }
-        let path = model
-            .to_str()
-            .ok_or_else(|| RuntimeError::Mlx("CoreML model path is not valid UTF-8".to_owned()))?;
-        let path = CString::new(path)
-            .map_err(|_| RuntimeError::Mlx("CoreML model path contains NUL".to_owned()))?;
+        let path = model_path(model)?;
         let mut error: *mut c_char = std::ptr::null_mut();
-        let mut observed = ObservedComputeUnits::default();
-        let mut has_observed = 0;
         // SAFETY: `path` is NUL-terminated and outlives the call; the shim
         // writes the valid output pointers and writes `error` only on failure.
-        let handle = unsafe {
-            ze_coreml_open(
-                path.as_ptr(),
-                compute_units.code(),
-                &mut observed,
-                &mut has_observed,
-                &mut error,
-            )
-        };
+        let handle = unsafe { ze_coreml_open(path.as_ptr(), compute_units.code(), &mut error) };
         if handle.is_null() {
             return Err(RuntimeError::Mlx(take_error(
                 error,
@@ -170,7 +232,6 @@ impl CoreMlRuntime {
             sequence,
             dims,
             compute_units,
-            observed_compute_units: (has_observed != 0).then_some(observed),
         })
     }
 
@@ -180,12 +241,16 @@ impl CoreMlRuntime {
         self.sequence
     }
 
-    /// Returns preferred-device op counts from the load-time compute plan.
-    ///
-    /// macOS versions before 14.4 report `None` (unknown).
+    /// Returns the compute policy requested when this runtime was loaded.
     #[must_use]
-    pub const fn observed_compute_units(&self) -> Option<ObservedComputeUnits> {
-        self.observed_compute_units
+    pub const fn requested_compute_units(&self) -> zeppelin_embed::epoch::ComputeUnits {
+        use zeppelin_embed::epoch::ComputeUnits as Policy;
+        match self.compute_units {
+            ComputeUnits::Cpu => Policy::Cpu,
+            ComputeUnits::CpuAndGpu => Policy::CpuAndGpu,
+            ComputeUnits::CpuAndNeuralEngine => Policy::CpuAndNeuralEngine,
+            ComputeUnits::All => Policy::All,
+        }
     }
 
     fn embed_row(
@@ -299,6 +364,40 @@ impl ModelRuntime for CoreMlRuntime {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    #[test]
+    fn cached_compute_units_read_does_not_wait_for_a_plan_load() {
+        use super::{ComputeUnits, CoreMlComputePlan};
+        let plan =
+            CoreMlComputePlan::new(std::path::Path::new("unused.mlmodelc"), ComputeUnits::Cpu);
+        let mut loading = plan.observed.lock().expect("hold load lock");
+        std::thread::scope(|scope| {
+            let (send, receive) = std::sync::mpsc::channel();
+            let read_plan = &plan;
+            scope.spawn(move || {
+                send.send(read_plan.cached_observed_compute_units())
+                    .expect("send snapshot")
+            });
+            let result = receive.recv_timeout(std::time::Duration::from_secs(5));
+            // Release before asserting so a blocking implementation can finish
+            // and the scoped worker can join even when this test fails.
+            *loading = Some(Some(crate::ObservedComputeUnits {
+                cpu_ops: 7,
+                ..Default::default()
+            }));
+            drop(loading);
+            assert_eq!(
+                result.expect("cache read must not wait for load lock"),
+                None
+            );
+        });
+        assert_eq!(
+            plan.cached_observed_compute_units()
+                .expect("cached counts")
+                .cpu_ops,
+            7
+        );
+    }
+
     #[test]
     fn query_rows_pad_to_96_and_reject_empty_or_overlength() {
         for count in [1, 32, 33, 64, 65, 96] {

@@ -54,6 +54,8 @@ fn fake_store(
         bundle,
         analyzer,
         runtime: RuntimeClient {
+            #[cfg(target_os = "macos")]
+            compute_plan: None,
             query_backend: QueryBackend {
                 runtime: crate::runtime::RuntimeIdentity {
                     name: "astra19-fake",
@@ -71,6 +73,62 @@ fn fake_store(
         document_epoch,
         versions: Mutex::new(BTreeMap::new()),
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn lazy_plan_failure_is_returned_only_by_observed_compute_units() {
+    use crate::runtime::coreml::{ComputeUnits, CoreMlComputePlan};
+    if !fixture::compute_plan_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("fixture");
+    let mut store = fake_store(directory.path(), |_| {
+        EmbeddingBatch::new(vec![1.0, 0.0], 1, 2).map_err(TextError::Runtime)
+    });
+    // The plan loader is real; the deterministic embed worker isolates this
+    // error-propagation contract from Metal execution.
+    store.runtime.compute_plan = Some(CoreMlComputePlan::new(
+        &directory.path().join("missing.mlmodelc"),
+        ComputeUnits::Cpu,
+    ));
+    let options = QueryOptions::new(1).with_legs(Legs::Dense);
+    for result in [
+        store.query_text_with_diagnostics("bronze", options),
+        store.query_text_with_diagnostics_controlled(
+            "bronze",
+            options,
+            QueryControl::Cancel(CancelToken::new()),
+        ),
+    ] {
+        let result = result.expect("diagnostic query must not load a plan");
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(
+            result
+                .backend
+                .expect("dense backend")
+                .observed_compute_units,
+            None
+        );
+    }
+    assert!(matches!(store.observed_compute_units(),
+        Err(TextError::Runtime(RuntimeError::Mlx(detail))) if !detail.is_empty()));
+    assert_eq!(
+        store
+            .query_text("bronze", options)
+            .expect("ordinary query")
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .query_text_controlled("bronze", options, QueryControl::Cancel(CancelToken::new()))
+            .expect("ordinary controlled query")
+            .len(),
+        1
+    );
+    assert!(store.query_backend().observed_compute_units.is_none());
+    store.close().expect("join worker");
 }
 
 #[test]

@@ -113,6 +113,8 @@ fn fake_client(
     let thread =
         std::thread::spawn(move || run_fake_embedding_commands(receiver, &worker_closed, embed));
     RuntimeClient {
+        #[cfg(target_os = "macos")]
+        compute_plan: None,
         query_backend: QueryBackend {
             runtime: crate::runtime::RuntimeIdentity {
                 name: "deterministic-test",

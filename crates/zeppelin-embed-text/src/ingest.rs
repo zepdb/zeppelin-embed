@@ -334,9 +334,25 @@ impl TextStore {
     }
 
     /// Returns the loaded query runtime and its requested compute policy.
+    /// Queries never load the plan. Call `observed_compute_units()` once to
+    /// populate counts carried by subsequent diagnostics queries. This cheap
+    /// snapshot always has `observed_compute_units: None`, even after that call.
     #[must_use]
     pub const fn query_backend(&self) -> QueryBackend {
         self.runtime.query_backend
+    }
+
+    /// Explicitly loads query placement diagnostics and caches successful results.
+    /// Queries never load the plan; call this once to populate counts carried by
+    /// subsequent diagnostics queries. Queries never wait for an in-progress load.
+    /// Returns `None` for MLX or macOS before 14.4. Failures are retried on the
+    /// next explicit call and never affect any query.
+    pub fn observed_compute_units(&self) -> Result<Option<crate::ObservedComputeUnits>, TextError> {
+        #[cfg(target_os = "macos")]
+        if let Some(plan) = &self.runtime.compute_plan {
+            return plan.observed_compute_units().map_err(TextError::Runtime);
+        }
+        Ok(None)
     }
 
     /// Returns current store health without changing engine behavior.
@@ -857,8 +873,7 @@ impl TextStore {
 
     /// Embeds and executes one dense, lexical, or hybrid text query.
     pub fn query_text(&self, text: &str, options: QueryOptions) -> Result<Vec<TextHit>, TextError> {
-        self.query_text_with_diagnostics(text, options)
-            .map(|outcome| outcome.hits)
+        self.query_text_controlled(text, options, QueryControl::Cancel(CancelToken::new()))
     }
 
     /// Executes a text query using one caller-owned cancellation or deadline.
@@ -868,11 +883,14 @@ impl TextStore {
         options: QueryOptions,
         control: QueryControl,
     ) -> Result<Vec<TextHit>, TextError> {
-        self.query_text_with_diagnostics_controlled(text, options, control)
+        self.query_text_inner(text, options, control)
             .map(|outcome| outcome.hits)
     }
 
     /// Executes the same text query with core work and optional outer timing.
+    /// Queries never load the plan or return plan errors. Call
+    /// `observed_compute_units()` once to populate counts carried by subsequent
+    /// dense/hybrid diagnostics queries. Reading cached counts never waits.
     /// Stage timing is enabled by the core `query-timing` feature. This does
     /// not change the query's tier, score policy, snapshot or embedding epoch.
     pub fn query_text_with_diagnostics(
@@ -889,7 +907,18 @@ impl TextStore {
 
     /// Executes a diagnostic text query with one control across tokenization,
     /// embedding admission, retrieval and owned-text materialization.
+    /// Placement counts come only from the cache populated by an explicit
+    /// `observed_compute_units()` call; this never loads or waits for a plan.
     pub fn query_text_with_diagnostics_controlled(
+        &self,
+        text: &str,
+        options: QueryOptions,
+        control: QueryControl,
+    ) -> Result<TextQueryOutcome, TextError> {
+        self.query_text_inner(text, options, control)
+    }
+
+    fn query_text_inner(
         &self,
         text: &str,
         options: QueryOptions,
@@ -948,13 +977,28 @@ impl TextStore {
             }
         })();
         let (hits, diagnostics) = result?;
+        let backend = if options.legs != Legs::Lexical {
+            let backend = self.query_backend();
+            #[cfg(target_os = "macos")]
+            let backend = QueryBackend {
+                observed_compute_units: self
+                    .runtime
+                    .compute_plan
+                    .as_ref()
+                    .and_then(|plan| plan.cached_observed_compute_units()),
+                ..backend
+            };
+            Some(backend)
+        } else {
+            None
+        };
         control.checkpoint().map_err(TextError::Query)?;
         timings.end_to_end = stage_elapsed(started);
         Ok(TextQueryOutcome {
             hits,
             diagnostics: Some(diagnostics),
             timings: zeppelin_embed::diag::QUERY_TIMING_ENABLED.then_some(timings),
-            backend: (options.legs != Legs::Lexical).then_some(self.runtime.query_backend),
+            backend,
             query_tokens,
             embedding_calls: usize::from(options.legs != Legs::Lexical),
         })
@@ -1685,8 +1729,8 @@ impl QueryRuntime {
             #[cfg(target_os = "macos")]
             Self::CoreMl(runtime) => QueryBackend {
                 runtime: runtime.identity(),
-                requested_compute_units: zeppelin_embed::epoch::ComputeUnits::CpuAndNeuralEngine,
-                observed_compute_units: runtime.observed_compute_units(),
+                requested_compute_units: runtime.requested_compute_units(),
+                observed_compute_units: None,
                 sequence_length: Some(runtime.sequence()),
             },
         }
@@ -1787,6 +1831,8 @@ fn mlx_backend(runtime: &MlxRuntime) -> QueryBackend {
 
 struct RuntimeClient {
     query_backend: QueryBackend,
+    #[cfg(target_os = "macos")]
+    compute_plan: Option<crate::runtime::coreml::CoreMlComputePlan>,
     sender: mpsc::SyncSender<RuntimeCommand>,
     thread: Mutex<Option<JoinHandle<()>>>,
     closed: Arc<AtomicBool>,
@@ -1797,6 +1843,12 @@ impl RuntimeClient {
         bundle: Arc<Bundle>,
         query_coreml: Option<std::path::PathBuf>,
     ) -> Result<Self, TextError> {
+        #[cfg(target_os = "macos")]
+        let coreml_policy = crate::runtime::coreml::ComputeUnits::CpuAndNeuralEngine;
+        #[cfg(target_os = "macos")]
+        let compute_plan = query_coreml
+            .as_ref()
+            .map(|path| crate::runtime::coreml::CoreMlComputePlan::new(path, coreml_policy));
         let (sender, receiver) = mpsc::sync_channel::<RuntimeCommand>(2);
         let (init_sender, init_receiver) = mpsc::sync_channel(0);
         let closed = Arc::new(AtomicBool::new(false));
@@ -1818,9 +1870,18 @@ impl RuntimeClient {
                             Some(path) => crate::runtime::coreml::CoreMlRuntime::load(
                                 &path,
                                 dims,
-                                crate::runtime::coreml::ComputeUnits::CpuAndNeuralEngine,
+                                coreml_policy,
                             )
-                            .map(|runtime| QueryRuntime::CoreMl(Box::new(runtime)))?,
+                            .and_then(|runtime| {
+                                let max_tokens = bundle.query_tower().embedding.max_tokens;
+                                if runtime.sequence() < max_tokens as usize {
+                                    return Err(RuntimeError::Shape(format!(
+                                        "CoreML query sequence length {} is below bundle query max_tokens {max_tokens}",
+                                        runtime.sequence()
+                                    )));
+                                }
+                                Ok(QueryRuntime::CoreMl(Box::new(runtime)))
+                            })?,
                             #[cfg(not(target_os = "macos"))]
                             Some(_) => {
                                 return Err(RuntimeError::Mlx(
@@ -1858,6 +1919,8 @@ impl RuntimeClient {
         })??;
         Ok(Self {
             query_backend,
+            #[cfg(target_os = "macos")]
+            compute_plan,
             sender,
             thread: Mutex::new(Some(thread)),
             closed,
@@ -1997,6 +2060,41 @@ mod tests {
             runtime: EmbeddingRuntime::Mlx,
             compute_units: ComputeUnits::CpuAndGpu,
             os_build: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn coreml_backend_reports_runtime_requested_policy() {
+        use crate::runtime::coreml::{ComputeUnits as Policy, CoreMlRuntime};
+        let root = tempfile::tempdir().expect("CoreML fixture directory");
+        let source = root.path().join("tiny.mlmodel");
+        std::fs::write(
+            &source,
+            include_bytes!("../tests/fixtures/ze115/tiny.mlmodel"),
+        )
+        .expect("write model");
+        let output = std::process::Command::new("xcrun")
+            .args(["coremlcompiler", "compile"])
+            .arg(&source)
+            .arg(root.path())
+            .output()
+            .expect("compile model");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for (policy, expected) in [
+            (Policy::Cpu, ComputeUnits::Cpu),
+            (Policy::CpuAndGpu, ComputeUnits::CpuAndGpu),
+            (Policy::CpuAndNeuralEngine, ComputeUnits::CpuAndNeuralEngine),
+            (Policy::All, ComputeUnits::All),
+        ] {
+            let runtime = CoreMlRuntime::load(&root.path().join("tiny.mlmodelc"), 2, policy)
+                .expect("load model under requested policy");
+            let runtime = QueryRuntime::CoreMl(Box::new(runtime));
+            assert_eq!(runtime.backend().requested_compute_units, expected);
         }
     }
 

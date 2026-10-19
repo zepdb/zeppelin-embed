@@ -389,9 +389,9 @@ impl Bundle {
 
     /// Tokenizes one query and pads it to exactly `width` tokens.
     ///
-    /// A CoreML program is exported at a fixed sequence length, so it
-    /// needs an exact width rather than the batch-longest padding the
-    /// MLX path uses.
+    /// CoreML's `embed_batch` pads internally to its fixed sequence length,
+    /// so callers can pass `tokenize_query` directly. Use this method when
+    /// an explicitly padded batch is needed.
     pub fn tokenize_query_padded(
         &self,
         text: &str,
