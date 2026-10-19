@@ -164,7 +164,11 @@ int ze_model_download(const char *url, const char *path, const char *token,
             }
             [session finishTasksAndInvalidate];
             int result = delegate->result;
-            if (result == 0 && fsync(delegate->fd) != 0) { result = -1; delegate->failure = @"cannot sync model download"; }
+            if (result == 0) {
+                int synced = fcntl(delegate->fd, F_FULLFSYNC);
+                if (synced != 0 && errno == ENOTSUP) { synced = fsync(delegate->fd); }
+                if (synced != 0) { result = -1; delegate->failure = @"cannot sync model download"; }
+            }
             int fd = delegate->fd;
             delegate->fd = -1;
             if (close(fd) != 0 && result == 0) { result = -1; delegate->failure = @"cannot close model download"; }

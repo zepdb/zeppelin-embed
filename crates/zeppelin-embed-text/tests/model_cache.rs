@@ -213,6 +213,73 @@ fn offline_hit_verifies_cached_bundle() {
 }
 
 #[test]
+fn ctime_change_rejects_corruption_even_when_mtime_is_restored() {
+    use std::os::unix::fs::MetadataExt;
+
+    let bytes = manifest("tiny.zem", SHA_ABC, 3);
+    let model = model(&bytes);
+    let cache = tempfile::tempdir().unwrap();
+    cached(cache.path(), &model, &bytes);
+    let options = ModelOpenOptions {
+        cache_dir: Some(cache.path().into()),
+        offline: true,
+        ..Default::default()
+    };
+    let bundle = resolve_model(&model, &options).unwrap();
+    let before = std::fs::metadata(&bundle).unwrap();
+    // Separate the ctime updates even on filesystems with coarse timestamps.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&bundle)
+        .unwrap();
+    file.write_all(b"x").unwrap();
+    file.set_modified(before.modified().unwrap()).unwrap();
+    let after = file.metadata().unwrap();
+    assert_eq!(before.ino(), after.ino());
+    assert_eq!(before.len(), after.len());
+    assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+    assert_ne!(
+        (before.ctime(), before.ctime_nsec()),
+        (after.ctime(), after.ctime_nsec())
+    );
+    assert!(matches!(
+        resolve_model(&model, &options),
+        Err(ModelError::Verification(_))
+    ));
+}
+
+#[test]
+fn wrong_length_marker_is_replaced_without_reading_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bytes = manifest("tiny.zem", SHA_ABC, 3);
+    let model = model(&bytes);
+    let cache = tempfile::tempdir().unwrap();
+    let entry = cached(cache.path(), &model, &bytes);
+    let options = ModelOpenOptions {
+        cache_dir: Some(cache.path().into()),
+        offline: true,
+        ..Default::default()
+    };
+    resolve_model(&model, &options).unwrap();
+    let marker = entry.join(".zeppelin-verified");
+    let expected = std::fs::read(&marker).unwrap();
+    std::fs::write(&marker, b"x").unwrap();
+    assert_ne!(expected.len(), 1);
+    std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(
+        std::fs::File::open(&marker).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        resolve_model(&model, &options).unwrap(),
+        entry.join("tiny.zem")
+    );
+    assert_eq!(std::fs::read(&marker).unwrap(), expected);
+}
+
+#[test]
 fn rejects_corrupt_incomplete_and_unpinned_cached_files() {
     let bytes = manifest("tiny.zem", SHA_ABC, 3);
     let model = model(&bytes);
@@ -905,7 +972,7 @@ fn stale_marker_temp_is_replaced_when_opening_valid_cache_offline() {
     .unwrap();
     assert_eq!(bundle, entry.join("tiny.zem"));
     let marker = std::fs::read_to_string(entry.join(".zeppelin-verified")).unwrap();
-    assert!(marker.starts_with(&format!("ze-verified-1\n{}\n", model.manifest_sha256)));
+    assert!(marker.starts_with(&format!("ze-verified-2\n{}\n", model.manifest_sha256)));
     assert!(!temporary.exists());
 }
 

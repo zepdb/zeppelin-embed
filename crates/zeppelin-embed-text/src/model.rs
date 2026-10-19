@@ -205,8 +205,16 @@ fn verify_entry(entry: &Path, model: &ModelRef) -> Result<PathBuf, ModelError> {
         return Err(ModelError::Verification("incomplete cache entry".into()));
     }
     let marker = marker_contents(entry, model, &manifest)?;
-    match fs::read(entry.join(VERIFIED)) {
-        Ok(bytes) if bytes == marker.as_bytes() => return Ok(entry.join(manifest.bundle)),
+    let marker_path = entry.join(VERIFIED);
+    match fs::symlink_metadata(&marker_path) {
+        Ok(stat) if stat.is_file() && stat.len() == marker.len() as u64 => {
+            match fs::read(&marker_path) {
+                Ok(bytes) if bytes == marker.as_bytes() => return Ok(entry.join(manifest.bundle)),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
@@ -229,10 +237,10 @@ fn verify_entry(entry: &Path, model: &ModelRef) -> Result<PathBuf, ModelError> {
     }
     match write_marker(entry, &marker) {
         Ok(()) => {}
-        // The marker only speeds up opens; fully verified read-only caches remain usable.
+        // The marker only speeds up opens; verified caches on read-only or full volumes remain usable.
         Err(ModelError::Io(e))
             if e.kind() == std::io::ErrorKind::PermissionDenied
-                || e.raw_os_error() == Some(libc::EROFS) => {}
+                || matches!(e.raw_os_error(), Some(libc::EROFS) | Some(libc::ENOSPC)) => {}
         Err(e) => return Err(e),
     }
     Ok(entry.join(manifest.bundle))
@@ -247,7 +255,7 @@ fn marker_contents(
 ) -> Result<String, ModelError> {
     use std::fmt::Write;
     let mut marker = format!(
-        "ze-verified-1\n{}\n",
+        "ze-verified-2\n{}\n",
         model.manifest_sha256.to_ascii_lowercase()
     );
     for file in &manifest.files {
@@ -260,17 +268,37 @@ fn marker_contents(
             )));
         }
         let mtime_ns = i128::from(stat.mtime()) * 1_000_000_000 + i128::from(stat.mtime_nsec());
+        let ctime_ns = i128::from(stat.ctime()) * 1_000_000_000 + i128::from(stat.ctime_nsec());
         let _ = writeln!(
             marker,
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             file.path,
             stat.len(),
             mtime_ns,
+            ctime_ns,
             stat.ino()
         );
     }
     Ok(marker)
 }
+
+fn full_sync(file: &File) -> std::io::Result<()> {
+    // SAFETY: file owns a live descriptor. F_FULLFSYNC flushes the drive cache.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::ENOTSUP) {
+        return Err(error);
+    }
+    // SAFETY: the descriptor remains live; only unsupported full sync permits fsync.
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 fn write_marker(entry: &Path, marker: &str) -> Result<(), ModelError> {
     let temporary = entry.join(format!("{VERIFIED}.tmp"));
     match fs::remove_file(&temporary) {
@@ -284,9 +312,9 @@ fn write_marker(entry: &Path, marker: &str) -> Result<(), ModelError> {
         .mode(0o600)
         .open(&temporary)?;
     file.write_all(marker.as_bytes())?;
-    file.sync_all()?;
+    full_sync(&file)?;
     fs::rename(temporary, entry.join(VERIFIED))?;
-    File::open(entry)?.sync_all()?;
+    full_sync(&File::open(entry)?)?;
     Ok(())
 }
 fn verify_tree(
@@ -483,7 +511,7 @@ pub fn resolve_model(
                     .as_nanos();
                 let path = parent.join(format!("{revision}.corrupt-{timestamp}"));
                 fs::rename(&entry, &path)?;
-                File::open(&parent)?.sync_all()?;
+                full_sync(&File::open(&parent)?)?;
             }
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -582,7 +610,7 @@ pub fn resolve_model(
     }
     write_marker(&staging.0, &marker_contents(&staging.0, model, &manifest)?)?;
     fs::rename(&staging.0, &entry)?;
-    File::open(&parent)?.sync_all()?;
+    full_sync(&File::open(&parent)?)?;
     remove_quarantines(&parent, &revision)?;
     Ok(entry.join(manifest.bundle))
 }
@@ -601,7 +629,7 @@ fn remove_quarantines(parent: &Path, revision: &str) -> Result<(), ModelError> {
             fs::remove_file(item.path())?;
         }
     }
-    File::open(parent)?.sync_all()?;
+    full_sync(&File::open(parent)?)?;
     Ok(())
 }
 
