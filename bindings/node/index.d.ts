@@ -1257,16 +1257,19 @@ export interface StoreRelationshipOptions {
 export type GraphPlanQueryOptions = GraphControlOptions & { readonly parameters?: Readonly<Record<string, GraphParameter>> };
 
 /** Text embeddings and retrieval. Requires the darwin-arm64 prebuild. */
-export interface TextModelOptions {
-  readonly path: string;
+export interface TextModelRef {
   readonly repo: string;
-  /** Pinned 40-hex commit; no default model is selected. */
+  /** Pinned 40-hex commit. */
   readonly revision: string;
   readonly manifestSha256: string;
+}
+/** Supply all three pins, or omit all three to use TextStore.defaultModel. */
+export type TextModelOptions = {
+  readonly path: string;
   readonly cacheDir?: string;
   readonly offline?: boolean;
   readonly onProgress?: (progress: {readonly done: bigint; readonly total: bigint}) => void;
-}
+} & (TextModelRef | {readonly repo?: never; readonly revision?: never; readonly manifestSha256?: never});
 export interface TextIngestOptions {
   readonly signal?: never;
   readonly embedBatchSize?: number;
@@ -1349,6 +1352,7 @@ export interface ObservedComputeUnits {
   readonly otherOps: bigint;
 }
 export declare class TextStore {
+  static readonly defaultModel: TextModelRef;
   private constructor();
   static open(path: string, bundlePath: string): TextStore;
   static openAsync(path: string, bundlePath: string): Promise<TextStore>;

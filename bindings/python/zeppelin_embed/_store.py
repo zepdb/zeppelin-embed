@@ -2111,16 +2111,19 @@ def open_text(
     return Store(int(handle.value), text=True)
 
 
-# Reserved for ZE-500: open_model requires explicit pins until an owner-selected ModelRef exists.
-DEFAULT_MODEL_REF: None = None
+DEFAULT_MODEL_REF: dict[str, str] = {
+    "repo": "aghatage/zeppelin-embed-clean71-arctic-m-v2",
+    "revision": "d64b817c4021a3f1b9bded3152d9afdf9ac813e7",
+    "manifest_sha256": "123c6308e00f769c68498f9df60dfb9efc688f58c4ff2c4da266f978fcb215dc",
+}
 
 
 def open_model(
     path: str | Path,
     *,
-    repo: str,
-    revision: str,
-    manifest_sha256: str,
+    repo: str | None = None,
+    revision: str | None = None,
+    manifest_sha256: str | None = None,
     cache_dir: str | Path | None = None,
     offline: bool = False,
     progress: Callable[[int, int], None] | None = None,
@@ -2133,10 +2136,18 @@ def open_model(
 ) -> Store:
     """Download/verify a pinned HF model, then open its text store.
 
+    Omit all three pins to use DEFAULT_MODEL_REF; partial pins are invalid.
     Progress runs synchronously at file boundaries; it must not reenter model resolution.
     Callback exceptions are propagated after native resolution returns.
     """
     _require_text()
+    pins = (repo, revision, manifest_sha256)
+    if all(value is None for value in pins):
+        repo = DEFAULT_MODEL_REF["repo"]
+        revision = DEFAULT_MODEL_REF["revision"]
+        manifest_sha256 = DEFAULT_MODEL_REF["manifest_sha256"]
+    elif any(value is None for value in pins):
+        raise ValueError("provide all three of repo, revision and manifest_sha256, or none")
     request, path_owner = _open_request(
         path,
         access_mode,

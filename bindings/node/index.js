@@ -794,6 +794,12 @@ function requireText() {
   }
 }
 
+const DEFAULT_MODEL = Object.freeze({
+  repo: 'aghatage/zeppelin-embed-clean71-arctic-m-v2',
+  revision: 'd64b817c4021a3f1b9bded3152d9afdf9ac813e7',
+  manifestSha256: '123c6308e00f769c68498f9df60dfb9efc688f58c4ff2c4da266f978fcb215dc',
+});
+
 class TextStore {
   constructor(native) { this._native = native; }
   static open(path, bundlePath) {
@@ -805,8 +811,12 @@ class TextStore {
     try { return new TextStore(await binding.textOpenAsync({path, bundlePath})); }
     catch (error) { throw translateError(error); }
   }
+  static get defaultModel() { return DEFAULT_MODEL; }
   static async openModel(options) {
     requireText();
+    const pins = ['repo', 'revision', 'manifestSha256'].map(key => options[key]);
+    if (pins.every(value => value === undefined)) options = {...options, ...DEFAULT_MODEL};
+    else if (pins.some(value => value === undefined)) throw new TypeError('provide all three of repo, revision and manifestSha256, or none');
     if (options.onProgress !== undefined && typeof options.onProgress !== 'function') throw new TypeError('onProgress must be a function');
     try { return new TextStore(await binding.textOpenModel(options)); }
     catch (error) { throw translateError(error); }

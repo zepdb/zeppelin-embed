@@ -10,16 +10,16 @@ PYTHON=/Users/aghatage/Documents/code/zeppelin-embed-models/.venv/bin/python
 PACK=/Users/aghatage/Documents/code/zeppelin-embed-models/zeppelin-embed-clean71-v1-arctic-m-v2
 STEM=zeppelin-embed-clean71-v1-arctic-m-v2
 RELEASE=/Users/aghatage/Documents/code/zeppelin-embed-models/release
-for precision in fp32 fp16; do
-  "$PYTHON" tools/ze-model/ze-model release --pack "$PACK" \
-    --out "$RELEASE/$STEM-$precision" --name "$STEM" \
-    --document-precision "$precision" --query-coreml-precision fp16
-done
+"$PYTHON" tools/ze-model/ze-model release --pack "$PACK" \
+  --out "$RELEASE/$STEM-fp16-coreml-int8" --name "$STEM" \
+  --document-precision fp16 --query-coreml-precision int8
 ```
 
 Each output directory must be absent or empty. It contains only `<name>.zem`,
 `<name>.mlmodelc/`, `zeppelin-model.json`, `SHA256SUMS`, and a small `README.md`
-stub for ZE-500. Upload that directory's contents. The manifest lists the bundle
+stub that is replaced by the published model card before upload. The published
+repo is `aghatage/zeppelin-embed-clean71-arctic-m-v2` at revision
+`d64b817c4021a3f1b9bded3152d9afdf9ac813e7`. The manifest lists the bundle
 and every compiled model file individually, sorted by relative path. The model
 card is excluded from the manifest. SHA256SUMS covers all shipped files except
 itself, including the manifest and model card. Both manifests hash actual disk

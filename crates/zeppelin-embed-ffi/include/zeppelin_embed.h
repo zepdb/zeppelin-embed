@@ -3608,6 +3608,44 @@ typedef struct ZeSchemaColumnResult {
 } ZeSchemaColumnResult;
 
 /*
+ Borrowed immutable model identity. Strings are UTF-8 without NUL terminators.
+ */
+typedef struct ZeTextModelRef {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Static repository bytes; do not modify or free.
+     */
+    const uint8_t *repo;
+    /*
+     Number of repository bytes.
+     */
+    size_t repo_len;
+    /*
+     Static immutable commit bytes; do not modify or free.
+     */
+    const uint8_t *revision;
+    /*
+     Number of revision bytes.
+     */
+    size_t revision_len;
+    /*
+     Static manifest SHA-256 bytes; do not modify or free.
+     */
+    const uint8_t *manifest_sha256;
+    /*
+     Number of manifest checksum bytes.
+     */
+    size_t manifest_sha256_len;
+} ZeTextModelRef;
+
+/*
  Store verification request.
  */
 typedef struct ZeVerifyRequest {
@@ -4365,6 +4403,13 @@ ze_error_code ze_schema_column(ze_handle handle,
                                uint8_t *name,
                                size_t name_capacity,
                                struct ZeSchemaColumnResult *out_result);
+
+/*
+ Returns the built-in default model reference without network or model loading.
+ All returned strings have static lifetime, are UTF-8 without NUL terminators,
+ and must not be modified or freed. No matching free call is needed.
+ */
+ze_error_code ze_text_default_model(struct ZeTextModelRef *out);
 
 /*
  Walks the store directory at `request.path` and reports every damaged

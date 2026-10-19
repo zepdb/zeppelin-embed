@@ -35,7 +35,10 @@ pub use ingest::{
     ChunkPolicy, IngestControl, IngestOptions, TextDocument, TextFaultSite, TextIngestReport,
     TextOpenOptions, TextStore,
 };
-pub use model::{ModelError, ModelOpenOptions, ModelRef, resolve_model};
+pub use model::{
+    DEFAULT_MODEL_MANIFEST_SHA256, DEFAULT_MODEL_REPO, DEFAULT_MODEL_REVISION, ModelError,
+    ModelOpenOptions, ModelRef, resolve_model,
+};
 pub use query::{
     Legs, ObservedComputeUnits, QueryBackend, QueryOptions, TextHit, TextQueryOutcome,
     TextQueryTimings,

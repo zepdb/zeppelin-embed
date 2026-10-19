@@ -24,6 +24,18 @@ bool TextString(napi_env env, napi_value object, const char *name,
                 "text string") &&
          SetNamed(env, object, name, result);
 }
+napi_value TextDefaultModel(napi_env env, napi_callback_info) {
+  ZeTextModelRef model{};
+  model.abi_size = sizeof(model);
+  const ze_error_code status = ze_text_default_model(&model);
+  if (status != ZE_OK) return ThrowWorkerError(env, status, LastError(0));
+  napi_value result;
+  if (!NapiOk(env, napi_create_object(env, &result), "default model") ||
+      !TextString(env, result, "repo", model.repo, model.repo_len) ||
+      !TextString(env, result, "revision", model.revision, model.revision_len) ||
+      !TextString(env, result, "manifestSha256", model.manifest_sha256, model.manifest_sha256_len)) return nullptr;
+  return result;
+}
 bool TextCount(napi_env env, napi_value object, const char *name,
                size_t fallback, size_t *out) {
   napi_value value;

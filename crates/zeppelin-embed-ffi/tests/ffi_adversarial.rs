@@ -395,6 +395,11 @@ const ABI_REGISTRY: &[AbiEntry] = &[
     },
     #[cfg(feature = "text")]
     AbiEntry {
+        name: "ze_text_default_model",
+        coverage: AbiCoverage::InvalidProbe(probe_text_default_model),
+    },
+    #[cfg(feature = "text")]
+    AbiEntry {
         name: "ze_text_open_model",
         coverage: AbiCoverage::InvalidProbe(probe_text_open_model),
     },
@@ -1756,4 +1761,39 @@ fn probe_warm_lexical(context: &MatrixContext) -> ProbeResult {
 
 fn probe_graph_resources(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_store_graph_resources(0, std::ptr::null_mut()))
+}
+
+#[cfg(feature = "text")]
+#[test]
+fn text_default_model_rejects_invalid_outputs() {
+    assert_eq!(
+        ze_text_default_model(std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    let mut out: ZeTextModelRef = common::sized_zeroed();
+    for abi_size in [0, size_of::<ZeTextModelRef>() as u32 - 1, u32::MAX] {
+        out.abi_size = abi_size;
+        assert_eq!(
+            ze_text_default_model(&mut out),
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+    }
+    out.abi_size = size_of::<ZeTextModelRef>() as u32;
+    out.abi_reserved = 1;
+    assert_eq!(
+        ze_text_default_model(&mut out),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    out.abi_reserved = 0;
+    let misaligned = unsafe { (&mut out as *mut ZeTextModelRef).cast::<u8>().add(1).cast() };
+    assert_eq!(
+        ze_text_default_model(misaligned),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+}
+
+#[cfg(feature = "text")]
+fn probe_text_default_model(_: &MatrixContext) -> ProbeResult {
+    text_default_model_rejects_invalid_outputs();
+    ProbeResult::Status(ze_text_default_model(std::ptr::null_mut()))
 }

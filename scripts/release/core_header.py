@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 TEXT_FUNCTIONS = {
+    "ze_text_default_model",
     "ze_text_ingest",
     "ze_text_maintain",
     "ze_text_open",
@@ -22,6 +23,7 @@ TEXT_FUNCTIONS = {
     "ze_text_observed_compute_units",
 }
 TEXT_TYPES = {
+    "ZeTextModelRef",
     "ZeTextDocument",
     "ZeTextIngestRequest",
     "ZeTextOpenRequest",

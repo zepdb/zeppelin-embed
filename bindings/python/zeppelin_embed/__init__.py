@@ -5,6 +5,7 @@ from ._errors import *  # noqa: F403
 from ._ffi import ABI_VERSION, TEXT_AVAILABLE
 from ._library import LIBRARY_PATH
 from ._store import (
+    DEFAULT_MODEL_REF,
     CancelToken,
     Store,
     epoch_identity,
@@ -71,6 +72,7 @@ __all__ = [  # noqa: PLE0604
     "ABI_VERSION",
     "TEXT_AVAILABLE",
     "open_model",
+    "DEFAULT_MODEL_REF",
     "TextHealthReport",
     "TextHealthStatus",
     "TextIngestReport",

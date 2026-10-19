@@ -54,7 +54,10 @@ with ze.open_text("text-store", "model.zem") as store:
 To download and verify a model from Hugging Face, call
 `ze.open_model("text-store", repo=repo, revision=commit_sha,
 manifest_sha256=manifest_sha256, cache_dir=None, offline=False, progress=None)`.
-All three pins are required; there is no default model until ZE-500.
+Omit all three pins (`ze.open_model("text-store")`) to use
+`ze.DEFAULT_MODEL_REF`: `aghatage/zeppelin-embed-clean71-arctic-m-v2` at
+`d64b817c4021a3f1b9bded3152d9afdf9ac813e7`. Explicit pins must be supplied together;
+a partial set is an error.
 The native resolver honors `ZE_MODEL_CACHE`, `ZE_MODEL_OFFLINE`, and
 `ZE_MODEL_ENDPOINT`. `progress(done, total)` runs synchronously at file boundaries
 and must not reenter model resolution; callback exceptions propagate after resolution.
@@ -90,8 +93,9 @@ ZEPPELIN_EMBED_LIBRARY="$PWD/target/debug/libzeppelin_embed_ffi.dylib" \
 
 The text tests use the committed synthetic bundle
 `crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem` and a local HTTP server
-for model download, verified cache reuse, and offline behavior. No real HF
-ModelRef is selected yet; cached real-model CI coverage follows in ZE-500.
+for model download, verified cache reuse, and offline behavior. The built-in default is pinned to the published Hugging Face model. The ignored
+Rust test `real_default_model_downloads_and_answers_queries` verifies a real
+download and dense, lexical and hybrid retrieval outside the sandbox.
 
 Build and verify the installed wheel in a fresh venv and temporary directory:
 

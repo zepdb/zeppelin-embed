@@ -7,6 +7,7 @@ import ctypes as ct
 from zeppelin_embed import _structures as s
 
 LAYOUTS: dict[str, tuple[int, int, dict[str, int]]] = {
+    "ZeTextModelRef": (56, 8, {"abi_size": 0, "abi_reserved": 4, "repo": 8, "repo_len": 16, "revision": 24, "revision_len": 32, "manifest_sha256": 40, "manifest_sha256_len": 48}),
     "ZeTextObservedComputeUnits": (48, 8, {"abi_size": 0, "abi_reserved": 4, "cpu_ops": 8, "gpu_ops": 16, "neural_engine_ops": 24, "other_ops": 32, "has_observed_compute_units": 40, "reserved": 44}),
     "ZeOpenRequest": (64, 8, {"abi_size": 0, "abi_reserved": 4, "path": 8, "path_len": 16, "access_mode": 24, "durability_mode": 28, "commit_tier": 32, "reader_drain_timeout_ms": 40, "max_resident_bytes": 48, "max_temp_bytes": 56}),
     "ZeStateReport": (16, 4, {"abi_size": 0, "abi_reserved": 4, "state": 8, "reserved": 12}),

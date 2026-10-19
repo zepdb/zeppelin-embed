@@ -2,6 +2,14 @@
 
 use std::path::PathBuf;
 
+/// Published default model repository.
+pub const DEFAULT_MODEL_REPO: &str = "aghatage/zeppelin-embed-clean71-arctic-m-v2";
+/// Immutable commit of the published default model.
+pub const DEFAULT_MODEL_REVISION: &str = "d64b817c4021a3f1b9bded3152d9afdf9ac813e7";
+/// SHA-256 of the default model's exact manifest bytes.
+pub const DEFAULT_MODEL_MANIFEST_SHA256: &str =
+    "123c6308e00f769c68498f9df60dfb9efc688f58c4ff2c4da266f978fcb215dc";
+
 /// Immutable model identity. No moving branch names or tags are accepted.
 #[derive(Clone, Debug)]
 pub struct ModelRef {
@@ -11,6 +19,18 @@ pub struct ModelRef {
     pub revision: String,
     /// SHA-256 of the exact `zeppelin-model.json` bytes, as 64 hex characters.
     pub manifest_sha256: String,
+}
+
+impl ModelRef {
+    /// The published, immutable default model pair.
+    #[must_use]
+    pub fn default_model() -> Self {
+        Self {
+            repo: DEFAULT_MODEL_REPO.to_owned(),
+            revision: DEFAULT_MODEL_REVISION.to_owned(),
+            manifest_sha256: DEFAULT_MODEL_MANIFEST_SHA256.to_owned(),
+        }
+    }
 }
 
 /// Download/cache policy plus the existing text-store open policy.

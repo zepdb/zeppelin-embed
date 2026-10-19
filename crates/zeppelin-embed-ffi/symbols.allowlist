@@ -89,3 +89,4 @@ ze_text_ingest_v2
 ze_text_query_v2
 ze_text_query_outcome_free
 ze_text_observed_compute_units
+ze_text_default_model

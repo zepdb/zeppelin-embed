@@ -27,7 +27,9 @@
   atomically installed verified cache. No new crate or deny-policy exception.
   JSON beyond this manifest, safetensors, and training remain in `tools/ze-model`.
   Model refs require a repo, immutable commit SHA, and manifest SHA-256;
-  ZE-500 will supply the built-in default after publication.
+  the built-in default is `aghatage/zeppelin-embed-clean71-arctic-m-v2` at
+  `d64b817c4021a3f1b9bded3152d9afdf9ac813e7`, with manifest SHA-256
+  `123c6308e00f769c68498f9df60dfb9efc688f58c4ff2c4da266f978fcb215dc`.
   Cache option wins over `ZE_MODEL_CACHE`, then defaults to
   `~/Library/Caches/zeppelin-embed/models/<repo with %2F separator>/<revision>`.
   Offline option or `ZE_MODEL_OFFLINE=1` forbids network; endpoint option wins

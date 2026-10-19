@@ -6397,3 +6397,37 @@ fn copy_schema_name(source: &str, destination: *mut u8) {
         std::ptr::copy_nonoverlapping(source.as_ptr(), destination, source.len());
     }
 }
+
+/// Returns the built-in default model reference without network or model loading.
+/// All returned strings have static lifetime, are UTF-8 without NUL terminators,
+/// and must not be modified or freed. No matching free call is needed.
+#[cfg(feature = "text")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_text_default_model(out: *mut ZeTextModelRef) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_text_default_model");
+        finish(
+            None,
+            (|| {
+                let abi_size = marshal::validate_output(out)?;
+                use zeppelin_embed_text::{
+                    DEFAULT_MODEL_MANIFEST_SHA256, DEFAULT_MODEL_REPO, DEFAULT_MODEL_REVISION,
+                };
+                marshal::write_output(
+                    out,
+                    ZeTextModelRef {
+                        abi_size,
+                        abi_reserved: 0,
+                        repo: DEFAULT_MODEL_REPO.as_ptr(),
+                        repo_len: DEFAULT_MODEL_REPO.len(),
+                        revision: DEFAULT_MODEL_REVISION.as_ptr(),
+                        revision_len: DEFAULT_MODEL_REVISION.len(),
+                        manifest_sha256: DEFAULT_MODEL_MANIFEST_SHA256.as_ptr(),
+                        manifest_sha256_len: DEFAULT_MODEL_MANIFEST_SHA256.len(),
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}

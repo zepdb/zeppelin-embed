@@ -5000,6 +5000,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"textOpen", TextOpen<false>},
       {"textOpenAsync", TextOpen<true>},
       {"textOpenModel", TextOpen<true, true>},
+      {"textDefaultModel", TextDefaultModel},
 #endif
       {"createCancelToken", CreateCancelToken},
       {"cancelToken", CancelToken},

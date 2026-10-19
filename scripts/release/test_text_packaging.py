@@ -1,6 +1,7 @@
 """Release boundary checks: preserve the full text ABI only in arm64 full artifacts."""
 import importlib.util
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -21,7 +22,7 @@ class TextPackaging(unittest.TestCase):
             destination = Path(tmp)
             load('core_header').write_artifact_headers(source, destination, 'graph-cypher')
             self.assertEqual((destination / 'zeppelin_embed.h').read_bytes(), source.read_bytes())
-            for symbol in ('ze_text_open_model', 'ze_text_ingest_v2', 'ze_text_query_v2', 'ze_text_query_outcome_free'):
+            for symbol in ('ze_text_default_model', 'ZeTextModelRef', 'ze_text_open_model', 'ze_text_ingest_v2', 'ze_text_query_v2', 'ze_text_query_outcome_free'):
                 self.assertIn(symbol, (destination / 'zeppelin_embed.h').read_text())
 
     def test_legacy_header_has_no_text_declarations(self):
@@ -35,9 +36,11 @@ class TextPackaging(unittest.TestCase):
             self.assertIn('ze_open(', contents)
 
     def test_full_exports_include_complete_text_abi(self):
-        headers = load('core_header')
         checker = load('check-graph-artifact')
-        self.assertTrue(headers.TEXT_FUNCTIONS <= checker.expected_symbols('graph-cypher'))
+        source = ROOT / 'crates/zeppelin-embed-ffi/include/zeppelin_embed.h'
+        declared = set(re.findall(r'\b(ze_text_\w+)\s*\(', source.read_text()))
+        expected = {s for s in checker.expected_symbols('graph-cypher') if s.startswith('ze_text_')}
+        self.assertEqual(declared, expected)
         self.assertFalse(any(s.startswith('ze_text_') for s in checker.expected_symbols('legacy')))
 
 

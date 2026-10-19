@@ -1,4 +1,5 @@
 #if ZE_TEXT
+import CZeppelinEmbed
 import Foundation
 import CryptoKit
 import XCTest
@@ -20,6 +21,15 @@ final class TextStoreTests: XCTestCase {
     }
     override func tearDownWithError() throws {
         try FileManager.default.removeItem(at: root)
+    }
+
+    func testDefaultModelMatchesRustConstant() throws {
+        var model = ZeTextModelRef()
+        model.abi_size = UInt32(MemoryLayout<ZeTextModelRef>.size)
+        try checkZeppelin(ze_text_default_model(&model))
+        XCTAssertEqual(TextModel.default.repo, String(decoding: UnsafeBufferPointer(start: model.repo, count: model.repo_len), as: UTF8.self))
+        XCTAssertEqual(TextModel.default.revision, String(decoding: UnsafeBufferPointer(start: model.revision, count: model.revision_len), as: UTF8.self))
+        XCTAssertEqual(TextModel.default.manifestSHA256, String(decoding: UnsafeBufferPointer(start: model.manifest_sha256, count: model.manifest_sha256_len), as: UTF8.self))
     }
 
     func testTextOpenHealthAndClose() async throws {

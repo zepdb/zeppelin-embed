@@ -48,7 +48,7 @@ public actor TextStore {
     /// Resolves a pinned model on a detached task, like ZeppelinStore. Progress
     /// runs synchronously on that task's thread; dispatch UI updates to the main actor.
     public static func open(
-        at path: URL, model: TextModel, cacheDirectory: URL? = nil, offline: Bool = false,
+        at path: URL, model: TextModel = .default, cacheDirectory: URL? = nil, offline: Bool = false,
         options: OpenOptions = OpenOptions(),
         progress: (@Sendable (TextDownloadProgress) -> Void)? = nil
     ) async throws -> TextStore {

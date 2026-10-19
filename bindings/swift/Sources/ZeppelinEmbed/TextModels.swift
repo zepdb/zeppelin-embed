@@ -51,6 +51,11 @@ public struct TextQueryResult: Sendable {
 }
 /// Immutable model reference: repository, 40-hex revision, and 64-hex manifest pin.
 public struct TextModel: Sendable {
+    /// Published immutable default model pair.
+    public static let `default` = TextModel(
+        repo: "aghatage/zeppelin-embed-clean71-arctic-m-v2",
+        revision: "d64b817c4021a3f1b9bded3152d9afdf9ac813e7",
+        manifestSHA256: "123c6308e00f769c68498f9df60dfb9efc688f58c4ff2c4da266f978fcb215dc")
     public let repo: String
     public let revision: String
     public let manifestSHA256: String

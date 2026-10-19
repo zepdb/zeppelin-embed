@@ -690,6 +690,8 @@ Explicitly call `store.observedComputeUnits()` or `await store.observedComputeUn
 To download and cache a model, use the asynchronous `TextStore.openModel` with
 `{path, repo, revision, manifestSha256, cacheDir?, offline?, onProgress?}`.
 `revision` must be a pinned 40-hex commit and `manifestSha256` the manifest's
-64-hex SHA-256. There is no default model. `onProgress({done, total})` receives
+64-hex SHA-256. Omit all three pins (`TextStore.openModel({path})`) to use
+`TextStore.defaultModel`: `aghatage/zeppelin-embed-clean71-arctic-m-v2` at
+`d64b817c4021a3f1b9bded3152d9afdf9ac813e7`. A partial set of pins is an error. `onProgress({done, total})` receives
 bigint byte counts on the JS thread; `(0n, 0n)` means fetching the manifest.
 `offline: true` requires a verified cache hit and never downloads.

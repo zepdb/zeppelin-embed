@@ -91,6 +91,7 @@ _bind("ze_cancel_token_free", [CancelHandle])
 
 TEXT_AVAILABLE = hasattr(LIBRARY, "ze_text_open")
 if TEXT_AVAILABLE:
+    _bind("ze_text_default_model", [ct.POINTER(s.ZeTextModelRef)])
     _bind("ze_text_open", [ct.POINTER(s.ZeTextOpenRequest), ct.POINTER(Handle)])
     _bind(
         "ze_text_ingest",

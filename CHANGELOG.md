@@ -8,6 +8,8 @@ release and a compatible correction is a patch release.
 
 ### Added
 
+- Pinned the published default text model across Rust, C, Python, Node and Swift, with verified cached downloads.
+
 - Node `TextStore` (macOS arm64 only): `open` / `openAsync` on a model
   bundle, async `openModel` with a pinned download, cache, offline mode and
   progress events, `ingest`, dense, lexical and hybrid `query` with an

@@ -264,6 +264,14 @@ pub struct TextStore {
 }
 
 impl TextStore {
+    /// Opens the published default model through the verified model cache.
+    pub fn open_default_model(
+        store_path: impl AsRef<Path>,
+        options: crate::ModelOpenOptions<'_>,
+    ) -> Result<Self, TextError> {
+        Self::open_model(store_path, &crate::ModelRef::default_model(), options)
+    }
+
     /// Resolves a pinned model into the verified cache, then opens the text store.
     pub fn open_model(
         store_path: impl AsRef<Path>,

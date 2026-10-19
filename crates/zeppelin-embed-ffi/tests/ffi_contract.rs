@@ -1753,6 +1753,7 @@ fn text_v2_entry_points_validate_requests_before_use() {
 
 #[test]
 fn every_text_struct_has_the_frozen_size_and_field_offsets() {
+    assert_layout!(ZeTextModelRef, 56, 8, { abi_size: 0, abi_reserved: 4, repo: 8, repo_len: 16, revision: 24, revision_len: 32, manifest_sha256: 40, manifest_sha256_len: 48 });
     assert_layout!(ZeTextOpenRequest, 88, 8, { abi_size: 0, abi_reserved: 4, store: 8, bundle_path: 72, bundle_path_len: 80 });
     assert_layout!(ZeTextDocument, 48, 8, { abi_size: 0, abi_reserved: 4, doc_id: 8, revision: 24, text: 32, text_len: 40 });
     assert_layout!(ZeTextIngestRequest, 48, 8, { abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16, embed_batch_size: 24, seal_every: 32, channel_capacity: 40 });
@@ -2060,4 +2061,34 @@ fn text_v2_roundtrip_reports_controls_and_bounded_maintenance() {
     );
     assert_eq!(ze_text_query_outcome_free(&mut outcome), ZeErrorCode::ZeOk);
     assert_eq!(ze_cancel_token_free(token), ZeErrorCode::ZeOk);
+}
+
+#[cfg(feature = "text")]
+#[test]
+fn text_default_model_matches_rust_constants() {
+    let mut model: ZeTextModelRef = unsafe { std::mem::zeroed() };
+    model.abi_size = std::mem::size_of::<ZeTextModelRef>() as u32;
+    assert_eq!(ze_text_default_model(&mut model), ZeErrorCode::ZeOk);
+    for (pointer, length, expected) in [
+        (
+            model.repo,
+            model.repo_len,
+            zeppelin_embed_text::DEFAULT_MODEL_REPO,
+        ),
+        (
+            model.revision,
+            model.revision_len,
+            zeppelin_embed_text::DEFAULT_MODEL_REVISION,
+        ),
+        (
+            model.manifest_sha256,
+            model.manifest_sha256_len,
+            zeppelin_embed_text::DEFAULT_MODEL_MANIFEST_SHA256,
+        ),
+    ] {
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(pointer, length) },
+            expected.as_bytes()
+        );
+    }
 }

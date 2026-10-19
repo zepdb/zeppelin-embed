@@ -193,3 +193,17 @@ test('openModel offline miss is a typed not-found error without loading MLX', {s
     error => error.name === 'ZeppelinError' && error.code === 'ZE_ERR_NOT_FOUND' && /offline/i.test(error.message));
   } finally { rmSync(root, {recursive: true, force: true}); }
 });
+
+
+test('default model matches Rust constant and requires complete pins', {skip: !supported}, async () => {
+  const native = createRequire(import.meta.url)('../prebuilds/darwin-arm64/zeppelin_embed.node');
+  assert.deepEqual(TextStore.defaultModel, native.textDefaultModel());
+  for (const [key, value] of Object.entries(TextStore.defaultModel)) {
+    await assert.rejects(TextStore.openModel({path: '/unused', [key]: value, offline: true}), /all three/);
+  }
+  const root = mkdtempSync(join(tmpdir(), 'ze500-'));
+  try {
+    await assert.rejects(TextStore.openModel({path: join(root, 'store'), cacheDir: join(root, 'cache'), offline: true}),
+      error => error.code === 'ZE_ERR_NOT_FOUND');
+  } finally { rmSync(root, {recursive: true, force: true}); }
+});

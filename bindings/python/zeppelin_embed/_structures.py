@@ -879,3 +879,12 @@ class ZeTextObservedComputeUnits(ct.Structure):
         ("has_observed_compute_units", ct.c_uint32),
         ("reserved", ct.c_uint32),
     ]
+
+
+class ZeTextModelRef(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32), ("abi_reserved", ct.c_uint32),
+        ("repo", ct.POINTER(ct.c_uint8)), ("repo_len", ct.c_size_t),
+        ("revision", ct.POINTER(ct.c_uint8)), ("revision_len", ct.c_size_t),
+        ("manifest_sha256", ct.POINTER(ct.c_uint8)), ("manifest_sha256_len", ct.c_size_t),
+    ]

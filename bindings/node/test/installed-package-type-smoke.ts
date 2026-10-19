@@ -88,3 +88,9 @@ void textExample;
 void TextStore.openModel({path: '/tmp/text-model', repo: 'owner/model', revision: '0'.repeat(40),
   manifestSha256: '0'.repeat(64), cacheDir: '/tmp/cache', offline: true,
   onProgress: ({done, total}) => { const progress: bigint = done + total; void progress; }});
+
+void TextStore.openModel({path: '/tmp/default-text-model'});
+const defaultModelRepo: string = TextStore.defaultModel.repo;
+void defaultModelRepo;
+// @ts-expect-error Pins must be supplied together.
+void TextStore.openModel({path: '/tmp/partial-text-model', repo: 'owner/model'});

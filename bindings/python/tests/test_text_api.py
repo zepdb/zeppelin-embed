@@ -164,3 +164,22 @@ def test_open_model_offline_miss(tmp_path: Path) -> None:
             cache_dir=tmp_path / "cache",
             offline=True,
         )
+
+
+def test_default_model_matches_rust_constant_and_requires_complete_pins(tmp_path: Path) -> None:
+    import ctypes as ct
+    from zeppelin_embed._library import LIBRARY
+    from zeppelin_embed._structures import ZeTextModelRef
+
+    model = ZeTextModelRef(abi_size=ct.sizeof(ZeTextModelRef))
+    assert LIBRARY.ze_text_default_model(ct.byref(model)) == 0
+    assert ze.DEFAULT_MODEL_REF == {
+        field: ct.string_at(getattr(model, field), getattr(model, field + "_len")).decode()
+        for field in ("repo", "revision", "manifest_sha256")
+    }
+    for field, value in ze.DEFAULT_MODEL_REF.items():
+        with pytest.raises(ValueError, match="all three"):
+            ze.open_model(tmp_path / "partial", **{field: value}, offline=True)
+    with pytest.raises(ze.ZeppelinError) as failure:
+        ze.open_model(tmp_path / "store", cache_dir=tmp_path / "cache", offline=True)
+    assert failure.value.code == ze.ErrorCode.ERR_NOT_FOUND

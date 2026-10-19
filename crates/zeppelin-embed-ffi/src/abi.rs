@@ -2071,3 +2071,25 @@ pub struct ZeTextObservedComputeUnits {
     /// Must be zero; explicit trailing alignment.
     pub reserved: u32,
 }
+
+/// Borrowed immutable model identity. Strings are UTF-8 without NUL terminators.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeTextModelRef {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Static repository bytes; do not modify or free.
+    pub repo: *const u8,
+    /// Number of repository bytes.
+    pub repo_len: usize,
+    /// Static immutable commit bytes; do not modify or free.
+    pub revision: *const u8,
+    /// Number of revision bytes.
+    pub revision_len: usize,
+    /// Static manifest SHA-256 bytes; do not modify or free.
+    pub manifest_sha256: *const u8,
+    /// Number of manifest checksum bytes.
+    pub manifest_sha256_len: usize,
+}

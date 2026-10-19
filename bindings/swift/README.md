@@ -83,7 +83,9 @@ try await store.close()
 
 To download a pinned model, use
 `TextStore.open(at:model:cacheDirectory:offline:options:progress:)` with a
-`TextModel(repo:revision:manifestSHA256:)`. The revision is a 40-hex commit and
+`TextModel(repo:revision:manifestSHA256:)`. Omit `model` to use `TextModel.default`:
+`aghatage/zeppelin-embed-clean71-arctic-m-v2` at
+`d64b817c4021a3f1b9bded3152d9afdf9ac813e7`. The revision is a 40-hex commit and
 the manifest pin is a 64-hex SHA-256. The call runs on a detached task, like
 `ZeppelinStore`. The optional `@Sendable` progress closure receives
 `completedBytes` and `totalBytes` on that task's thread; total is zero while

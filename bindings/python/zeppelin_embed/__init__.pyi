@@ -60,3 +60,5 @@ from ._types import TextLegs as TextLegs
 from ._types import TextQueryResult as TextQueryResult
 from ._types import Tier as Tier
 from ._types import VectorSpace as VectorSpace
+
+from ._store import DEFAULT_MODEL_REF as DEFAULT_MODEL_REF
