@@ -63,12 +63,10 @@ const MACOS_SLICES = [
 if (isDarwin) {
   const nodePrefix = resolve(dirname(process.execPath), '..');
   const nodeHeaders = join(nodePrefix, 'include', 'node');
-  const environment = {
-    ...process.env,
-    MACOSX_DEPLOYMENT_TARGET: process.env.MACOSX_DEPLOYMENT_TARGET || '11.0',
-  };
-
   for (const slice of MACOS_SLICES) {
+    // MLX's Metal kernels need Metal 3.0, the macOS 13.5 floor MLX publishes.
+    const environment = {...process.env, MACOSX_DEPLOYMENT_TARGET:
+      process.env.MACOSX_DEPLOYMENT_TARGET || (slice.clangArch === 'arm64' ? '13.5' : '11.0')};
     const staticLibrary = join(
       targetDirectory,
       slice.rustTarget,
@@ -80,12 +78,21 @@ if (isDarwin) {
     // `--target` is passed even for the host, so both slices land under
     // `target/<triple>/release` and neither can pick up the other's artifacts
     // from the bare `target/release` directory.
-    run(
-      'cargo',
+    const built = spawnSync('cargo',
       ['build', '--locked', '--release', '--target', slice.rustTarget, '-p', 'zeppelin-embed-ffi',
-        '--features', 'graph-cypher'],
-      { cwd: repository, env: environment },
-    );
+        '--features', slice.clangArch === 'arm64' ? 'graph-cypher,text' : 'graph-cypher',
+        '--message-format=json-render-diagnostics'],
+      {cwd: repository, env: environment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 64 * 1024 * 1024});
+    if (built.error) throw built.error;
+    if (built.status !== 0) throw new Error(`cargo build exited with status ${built.status}`);
+    if (slice.clangArch === 'arm64') {
+      // Cargo reports the exact mlx-sys build output even on a cached build.
+      const mlx = built.stdout.trim().split('\n').map(line => JSON.parse(line))
+        .filter(event => event.reason === 'build-script-executed' && event.package_id.includes('mlx-sys@'));
+      if (mlx.length !== 1) throw new Error(`expected one mlx-sys build output, got ${mlx.length}`);
+      mkdirSync(dirname(output), {recursive: true});
+      copyFileSync(join(mlx[0].out_dir, 'build', 'lib', 'mlx.metallib'), join(dirname(output), 'mlx.metallib'));
+    }
     const archive = distributionArchive(staticLibrary, slice.rustTarget);
     mkdirSync(dirname(output), { recursive: true });
     run(
@@ -102,6 +109,7 @@ if (isDarwin) {
         slice.clangArch,
         '-DNAPI_VERSION=8',
         '-DZE_GRAPH',
+        ...(slice.clangArch === 'arm64' ? ['-DZE_TEXT'] : []),
         '-I',
         nodeHeaders,
         '-I',
@@ -112,6 +120,7 @@ if (isDarwin) {
         source,
         archive,
         '-liconv',
+        ...(slice.clangArch === 'arm64' ? ['-lobjc', '-framework', 'Foundation', '-framework', 'CoreML', '-framework', 'Metal', '-framework', 'Accelerate'] : []),
         '-fvisibility=hidden',
         `-Wl,-exported_symbols_list,${exportsFile}`,
         '-Wl,-dead_strip',

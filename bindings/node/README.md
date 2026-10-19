@@ -447,11 +447,13 @@ removing both its JavaScript and native entries from the CommonJS cache and
 asserting two native initializations, independent live stores, and persisted
 results after close and reopen. Ordinary repeated `require` also works.
 
-The macOS addon is built with a macOS 11.0 deployment target. The Electron
-44.4.1 app bundle declares macOS 13.0 as its minimum; the host runtime can
-require a newer OS than the addon. CI executes on macos-14, not every older OS.
-The addon performs no runtime network requests; installation and CI may download
-packages and Electron.
+The macOS arm64 addon (including MLX text) targets macOS 13.5, the floor MLX
+publishes (its Metal shaders compile for Metal 3.0); the Intel addon targets
+macOS 11.0. The Electron 44.4.1 app bundle declares macOS 13.0 as its minimum,
+so on arm64 the addon requires macOS 13.5 or later. CI executes on macos-14,
+not every older OS. The addon performs no runtime network requests
+except `TextStore.openModel`, which downloads a pinned model unless `offline`
+is set; installation and CI may download packages and Electron.
 
 ### Signing scope
 
@@ -641,3 +643,51 @@ This also works for record-only namespaces and empty stores. Repeated calls
 reuse the current caches; mutations invalidate preparation, so warm again
 after writes when first-query latency matters. Prefer the async method to
 keep Wallflower's event loop free.
+
+## TextStore (macOS arm64)
+
+Requires macOS 13.5 or later on Apple silicon. `TextStore` embeds text locally and searches dense, lexical or hybrid legs. The
+arm64 prebuild includes MLX and its `mlx.metallib` beside the addon; keep both
+files together when repackaging. Intel macOS and Windows builds throw a typed
+`ZeppelinError` with code `ZE_ERR_UNSUPPORTED` and the message
+`text API is available on macOS arm64 only`.
+
+Electron apps must `asarUnpack` both `mlx.metallib` and `zeppelin_embed.node`,
+because MLX loads the metallib from the directory of the native binary.
+
+```js
+const { TextStore } = require('@zepdb/zeppelin-embed');
+const store = await TextStore.openAsync('./notes', '/models/model.zem');
+try {
+  // Caller ids are unsigned bigints smaller than 2^96.
+  await store.ingestAsync([
+    { id: 1n, revision: 1n, text: 'Harbour lights at dusk' },
+  ]);
+  const result = await store.queryAsync({
+    text: 'harbour', k: 5, legs: 'hybrid', signal: new AbortController().signal,
+  });
+  console.log(result.hits);
+  console.log(await store.healthAsync());
+  await store.maintainAsync({ wallTimeNs: 100000000n, bytes: 67108864n });
+  await store.deleteAsync([1n]);
+} finally {
+  store.close();
+}
+```
+
+`open`, `ingest`, `query`, `delete`, `maintain` and `health` also have synchronous
+forms. Async forms run native work off the JS thread. `query` defaults to dense;
+`legs` accepts `dense`, `lexical`, or `hybrid`, and `tier` accepts `auto`, `exact`,
+`scan`, or `graph`. `deadlineNs` is a relative monotonic deadline, mutually
+exclusive with `signal`. In-flight AbortSignal cancellation requires an async
+call. Cancellation of ingest may leave acknowledged partial writes.
+
+Ingest rejects overlong documents unless `chunkMax` is set; `chunkOverlap`
+controls overlap. Re-ingest with a higher revision replaces the previous chunks.
+
+To download and cache a model, use the asynchronous `TextStore.openModel` with
+`{path, repo, revision, manifestSha256, cacheDir?, offline?, onProgress?}`.
+`revision` must be a pinned 40-hex commit and `manifestSha256` the manifest's
+64-hex SHA-256. There is no default model. `onProgress({done, total})` receives
+bigint byte counts on the JS thread; `(0n, 0n)` means fetching the manifest.
+`offline: true` requires a verified cache hit and never downloads.

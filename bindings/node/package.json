@@ -31,6 +31,7 @@
     "README.md",
     "LICENSE",
     "prebuilds/darwin-arm64/zeppelin_embed.node",
+    "prebuilds/darwin-arm64/mlx.metallib",
     "prebuilds/darwin-x64/zeppelin_embed.node",
     "prebuilds/win32-x64/node-napi8/zeppelin_embed.node",
     "prebuilds/win32-x64/electron-44/zeppelin_embed.node"

@@ -19,7 +19,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -101,13 +100,16 @@ try {
   const expectedBinary =
     process.platform === 'win32'
       ? 'prebuilds/win32-x64/node-napi8/zeppelin_embed.node'
-      : 'prebuilds/darwin-arm64/zeppelin_embed.node';
+      : `prebuilds/darwin-${process.arch}/zeppelin_embed.node`;
   const entries = report[0].files.map((file) => file.path);
   if (!entries.includes(expectedBinary)) {
     throw new Error(
       `the tarball does not contain ${expectedBinary}; it contains:\n  ${entries.join('\n  ')}`,
     );
   }
+
+  if (process.platform === 'darwin' && process.arch === 'arm64' &&
+      !entries.includes('prebuilds/darwin-arm64/mlx.metallib')) throw new Error('tarball is missing mlx.metallib');
 
   // 2. A consumer that lives outside the repository, so nothing can resolve
   //    back into the source tree.
@@ -128,14 +130,12 @@ try {
   );
   runNpm(['install', '--no-audit', '--no-fund', tarball], { cwd: consumer });
 
-  // 3. Run the runtime smoke against the installed copy.
+  // 3. Stage the runtime smoke and its committed bundle.
   copyFileSync(
     join(packageDirectory, 'test', 'installed-package-smoke.cjs'),
     join(consumer, 'smoke.cjs'),
   );
-  run(process.execPath, ['smoke.cjs'], { cwd: consumer });
-  console.log('installed-package runtime smoke: ok');
-
+  copyFileSync(join(packageDirectory, '..', '..', 'crates', 'zeppelin-embed-text', 'tests', 'fixtures', 'ze115', 'gte.zem'), join(consumer, 'gte.zem'));
   // 4. Compile the TypeScript example against the installed type declarations.
   copyFileSync(
     join(packageDirectory, 'test', 'installed-package-type-smoke.ts'),
@@ -159,17 +159,22 @@ try {
       2,
     )}\n`,
   );
-  const typescript = JSON.parse(
-    readFileSync(join(packageDirectory, 'package.json'), 'utf8'),
-  ).devDependencies.typescript;
-  runNpm(
-    ['install', '--no-audit', '--no-fund', '--save-dev', `typescript@${typescript}`, '@types/node'],
-    { cwd: consumer },
-  );
-  run(process.execPath, [join(consumer, 'node_modules', 'typescript', 'bin', 'tsc'), '--noEmit', '-p', 'tsconfig.json'], {
-    cwd: consumer,
-  });
+  // Use build-time tooling; the consumer installs only the packed package.
+  run(process.execPath, [join(packageDirectory, 'node_modules', 'typescript', 'bin', 'tsc'),
+    '--noEmit', '-p', 'tsconfig.json', '--typeRoots', join(packageDirectory, 'node_modules', '@types')], {cwd: consumer});
   console.log('installed-package TypeScript smoke: ok');
+
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    // Make the checkout and build outputs inaccessible: MLX must load the
+    // installed metallib, even when its compiled-in build path still exists.
+    const repository = resolve(packageDirectory, '..', '..');
+    const cargoTarget = resolve(process.env.CARGO_TARGET_DIR || join(repository, 'target'));
+    const profile = `(version 1)(allow default)(deny file-read* (subpath ${JSON.stringify(repository)}) (subpath ${JSON.stringify(cargoTarget)}))`;
+    run('/usr/bin/sandbox-exec', ['-p', profile, process.execPath, 'smoke.cjs'], {cwd: consumer});
+  } else {
+    run(process.execPath, ['smoke.cjs'], {cwd: consumer});
+  }
+  console.log('installed-package runtime smoke: ok');
 
   console.log('INSTALL SMOKE PASSED');
 } finally {

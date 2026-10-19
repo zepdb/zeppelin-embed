@@ -134,13 +134,15 @@ PY_RECEIPT
 
 # CI can gate the exact prebuilt archive without rebuilding or changing features.
 case "${1:-}" in
-    --graph-archive|--graph-core-archive|--ffi-archive|--core-archive)
+    --graph-archive|--text-graph-archive|--graph-core-archive|--ffi-archive|--core-archive)
         if [[ $# -ne 2 ]]; then
-            echo "usage: $0 [--graph-archive|--graph-core-archive|--ffi-archive|--core-archive ARCHIVE]" >&2
+            echo "usage: $0 [--graph-archive|--text-graph-archive|--graph-core-archive|--ffi-archive|--core-archive ARCHIVE]" >&2
             exit 2
         fi
         if [[ "$1" == "--graph-archive" ]]; then
             measure_artifact "graph ffi" "$2" gate "$GRAPH_BUDGET_KB"
+        elif [[ "$1" == "--text-graph-archive" ]]; then
+            measure_artifact "text graph ffi" "$2" report
         elif [[ "$1" == "--graph-core-archive" ]]; then
             measure_artifact "graph core" "$2" report
         else

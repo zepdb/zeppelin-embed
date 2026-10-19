@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 const REQUIRED = {
   darwin: [
     '../prebuilds/darwin-arm64/zeppelin_embed.node',
+    '../prebuilds/darwin-arm64/mlx.metallib',
     '../prebuilds/darwin-x64/zeppelin_embed.node',
   ],
   win32: [

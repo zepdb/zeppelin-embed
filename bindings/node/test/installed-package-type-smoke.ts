@@ -71,3 +71,20 @@ const values: readonly GraphValue[] = graphResult.rows[0];
 void graphReport;
 void values;
 graph.close();
+
+import { TextStore, TextQueryResult, TextHealthReport, TextIngestReport } from '@zepdb/zeppelin-embed';
+async function textExample(bundle: string) {
+  const text = await TextStore.openAsync('/tmp/text-store', bundle);
+  const ingested: TextIngestReport = await text.ingestAsync([{id: 1n, revision: 1n, text: 'bronze zeppelin'}]);
+  const hits: TextQueryResult = await text.queryAsync({text: 'bronze', legs: 'hybrid', tier: 'exact', signal: new AbortController().signal});
+  const health: TextHealthReport = text.health();
+  text.query({text: 'bronze', legs: 'lexical', deadlineNs: 1000000000n});
+  await text.maintainAsync({wallTimeNs: 100000000n, bytes: 67108864n});
+  await text.deleteAsync([1n]);
+  text.close();
+  return {ingested, hits, health};
+}
+void textExample;
+void TextStore.openModel({path: '/tmp/text-model', repo: 'owner/model', revision: '0'.repeat(40),
+  manifestSha256: '0'.repeat(64), cacheDir: '/tmp/cache', offline: true,
+  onProgress: ({done, total}) => { const progress: bigint = done + total; void progress; }});

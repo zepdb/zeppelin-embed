@@ -256,6 +256,7 @@ def run_legacy_consumers(args, output):
             run(['npm', 'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund',
                  args.node_package.resolve()], cwd=work)
             shutil.copy(ROOT / 'bindings/node/test/installed-package-smoke.cjs', work / 'smoke.cjs')
+            shutil.copy(ROOT / 'crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem', work / 'gte.zem')
             run(['node', 'smoke.cjs'], cwd=work)
         report['node'] = str(args.node_package.resolve())
     else:

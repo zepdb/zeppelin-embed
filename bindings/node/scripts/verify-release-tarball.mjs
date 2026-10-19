@@ -1,5 +1,5 @@
 /**
- * Verifies that a packed tarball actually contains every binary the package
+ * Verifies that a packed tarball actually contains every native asset the package
  * metadata advertises.
  *
  * `npm pack` silently omits entries listed in `files` that do not exist on
@@ -33,12 +33,12 @@ if (!tarball) {
 const manifest = JSON.parse(readFileSync(resolve(packageDirectory, 'package.json'), 'utf8'));
 
 /**
- * Every binary path the metadata advertises.
+ * Every native asset path the metadata advertises.
  *
  * Taken from `files` rather than hard-coded, so adding a platform to the
  * package cannot silently escape this gate.
  */
-const advertised = manifest.files.filter((entry) => entry.endsWith('.node'));
+const advertised = manifest.files.filter((entry) => entry.endsWith('.node') || entry.endsWith('.metallib'));
 if (advertised.length === 0) {
   throw new Error('package.json `files` advertises no native binaries; nothing to verify');
 }
@@ -61,7 +61,7 @@ const entries = new Set(
 const missing = advertised.filter((binary) => !entries.has(binary));
 
 console.error(`tarball: ${tarball}`);
-console.error(`advertised binaries: ${advertised.length}`);
+console.error(`advertised native assets: ${advertised.length}`);
 console.error(`present: ${advertised.length - missing.length}`);
 
 if (missing.length > 0) {
@@ -80,4 +80,4 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-console.error('RELEASE TARBALL COMPLETE: every advertised binary is present');
+console.error('RELEASE TARBALL COMPLETE: every advertised native asset is present');

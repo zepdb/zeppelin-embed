@@ -9,6 +9,7 @@ const {
   ABI_VERSION,
   CancellationToken,
   Store,
+  TextStore,
   openNamespace,
   verify,
 } = require('@zepdb/zeppelin-embed');
@@ -111,3 +112,26 @@ try {
   rmSync(graphDirectory, { force: true, recursive: true });
 }
 console.log(`installed graph open/apply/cypher/reopen: ${process.platform}-${process.arch} ok`);
+
+// This bundle is copied into the outside-repository consumer by install-smoke.
+const textRoot = mkdtempSync(join(tmpdir(), 'zeppelin-installed-text-'));
+try {
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    const text = TextStore.open(join(textRoot, 'store'), join(__dirname, 'gte.zem'));
+    try {
+      for (const legs of ['lexical', 'hybrid']) assert.deepEqual(text.query({text: 'bronze', legs}).hits, []);
+      text.ingest([{id: 1n, revision: 1n, text: 'bronze zeppelin'}]);
+      for (const legs of ['dense', 'lexical', 'hybrid']) {
+        assert.equal(text.query({text: 'bronze', k: 1, legs}).hits[0].id, 1n);
+      }
+      assert.equal(text.health().unresolvedFaultCount, 0n);
+      text.maintain({wallTimeNs: 100000000n, bytes: 67108864n});
+      text.delete([1n]);
+      for (const legs of ['lexical', 'hybrid']) assert.deepEqual(text.query({text: 'bronze', legs}).hits, []);
+    } finally { text.close(); }
+  } else {
+    assert.throws(() => TextStore.open('unused', 'unused'), error =>
+      error.name === 'ZeppelinError' && error.code === 'ZE_ERR_UNSUPPORTED' && /macOS arm64 only/.test(error.message));
+  }
+} finally { rmSync(textRoot, {recursive: true, force: true}); }
+console.log(`installed text API: ${process.platform}-${process.arch} ok`);

@@ -10,6 +10,7 @@ on:
       - "Cargo.toml"
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
+      - "crates/zeppelin-embed-text/**"
       - "bindings/node/**"
       - "scripts/release/package-native.py"
       - "scripts/tests/native-packaging.py"
@@ -23,6 +24,7 @@ on:
       - "Cargo.toml"
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
+      - "crates/zeppelin-embed-text/**"
       - "bindings/node/**"
       - "scripts/release/package-native.py"
       - "scripts/tests/native-packaging.py"
@@ -70,6 +72,10 @@ jobs:
         working-directory: bindings/node
       - name: Check native source formatting
         run: xcrun clang-format --dry-run --Werror bindings/node/native/addon.cc
+      - name: Install Metal toolchain on Apple silicon
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -downloadComponent MetalToolchain
       - run: npm run build:native
         working-directory: bindings/node
       - name: Verify each FFI archive carries the graph entry points
@@ -79,7 +85,11 @@ jobs:
             nm -gU "target/native-archives/$t/libzeppelin_embed_ffi.a" | grep ' T _ze_store_graph_apply$'
             du -k "target/native-archives/$t/libzeppelin_embed_ffi.a"
             size "target/native-archives/$t/libzeppelin_embed_ffi.a"
-            scripts/size-budget.sh --graph-archive "target/native-archives/$t/libzeppelin_embed_ffi.a"
+            if [ "$t" = aarch64-apple-darwin ]; then
+              scripts/size-budget.sh --text-graph-archive "target/native-archives/$t/libzeppelin_embed_ffi.a"
+            else
+              scripts/size-budget.sh --graph-archive "target/native-archives/$t/libzeppelin_embed_ffi.a"
+            fi
           done
           python3 scripts/tests/native-packaging.py \
             --archive target/aarch64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/aarch64-apple-darwin/libzeppelin_embed_ffi.a \
@@ -176,6 +186,7 @@ jobs:
           consumer=$(mktemp -d)
           cp test/installed-package-smoke.cjs "$consumer/smoke.cjs"
           cp test/installed-package-type-smoke.ts "$consumer/type-smoke.ts"
+          cp "$GITHUB_WORKSPACE/crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem" "$consumer/gte.zem"
           cd "$consumer"
           npm init --yes >/dev/null
           npm install "$GITHUB_WORKSPACE/bindings/node/$tarball"

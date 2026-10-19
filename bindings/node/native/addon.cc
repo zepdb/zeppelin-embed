@@ -4825,6 +4825,7 @@ napi_value FreeCancelToken(napi_env env, napi_callback_info info) {
 }
 
 #include "graph.inc"
+#include "text.inc"
 
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_value graph_supported;
@@ -4837,7 +4838,40 @@ napi_value Initialize(napi_env env, napi_value exports) {
               "graph support") ||
       !SetNamed(env, exports, "graphSupported", graph_supported))
     return nullptr;
+  napi_value text_supported;
+#ifdef ZE_TEXT
+  const bool has_text = true;
+#else
+  const bool has_text = false;
+#endif
+  if (!NapiOk(env, napi_get_boolean(env, has_text, &text_supported),
+              "text support") ||
+      !SetNamed(env, exports, "textSupported", text_supported))
+    return nullptr;
   napi_property_descriptor methods[] = {
+#ifdef ZE_TEXT
+      {"textIngest", nullptr, TextCall<TextOp::Ingest, false>, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"textIngestAsync", nullptr, TextCall<TextOp::Ingest, true>, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"textQuery", nullptr, TextCall<TextOp::Query, false>, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"textQueryAsync", nullptr, TextCall<TextOp::Query, true>, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"textDelete", nullptr, TextCall<TextOp::Delete, false>, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"textDeleteAsync", nullptr, TextCall<TextOp::Delete, true>, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"textMaintain", nullptr, TextCall<TextOp::Maintain, false>, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"textMaintainAsync", nullptr, TextCall<TextOp::Maintain, true>, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+      {"textHealth", nullptr, TextCall<TextOp::Health, false>, nullptr, nullptr,
+       nullptr, napi_default, nullptr},
+      {"textHealthAsync", nullptr, TextCall<TextOp::Health, true>, nullptr,
+       nullptr, nullptr, napi_default, nullptr},
+#endif
+
 #ifdef ZE_GRAPH
       {"graphSetMaintenancePolicy", nullptr, GraphSetMaintenancePolicy, nullptr,
        nullptr, nullptr, napi_default, nullptr},
@@ -4956,6 +4990,11 @@ napi_value Initialize(napi_env env, napi_value exports) {
     napi_callback callback;
   } functions[] = {
       {"openAsync", OpenAsync},
+#ifdef ZE_TEXT
+      {"textOpen", TextOpen<false>},
+      {"textOpenAsync", TextOpen<true>},
+      {"textOpenModel", TextOpen<true, true>},
+#endif
       {"createCancelToken", CreateCancelToken},
       {"cancelToken", CancelToken},
       {"freeCancelToken", FreeCancelToken},

@@ -1255,3 +1255,107 @@ export interface StoreRelationshipOptions {
 }
 
 export type GraphPlanQueryOptions = GraphControlOptions & { readonly parameters?: Readonly<Record<string, GraphParameter>> };
+
+/** Text embeddings and retrieval. Requires the darwin-arm64 prebuild. */
+export interface TextModelOptions {
+  readonly path: string;
+  readonly repo: string;
+  /** Pinned 40-hex commit; no default model is selected. */
+  readonly revision: string;
+  readonly manifestSha256: string;
+  readonly cacheDir?: string;
+  readonly offline?: boolean;
+  readonly onProgress?: (progress: {readonly done: bigint; readonly total: bigint}) => void;
+}
+export interface TextIngestOptions {
+  readonly signal?: never;
+  readonly embedBatchSize?: number;
+  readonly sealEvery?: number;
+  readonly channelCapacity?: number;
+  /** Omit to reject overlong documents; set to split into token windows. */
+  readonly chunkMax?: number;
+  readonly chunkOverlap?: number;
+  readonly deadlineNs?: bigint;
+}
+export interface TextDocument {
+  /** Original document id, an unsigned bigint smaller than 2^96. */
+  readonly id: DocumentId;
+  readonly revision?: bigint;
+  readonly text: string;
+}
+export interface TextIngestReport {
+  readonly generation: bigint;
+  readonly documents: bigint;
+  readonly chunks: bigint;
+  readonly tokens: bigint;
+  readonly embedBatches: bigint;
+  readonly seals: bigint;
+  readonly maxInFlightBatches: bigint;
+  readonly allThreadsJoined: boolean;
+  readonly elapsedNs: bigint;
+}
+export interface TextQueryOptions {
+  readonly text: string;
+  readonly k?: number;
+  /** Defaults to dense. */
+  readonly legs?: 'dense' | 'lexical' | 'hybrid';
+  readonly tier?: 'auto' | 'exact' | 'scan' | 'graph';
+  /** Relative monotonic deadline; mutually exclusive with signal. */
+  readonly deadlineNs?: bigint;
+  /** Pre-aborted signals work synchronously; in-flight cancellation needs queryAsync. */
+  readonly signal?: AbortSignal;
+}
+export interface TextQueryHit {
+  readonly id: DocumentId;
+  readonly revision: bigint;
+  readonly chunk: number;
+  readonly text: string;
+  readonly score: number;
+  readonly vectorSquaredL2?: number;
+  readonly lexicalBm25?: number;
+}
+export interface TextQueryResult {
+  readonly hits: readonly TextQueryHit[];
+  readonly embeddingEpoch: bigint;
+  readonly tokenizerEpoch: bigint;
+}
+export interface TextMaintainBudget {
+  /** Defaults to 100ms. */
+  readonly wallTimeNs?: bigint;
+  /** Defaults to 64 MiB. */
+  readonly bytes?: bigint;
+}
+export interface TextMaintainReport {
+  /** 0 complete, 1 budget exhausted. */
+  readonly status: 0 | 1;
+  readonly graphsBuilt: bigint;
+  readonly bytesConsumed: bigint;
+  readonly checkpointsResumed: bigint;
+}
+export interface TextHealthReport {
+  readonly generation: bigint;
+  /** 0 unchecked, 1 healthy, 2 degraded, 3 unhealthy. */
+  readonly status: 0 | 1 | 2 | 3;
+  readonly pendingDocs: bigint;
+  readonly graphCoverage: number;
+  readonly segmentCount: bigint;
+  readonly unresolvedFaultCount: bigint;
+  readonly retainedThrough?: bigint;
+}
+export declare class TextStore {
+  private constructor();
+  static open(path: string, bundlePath: string): TextStore;
+  static openAsync(path: string, bundlePath: string): Promise<TextStore>;
+  static openModel(options: TextModelOptions): Promise<TextStore>;
+  ingest(documents: readonly TextDocument[], options?: TextIngestOptions): TextIngestReport;
+  ingestAsync(documents: readonly TextDocument[], options?: Omit<TextIngestOptions, 'signal'> & {readonly signal?: AbortSignal}): Promise<TextIngestReport>;
+  query(options: TextQueryOptions): TextQueryResult;
+  queryAsync(options: TextQueryOptions): Promise<TextQueryResult>;
+  delete(ids: readonly DocumentId[]): MutationReport;
+  deleteAsync(ids: readonly DocumentId[]): Promise<MutationReport>;
+  maintain(budget?: TextMaintainBudget): TextMaintainReport;
+  maintainAsync(budget?: TextMaintainBudget): Promise<TextMaintainReport>;
+  health(): TextHealthReport;
+  healthAsync(): Promise<TextHealthReport>;
+  close(): void;
+}

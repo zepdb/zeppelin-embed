@@ -6,6 +6,21 @@ release and a compatible correction is a patch release.
 
 ## Unreleased
 
+### Added
+
+- Node `TextStore` (macOS arm64 only): `open` / `openAsync` on a model
+  bundle, async `openModel` with a pinned download, cache, offline mode and
+  progress events, `ingest`, dense, lexical and hybrid `query` with an
+  `AbortSignal` or deadline, `delete`, `maintain` and `health`. The arm64
+  prebuild ships `mlx.metallib` beside the addon. Intel macOS and Windows
+  prebuilds have no text and throw `ZE_ERR_UNSUPPORTED`.
+
+### Changed
+
+- The Node darwin-arm64 addon now requires macOS 13.5 (was 11.0), the MLX
+  floor. The Intel addon still targets macOS 11.0. The npm tarball grows by
+  about 88 MB unpacked for the Metal shader library.
+
 ## 0.7.0 - 2026-10-09
 
 ### Added

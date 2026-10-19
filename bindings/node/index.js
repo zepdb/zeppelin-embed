@@ -787,7 +787,71 @@ function requireGraph() {
   if (!Store.graphSupported()) throw new ZeppelinError('graph is unavailable in this build', 'ZE_ERR_GRAPH_UNSUPPORTED_BUILD', 59);
 }
 
+// Text handles use the same generation registry and native worker pool as Store.
+function requireText() {
+  if (process.platform !== 'darwin' || process.arch !== 'arm64' || binding.textSupported !== true) {
+    throw new ZeppelinError('text API is available on macOS arm64 only', 'ZE_ERR_UNSUPPORTED', 11);
+  }
+}
+
+class TextStore {
+  constructor(native) { this._native = native; }
+  static open(path, bundlePath) {
+    requireText();
+    return new TextStore(callNative(() => binding.textOpen({path, bundlePath})));
+  }
+  static async openAsync(path, bundlePath) {
+    requireText();
+    try { return new TextStore(await binding.textOpenAsync({path, bundlePath})); }
+    catch (error) { throw translateError(error); }
+  }
+  static async openModel(options) {
+    requireText();
+    if (options.onProgress !== undefined && typeof options.onProgress !== 'function') throw new TypeError('onProgress must be a function');
+    try { return new TextStore(await binding.textOpenModel(options)); }
+    catch (error) { throw translateError(error); }
+  }
+  ingest(documents, options = {}) {
+    if (options.signal !== undefined) graphInvalid('signal requires ingestAsync');
+    return callNative(() => this._native.textIngest(documents, options));
+  }
+  async ingestAsync(documents, options = {}) {
+    try { return await withSignal(options.signal, token => this._native.textIngestAsync(documents, {...options, ...graphControl(options, token)})); }
+    catch (error) { throw translateError(error); }
+  }
+  query(options) {
+    if (options.signal !== undefined) {
+      if (!(options.signal instanceof AbortSignal)) throw new TypeError('signal must be an AbortSignal');
+      if (options.deadlineNs !== undefined) throw new TypeError('use one interruption source');
+      const token = new CancellationToken();
+      try {
+        if (options.signal.aborted) token.cancel();
+        return callNative(() => this._native.textQuery({...options, cancelToken: token[nativeToken]}));
+      } finally { token.close(); }
+    }
+    return callNative(() => this._native.textQuery(options));
+  }
+  async queryAsync(options) {
+    try { return await withSignal(options.signal, token => this._native.textQueryAsync({...options, ...graphControl(options, token)})); }
+    catch (error) { throw translateError(error); }
+  }
+  delete(ids) { return callNative(() => this._native.textDelete(ids)); }
+  async deleteAsync(ids) {
+    try { return await this._native.textDeleteAsync(ids); } catch (error) { throw translateError(error); }
+  }
+  maintain(budget = {}) { return callNative(() => this._native.textMaintain(budget)); }
+  async maintainAsync(budget = {}) {
+    try { return await this._native.textMaintainAsync(budget); } catch (error) { throw translateError(error); }
+  }
+  health() { return callNative(() => this._native.textHealth()); }
+  async healthAsync() {
+    try { return await this._native.textHealthAsync(); } catch (error) { throw translateError(error); }
+  }
+  close() { return callNative(() => this._native.close()); }
+}
+
 module.exports = {
+  TextStore,
   CancellationToken,
   Store,
   UnsupportedPlatformError,
