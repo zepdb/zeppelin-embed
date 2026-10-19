@@ -23,6 +23,13 @@
 
 ## Dependency budget
 
+Orchestrator decision 2026-10-19, under the E16 goal (ZE-514):
+`unicode-segmentation` (pure Rust, no dependencies, MIT/Apache-2.0) is
+allowed as a direct dependency of the outer `zeppelin-embed-text` crate only,
+pinned exactly to `=1.12.0`, for grapheme segmentation in the normalizer.
+Same pattern as `cc` for the ANE shim. The core allowlist is unchanged.
+Flagged to the owner for veto. No other new crate is authorized.
+
 The only permitted direct core dependencies are `libc`, `roaring`, and
 `xxhash-rust`. Core dev-dependencies may be `proptest`, `criterion`, `rand`,
 `rand_chacha`, and `tempfile`; Criterion currently lives only in the separate

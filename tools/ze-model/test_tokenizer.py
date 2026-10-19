@@ -1,4 +1,5 @@
 """Offline exporter contract tests; no checkpoint or model execution required."""
+import base64
 import json
 from pathlib import Path
 import runpy
@@ -72,7 +73,7 @@ class WordPieceExport(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.encode(source)
 
-    def test_bake_writes_layout_two_with_one_tokenizer_per_tower(self):
+    def test_bake_writes_layout_three_with_one_tokenizer_per_tower(self):
         with tempfile.TemporaryDirectory() as directory:
             roots = [Path(directory) / name for name in ["document", "query"]]
             for index, root in enumerate(roots):
@@ -91,10 +92,11 @@ class WordPieceExport(unittest.TestCase):
                           root / "model.safetensors")
             args = SimpleNamespace(document=str(roots[0]), query=str(roots[1]),
                                    document_id="document", query_id="query", query_prefix="",
+                                   query_max_tokens=None, document_max_tokens=None,
                                    alignment_digest="01", alpha=0.5, output=str(Path(directory) / "pair.zem"))
             EXPORT["bake"](args)
             body = Path(args.output).read_bytes()
-            self.assertEqual(struct.unpack_from("<I", body, 8)[0], 2)
+            self.assertEqual(struct.unpack_from("<I", body, 8)[0], 3)
             self.assertEqual(body[16], 2)
             towers = [EXPORT["load_tower"](root, root.name, role, root.name, "")
                       for role, root in enumerate(roots)]
@@ -112,6 +114,80 @@ class WordPieceExport(unittest.TestCase):
             tokenizer = EXPORT["encode_tokenizer"](roots[0], 1)
             self.assertEqual(body[start:start + len(tokenizer)], tokenizer)
             self.assertEqual(struct.unpack_from("<d", body, start + len(tokenizer))[0], 0.5)
+
+    def test_bake_max_tokens_flags_defaults_and_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = source_tokenizer()
+            source["truncation"] = {"max_length": 4}
+            (root / "tokenizer.json").write_text(json.dumps(source))
+            (root / "tokenizer_config.json").write_text("{}")
+            (root / "config.json").write_text(json.dumps({
+                "model_type": "bert", "hidden_size": 2, "max_position_embeddings": 16,
+                "num_hidden_layers": 0, "num_attention_heads": 1,
+                "intermediate_size": 2, "layer_norm_eps": 1e-5,
+            }))
+            save_file({"embeddings.word_embeddings.weight": EXPORT["torch"].zeros(6, 2)},
+                      root / "model.safetensors")
+            command = ["bake", "--document", str(root), "--document-id", "document",
+                       "--query", str(root), "--query-id", "query", "--query-prefix", "",
+                       "--alignment-digest", "01", "--output", str(root / "pair.zem")]
+
+            def baked_limits(flags):
+                EXPORT["bake"](EXPORT["parser"]().parse_args(command + flags))
+                body = (root / "pair.zem").read_bytes()
+                cursor = 24
+                limits = []
+                for _ in range(2):
+                    cursor += 1  # role
+                    for _ in range(3):  # model ID, version, weights digest
+                        cursor += 4 + struct.unpack_from("<I", body, cursor)[0]
+                    cursor += 6  # dimensions and normalization
+                    cursor += 4 + struct.unpack_from("<I", body, cursor)[0]  # prefix
+                    limits.append(struct.unpack_from("<I", body, cursor)[0])
+                    self.assertEqual(struct.unpack_from("<I", body, cursor + 28)[0], 16)
+                    cursor += 44  # remaining fixed-width tower fields
+                return limits
+
+            self.assertEqual(baked_limits(["--query-max-tokens", "6",
+                                           "--document-max-tokens", "8"]), [8, 6])
+            self.assertEqual(baked_limits([]), [4, 4])
+            source["truncation"] = None
+            (root / "tokenizer.json").write_text(json.dumps(source))
+            self.assertEqual(baked_limits([]), [16, 16])
+            for flag, value in [("--query-max-tokens", "1"), ("--document-max-tokens", "17")]:
+                with self.assertRaises(ValueError):
+                    baked_limits([flag, value])
+
+            symmetric = EXPORT["parser"]().parse_args(command + ["--query-max-tokens", "6"])
+            symmetric.query = None
+            with self.assertRaisesRegex(ValueError, "--query-max-tokens requires --query"):
+                EXPORT["bake"](symmetric)
+
+    def test_unigram_record_preserves_charsmap_and_f64_scores(self):
+        source = source_tokenizer()
+        source["model"] = {"type": "Unigram", "vocab": [
+            [token, -1.0000000001] for token in ["<pad>", "<unk>", "<s>", "</s>"]]}
+        source["added_tokens"] = []
+        charsmap = struct.pack("<II", 4, 0) + b"\0"
+        source["normalizer"] = {"type": "Precompiled",
+                                "precompiled_charsmap": base64.b64encode(charsmap).decode()}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tokenizer.json").write_text(json.dumps(source))
+            (root / "tokenizer_config.json").write_text("{}")
+            record = EXPORT["encode_tokenizer"](root, 2)
+            # Fixed fields, count, then token string followed by its f64 score.
+            self.assertEqual(struct.unpack_from("<d", record, 24 + 4 + 5)[0], -1.0000000001)
+            self.assertEqual(record[-len(charsmap)-4:], struct.pack("<I", len(charsmap)) + charsmap)
+            for normalizer in [{"type": "NFKC"}, {"type": "Precompiled", "precompiled_charsmap": "!"}]:
+                source["normalizer"] = normalizer
+                (root / "tokenizer.json").write_text(json.dumps(source))
+                with self.assertRaises(ValueError):
+                    EXPORT["encode_tokenizer"](root, 2)
+            source["normalizer"] = None
+            (root / "tokenizer.json").write_text(json.dumps(source))
+            self.assertEqual(EXPORT["encode_tokenizer"](root, 2)[-4:], bytes(4))
 
     def test_astra_08_export_refuses_conflicting_tokenizer_settings(self):
         for config in [{"do_lower_case": False}, {"strip_accents": False}, {"tokenize_chinese_chars": False},

@@ -10,7 +10,7 @@ mod reference;
 
 mod common;
 
-fn with_tokenizer(kind: u8, flags: u8, vocabulary: &[(&str, f32)], max_tokens: u32) -> Vec<u8> {
+fn with_tokenizer(kind: u8, flags: u8, vocabulary: &[(&str, f64)], max_tokens: u32) -> Vec<u8> {
     let original = include_bytes!("fixtures/ze115/bert.zem");
     let start = reference::POOLING_OFFSET + 35;
     let mut end = start + 20;
@@ -19,8 +19,9 @@ fn with_tokenizer(kind: u8, flags: u8, vocabulary: &[(&str, f32)], max_tokens: u
     for _ in 0..count {
         let width =
             u32::from_le_bytes(original[end..end + 4].try_into().expect("token length")) as usize;
-        end += 8 + width;
+        end += 12 + width;
     }
+    end += 4; // Explicit empty charsmap.
     let mut tokenizer = vec![kind, flags, 0, 0];
     for id in [0_u32, 1, 2, 3, vocabulary.len() as u32] {
         tokenizer.extend_from_slice(&id.to_le_bytes());
@@ -30,6 +31,7 @@ fn with_tokenizer(kind: u8, flags: u8, vocabulary: &[(&str, f32)], max_tokens: u
         tokenizer.extend_from_slice(token.as_bytes());
         tokenizer.extend_from_slice(&score.to_le_bytes());
     }
+    tokenizer.extend_from_slice(&0_u32.to_le_bytes());
     let mut bytes = original[..start].to_vec();
     bytes.extend(tokenizer);
     bytes.extend_from_slice(&original[end..8192]);

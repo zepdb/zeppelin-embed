@@ -20,7 +20,7 @@ fn tiny_bundle() -> Arc<Bundle> {
 }
 
 #[test]
-fn arctic_query_loads_factorized_config_from_layout_two() {
+fn arctic_query_loads_factorized_config_from_layout_three() {
     let bundle = tiny_bundle();
     let tower = bundle.query_tower();
     assert_eq!(tower.architecture as u16, 3);
@@ -179,6 +179,10 @@ fn clean71_pair_matches_pack_fp32_goldens_with_padding_unicode_batching_and_trun
             "clean71-v1",
             "--query-prefix",
             "query: ",
+            "--query-max-tokens",
+            "96",
+            "--document-max-tokens",
+            "8192",
             "--alignment-digest",
             "01",
             "--output",
@@ -187,7 +191,7 @@ fn clean71_pair_matches_pack_fp32_goldens_with_padding_unicode_batching_and_trun
         .status()
         .expect("run local ze-model bake");
     assert!(result.success(), "pair must bake successfully");
-    let bundle = Arc::new(Bundle::open(path).expect("layout-2 pair loads"));
+    let bundle = Arc::new(Bundle::open(path).expect("layout-3 pair loads"));
     let tower = bundle.query_tower();
     assert_eq!(tower.architecture as u16, 3);
     assert_eq!(

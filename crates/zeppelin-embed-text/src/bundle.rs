@@ -10,9 +10,9 @@ use crate::tower::{Architecture, ArchitectureConfig, Pooling, TokenBatch, TowerR
 use zeppelin_embed::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
 
 const MAGIC: &[u8; 8] = b"ZEMB0001";
-/// Layout 2 stores one unchanged tokenizer record per tower, in tower order.
-/// Pre-launch layout 1 bundles are unsupported and must be baked again.
-const LAYOUT_VERSION: u32 = 2;
+/// Layout 3 stores f64 token scores and a length-prefixed charsmap per tower.
+/// Pre-launch layouts 1 and 2 are unsupported and must be baked again.
+const LAYOUT_VERSION: u32 = 3;
 const DIGEST_BYTES: usize = 16;
 
 /// Typed `.zem` load failure.
@@ -570,8 +570,7 @@ fn parse_tower(cursor: &mut Cursor<'_>) -> Result<TowerSpec, BundleError> {
         layer_norm_eps: cursor.f32()?,
         rope_theta: cursor.f32()?,
         dense_out: cursor.u32()?,
-        // Only id 3 appends these fields. Existing layout-2 tower records
-        // retain their exact encoding.
+        // Only id 3 appends these fields; ids 1 and 2 have no extension.
         embedding_rank: if architecture == Architecture::ArcticQuery {
             cursor.u32()?
         } else {
@@ -660,8 +659,9 @@ fn parse_tokenizer(cursor: &mut Cursor<'_>) -> Result<ModelTokenizer, BundleErro
     let mut scores = Vec::with_capacity(count);
     for _ in 0..count {
         vocabulary.push(cursor.string()?);
-        scores.push(cursor.f32()?);
+        scores.push(cursor.f64()?);
     }
+    let charsmap = cursor.bytes()?;
     ModelTokenizer::new(
         kind,
         vocabulary,
@@ -673,6 +673,7 @@ fn parse_tokenizer(cursor: &mut Cursor<'_>) -> Result<ModelTokenizer, BundleErro
         flags & 1 != 0,
         flags & 2 != 0,
     )
+    .and_then(|tokenizer| tokenizer.with_precompiled(charsmap))
     .map_err(|detail| BundleError::Format(detail.to_owned()))
 }
 

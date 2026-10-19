@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import struct
@@ -15,7 +16,7 @@ from huggingface_hub import snapshot_download
 from safetensors import safe_open
 
 MAGIC = b"ZEMB0001"
-VERSION = 2
+VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -158,15 +159,21 @@ def load_tower(
     )
 
 
-def encode_tower(tower: Tower) -> bytes:
+def encode_tower(tower: Tower, max_tokens: int | None = None) -> bytes:
     config = tower.config
+    max_positions = int(config["max_position_embeddings"])
+    if max_tokens is None:
+        if tower.architecture == 3:
+            max_tokens = int(json_file(tower.root / "sentence_bert_config.json")["max_seq_length"])
+        else:
+            truncation = json_file(tower.root / "tokenizer.json").get("truncation") or {}
+            max_tokens = int(truncation.get("max_length", max_positions))
+    if not 2 <= max_tokens <= max_positions:
+        raise ValueError(f"{tower.model_id} max_tokens must be between 2 and {max_positions}, got {max_tokens}")
     hidden = int(config["hidden_size"])
     dims = int(config["output_dimension"]) if tower.architecture == 3 else tower.dense_out or hidden
-    maximum = int(config["max_position_embeddings"])
     if tower.architecture == 3:
-        maximum = int(json_file(tower.root / "sentence_bert_config.json")["max_seq_length"])
-        if (maximum <= 0 or maximum > int(config["max_position_embeddings"])
-                or int(config["embedding_rank"]) <= 0 or dims <= 0
+        if (int(config["embedding_rank"]) <= 0 or dims <= 0
                 or tower.pooling != 2 or tower.dense_out):
             raise ValueError("invalid ArcticQuery dimensions, pooling or projection")
     output = bytearray([tower.role])
@@ -176,7 +183,7 @@ def encode_tower(tower: Tower) -> bytes:
     output += u32(dims)
     output += u16(1)
     output += string(tower.prefix)
-    output += u32(maximum)
+    output += u32(max_tokens)
     output += u16(2)
     output += u16(2)
     output += b"\x00"
@@ -247,6 +254,7 @@ def wordpiece_flags(tokenizer: dict) -> int:
 def encode_tokenizer(root: Path, architecture: int) -> bytes:
     tokenizer = json_file(root / "tokenizer.json")
     config = json_file(root / "tokenizer_config.json")
+    charsmap = b""
     model = tokenizer["model"]
     if architecture == 1:
         kind = 1
@@ -274,6 +282,13 @@ def encode_tokenizer(root: Path, architecture: int) -> bytes:
         entries = [(token, 0.0) for token, _ in vocabulary]
     elif model.get("type") == "Unigram":
         kind = 2
+        normalizer = tokenizer.get("normalizer")
+        if normalizer is not None:
+            if normalizer.get("type") != "Precompiled":
+                raise ValueError(f"unsupported Unigram normalizer {normalizer.get('type')!r}")
+            charsmap = base64.b64decode(normalizer["precompiled_charsmap"], validate=True)
+            if not charsmap:
+                raise ValueError("Precompiled normalizer must carry a charsmap")
         flags = int(bool(config.get("do_lower_case", False)))
         entries = [(token, float(score)) for token, score in model["vocab"]]
     else:
@@ -303,7 +318,8 @@ def encode_tokenizer(root: Path, architecture: int) -> bytes:
     output += u32(len(entries))
     for token, score in entries:
         output += string(token)
-        output += struct.pack("<f", score)
+        output += struct.pack("<d", score)
+    output += field(charsmap)
     return bytes(output)
 
 
@@ -319,6 +335,8 @@ def tensor_descriptor(tensor: Tensor, offset: int) -> bytes:
 
 
 def bake(args: argparse.Namespace) -> None:
+    if args.query_max_tokens is not None and not args.query:
+        raise ValueError("--query-max-tokens requires --query")
     document_root = Path(args.document).resolve()
     if args.query:
         document = load_tower(document_root, args.document_id, 0, "document", "")
@@ -341,7 +359,8 @@ def bake(args: argparse.Namespace) -> None:
 
     prefix = bytearray(MAGIC + u32(VERSION) + u32(0) + bytes([len(towers)]) + b"\x00" * 7)
     for tower in towers:
-        prefix += encode_tower(tower)
+        maximum = args.query_max_tokens if tower.role == 1 else args.document_max_tokens
+        prefix += encode_tower(tower, maximum)
     for tower in towers:
         prefix += encode_tokenizer(tower.root, tower.architecture)
     prefix += struct.pack("<d", args.alpha)
@@ -602,11 +621,19 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
     fetch = commands.add_parser("fetch")
     fetch.add_argument("model")
-    bake_parser = commands.add_parser("bake")
+    bake_parser = commands.add_parser(
+        "bake", description="Bake an immutable model bundle.",
+        epilog="Release pair: ze-model bake --document $PACK/document --document-id arctic-m-v2 "
+               "--query $PACK/query --query-id clean71-v1 --query-prefix 'query: ' "
+               "--alignment-digest $ALIGNMENT_DIGEST --query-max-tokens 96 "
+               "--document-max-tokens 8192 --output release.zem",
+    )
     bake_parser.add_argument("--document", required=True)
     bake_parser.add_argument("--document-id", required=True)
     bake_parser.add_argument("--query")
     bake_parser.add_argument("--query-id")
+    bake_parser.add_argument("--query-max-tokens", type=int)
+    bake_parser.add_argument("--document-max-tokens", type=int)
     bake_parser.add_argument("--query-prefix", required=True)
     bake_parser.add_argument("--alignment-digest", default="")
     bake_parser.add_argument("--alpha", type=float, default=0.5)

@@ -16,9 +16,11 @@
 - `libloading`'s ISC license and the unmaintained `paste` macro advisory are
   recorded deny exceptions forced by the pinned `mlx-rs` graph; neither adds
   runtime model, network, tokenizer, or serialization behavior.
-- `.zem` layout 2 stores all tower records followed by one tokenizer record
-  per tower in the same order; a symmetric bundle stores one of each. Layout 1
-  is refused with a typed unsupported-version error; re-bake pre-launch bundles.
+- `.zem` layout 3 stores all tower records followed by one tokenizer record
+  per tower in the same order; a symmetric bundle stores one of each. Each
+  tokenizer carries f64 scores and an explicit length-prefixed charsmap (empty
+  when absent). Layouts 1 and 2 are refused with a typed unsupported-version
+  error; re-bake pre-launch bundles.
 - Runtime model inputs are the explicit `.zem` layout only. JSON,
   safetensors, network access, and training remain in `tools/ze-model`.
 - The MLX runtime owns one named embed thread and one non-default stream. Calls
@@ -45,6 +47,7 @@
   store; never relabel their existing vectors as corrected.
 
 - Step 08 additionally appends `;ze-text-wordpiece=2` for the corrected BERT
-  tokenizer interpretation, in both public and document epochs. Unigram epochs
-  are unchanged. Legacy uncased WordPiece implies BERT default accent stripping;
+  tokenizer interpretation, in both public and document epochs. ZE-514 appends
+  `;ze-text-unigram=2` for corrected Unigram evaluation. Legacy uncased
+  WordPiece implies BERT default accent stripping;
   new exports record the effective strip flag and reject unsupported contracts.

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use unicode_categories::UnicodeCategories;
 use unicode_normalization_alignments::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::runtime::RuntimeError;
 use crate::tower::TokenBatch;
@@ -15,7 +17,10 @@ pub(crate) enum TokenizerKind {
 pub(crate) struct ModelTokenizer {
     kind: TokenizerKind,
     token_ids: HashMap<String, u32>,
-    scores: Vec<f32>,
+    scores: Vec<f64>,
+    unknown_score: f64,
+    max_token_bytes: usize,
+    precompiled: Option<Arc<Precompiled>>,
     pad: u32,
     unk: u32,
     cls: u32,
@@ -29,7 +34,7 @@ impl ModelTokenizer {
     pub(crate) const fn evaluation_revision(&self) -> &'static str {
         match self.kind {
             TokenizerKind::WordPiece => ";ze-text-wordpiece=2",
-            TokenizerKind::Unigram => "",
+            TokenizerKind::Unigram => ";ze-text-unigram=2",
         }
     }
 
@@ -37,7 +42,7 @@ impl ModelTokenizer {
     pub(crate) fn new(
         kind: TokenizerKind,
         vocabulary: Vec<String>,
-        scores: Vec<f32>,
+        scores: Vec<f64>,
         pad: u32,
         unk: u32,
         cls: u32,
@@ -68,6 +73,7 @@ impl ModelTokenizer {
                 special_tokens.push(("[MASK]".to_owned(), id));
             }
         }
+        let max_token_bytes = vocabulary.iter().map(String::len).max().unwrap_or(0);
         let token_ids = vocabulary
             .iter()
             .enumerate()
@@ -76,6 +82,9 @@ impl ModelTokenizer {
         Ok(Self {
             kind,
             token_ids,
+            unknown_score: scores.iter().copied().fold(f64::INFINITY, f64::min) - 10.0,
+            max_token_bytes,
+            precompiled: None,
             scores,
             pad,
             unk,
@@ -85,6 +94,48 @@ impl ModelTokenizer {
             strip_accents,
             special_tokens,
         })
+    }
+
+    pub(crate) fn with_precompiled(mut self, bytes: Vec<u8>) -> Result<Self, &'static str> {
+        if bytes.is_empty() {
+            return Ok(self);
+        }
+        if self.kind != TokenizerKind::Unigram {
+            return Err("precompiled normalization requires Unigram");
+        }
+        let size = bytes
+            .get(..4)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or("truncated normalizer")? as usize;
+        if size == 0 || !size.is_multiple_of(4) {
+            return Err("invalid normalizer trie size");
+        }
+        let end = size.checked_add(4).ok_or("normalizer trie size overflow")?;
+        let trie = bytes
+            .get(4..end)
+            .ok_or("truncated normalizer trie")?
+            .chunks_exact(4)
+            .map(|b| b.try_into().map(u32::from_le_bytes))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "invalid trie word")?;
+        let replacements = String::from_utf8(
+            bytes
+                .get(end..)
+                .ok_or("missing normalizer strings")?
+                .to_vec(),
+        )
+        .map_err(|_| "normalizer strings are not UTF8")?;
+        self.special_tokens = self
+            .token_ids
+            .iter()
+            .filter(|(token, id)| {
+                [self.pad, self.unk, self.cls, self.sep].contains(id) || token.as_str() == "<mask>"
+            })
+            .map(|(token, id)| (token.clone(), *id))
+            .collect();
+        self.precompiled = Some(Arc::new(Precompiled { trie, replacements }));
+        Ok(self)
     }
 
     pub(crate) fn encode_batch(
@@ -101,7 +152,8 @@ impl ModelTokenizer {
         let body_limit = max_tokens.saturating_sub(2);
         for text in texts {
             let mut tokens = match self.kind {
-                TokenizerKind::WordPiece => self.wordpiece_input(text),
+                TokenizerKind::WordPiece => self.model_input(text),
+                TokenizerKind::Unigram if self.precompiled.is_some() => self.model_input(text),
                 TokenizerKind::Unigram => self.unigram(&self.normalize(text)),
             };
             tokens.truncate(body_limit);
@@ -140,6 +192,9 @@ impl ModelTokenizer {
     }
 
     fn normalize(&self, text: &str) -> String {
+        if let Some(precompiled) = &self.precompiled {
+            return precompiled.normalize(text);
+        }
         if self.kind == TokenizerKind::WordPiece {
             let mut cleaned = String::with_capacity(text.len());
             for character in text.chars() {
@@ -191,7 +246,14 @@ impl ModelTokenizer {
             .collect()
     }
 
-    fn wordpiece_input(&self, text: &str) -> Vec<u32> {
+    fn model_piece(&self, text: &str) -> Vec<u32> {
+        match self.kind {
+            TokenizerKind::WordPiece => self.wordpiece(&self.normalize(text)),
+            TokenizerKind::Unigram => self.unigram(&self.normalize(text)),
+        }
+    }
+
+    fn model_input(&self, text: &str) -> Vec<u32> {
         let mut remaining = text;
         let mut output = Vec::new();
         // Added special tokens are matched on original text before normalizing.
@@ -203,11 +265,11 @@ impl ModelTokenizer {
                 .filter_map(|(token, id)| remaining.find(token).map(|offset| (offset, token, *id)))
                 .min_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.len().cmp(&a.1.len())));
             let Some((offset, token, id)) = next else {
-                output.extend(self.wordpiece(&self.normalize(remaining)));
+                output.extend(self.model_piece(remaining));
                 break;
             };
             if let Some(prefix) = remaining.get(..offset) {
-                output.extend(self.wordpiece(&self.normalize(prefix)));
+                output.extend(self.model_piece(prefix));
             }
             output.push(id);
             remaining = remaining
@@ -272,10 +334,20 @@ impl ModelTokenizer {
     }
 
     fn unigram(&self, text: &str) -> Vec<u32> {
-        let sentence = text
-            .split_whitespace()
-            .map(|word| format!("▁{word}"))
-            .collect::<String>();
+        if self.precompiled.is_none() {
+            let sentence = text
+                .split_whitespace()
+                .map(|word| format!("▁{word}"))
+                .collect::<String>();
+            return self.unigram_word(&sentence);
+        }
+        text.split_whitespace()
+            .flat_map(|word| word.strip_prefix('▁').unwrap_or(word).split('▁'))
+            .flat_map(|piece| self.unigram_word(&format!("▁{piece}")))
+            .collect()
+    }
+
+    fn unigram_word(&self, sentence: &str) -> Vec<u32> {
         let boundaries = sentence
             .char_indices()
             .map(|(offset, _)| offset)
@@ -284,19 +356,24 @@ impl ModelTokenizer {
         if boundaries.len() < 2 {
             return Vec::new();
         }
-        let mut best = vec![f32::NEG_INFINITY; boundaries.len()];
+        let mut best = vec![f64::NEG_INFINITY; boundaries.len()];
         let mut previous = vec![None; boundaries.len()];
         if let Some(first) = best.first_mut() {
             *first = 0.0;
         }
         for start in 0..boundaries.len().saturating_sub(1) {
-            let start_score = best.get(start).copied().unwrap_or(f32::NEG_INFINITY);
+            let start_score = best.get(start).copied().unwrap_or(f64::NEG_INFINITY);
             if !start_score.is_finite() {
                 continue;
             }
             for end in start.saturating_add(1)..boundaries.len() {
                 let byte_start = boundaries.get(start).copied().unwrap_or(sentence.len());
                 let byte_end = boundaries.get(end).copied().unwrap_or(sentence.len());
+                // Longer substrings cannot name a vocabulary token. Boundaries
+                // grow in byte order, so later ends are impossible too.
+                if byte_end.saturating_sub(byte_start) > self.max_token_bytes {
+                    break;
+                }
                 let Some(piece) = sentence.get(byte_start..byte_end) else {
                     continue;
                 };
@@ -307,7 +384,7 @@ impl ModelTokenizer {
                     .scores
                     .get(id as usize)
                     .copied()
-                    .unwrap_or(f32::NEG_INFINITY);
+                    .unwrap_or(f64::NEG_INFINITY);
                 let candidate = start_score + score;
                 if best.get(end).is_some_and(|current| candidate > *current) {
                     if let Some(slot) = best.get_mut(end) {
@@ -315,6 +392,26 @@ impl ModelTokenizer {
                     }
                     if let Some(slot) = previous.get_mut(end) {
                         *slot = Some((start, id));
+                    }
+                }
+            }
+            // SentencePiece permits one unknown Unicode scalar as a lattice
+            // edge, using minimum vocabulary score minus ten.
+            let end = start.saturating_add(1);
+            let byte_start = boundaries.get(start).copied().unwrap_or(sentence.len());
+            let byte_end = boundaries.get(end).copied().unwrap_or(sentence.len());
+            if self.precompiled.is_some()
+                && sentence
+                    .get(byte_start..byte_end)
+                    .is_some_and(|piece| !self.token_ids.contains_key(piece))
+            {
+                let candidate = start_score + self.unknown_score;
+                if best.get(end).is_some_and(|current| candidate > *current) {
+                    if let Some(slot) = best.get_mut(end) {
+                        *slot = candidate;
+                    }
+                    if let Some(slot) = previous.get_mut(end) {
+                        *slot = Some((start, self.unk));
                     }
                 }
             }
@@ -329,7 +426,56 @@ impl ModelTokenizer {
             cursor = start;
         }
         reversed.reverse();
+        if self.precompiled.is_some() {
+            reversed.dedup_by(|a, b| *a == self.unk && *b == self.unk);
+        }
         reversed
+    }
+}
+
+#[derive(Clone)]
+struct Precompiled {
+    trie: Vec<u32>,
+    replacements: String,
+}
+
+impl Precompiled {
+    // SentencePiece stores a Darts double-array trie followed by NUL-terminated strings.
+    fn transform(&self, text: &str) -> Option<&str> {
+        let offset = |u: u32| ((u >> 10) << ((u & 512) >> 6)) as usize;
+        let mut node = offset(*self.trie.first()?);
+        for byte in text.bytes().take_while(|b| *b != 0) {
+            node ^= byte as usize;
+            let unit = *self.trie.get(node)?;
+            if unit & 0x8000_00ff != u32::from(byte) {
+                return None;
+            }
+            node ^= offset(unit);
+            if unit & 256 != 0 {
+                let begin = (*self.trie.get(node)? & 0x7fff_ffff) as usize;
+                let tail = self.replacements.get(begin..)?;
+                return tail.get(..tail.find('\0')?);
+            }
+        }
+        None
+    }
+    fn normalize(&self, text: &str) -> String {
+        let mut result = String::with_capacity(text.len());
+        // HF tries short grapheme clusters first, then falls back to individual scalars.
+        for cluster in text.graphemes(true) {
+            if cluster.len() < 6
+                && let Some(replacement) = self.transform(cluster)
+            {
+                result.push_str(replacement);
+                continue;
+            }
+            for character in cluster.chars() {
+                let mut utf8 = [0_u8; 4];
+                let part = character.encode_utf8(&mut utf8);
+                result.push_str(self.transform(part).unwrap_or(part));
+            }
+        }
+        result
     }
 }
 
@@ -380,7 +526,7 @@ mod tests {
     fn tokenizer(
         kind: TokenizerKind,
         vocabulary: &[&str],
-        scores: &[f32],
+        scores: &[f64],
         lowercase: bool,
         strip_accents: bool,
     ) -> ModelTokenizer {
@@ -396,6 +542,67 @@ mod tests {
             strip_accents,
         )
         .expect("valid tokenizer")
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn precompiled_replaces_graphemes_and_falls_back_to_scalars() {
+        // Tiny Darts trie: a + combining acute -> X; b -> B.
+        let mut trie = vec![0_u32; 901];
+        trie[0] = 1 << 10;
+        trie[96] = 97 | ((96 ^ 256) << 10);
+        trie[460] = 204 | ((460 ^ 512) << 10);
+        trie[641] = 129 | 256 | ((641 ^ 768) << 10);
+        trie[768] = 0x8000_0000;
+        trie[99] = 98 | 256 | ((99 ^ 900) << 10);
+        trie[900] = 0x8000_0002;
+        let mut bytes = ((trie.len() * 4) as u32).to_le_bytes().to_vec();
+        bytes.extend(trie.iter().flat_map(|unit| unit.to_le_bytes()));
+        bytes.extend_from_slice(b"X\0B\0");
+        let model = tokenizer(
+            TokenizerKind::Unigram,
+            &["<pad>", "<unk>", "<s>", "</s>"],
+            &[0.; 4],
+            false,
+            false,
+        );
+        assert_eq!(
+            model
+                .clone()
+                .with_precompiled(bytes)
+                .expect("charsmap")
+                .normalize("a\u{301} b\u{301}\u{301}\u{301} z"),
+            "X B\u{301}\u{301}\u{301} z"
+        );
+        assert_eq!(
+            model
+                .clone()
+                .with_precompiled(Vec::new())
+                .expect("empty charsmap")
+                .normalize("a\u{301}"),
+            "a\u{301}"
+        );
+        for malformed in [vec![1], vec![0; 4], vec![4, 0, 0, 0]] {
+            assert!(model.clone().with_precompiled(malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn unigram_f64_scores_preserve_a_one_point_path_advantage() {
+        let model = tokenizer(
+            TokenizerKind::Unigram,
+            &["<pad>", "<unk>", "<s>", "</s>", "▁", "a", "▁a"],
+            &[0., 0., 0., 0., -100_000_000., 1., -100_000_000.],
+            false,
+            false,
+        );
+        assert_eq!(
+            model
+                .encode_batch(&["a".to_owned()], 8)
+                .expect("encode")
+                .token_ids,
+            [2, 4, 5, 3]
+        );
     }
 
     #[test]

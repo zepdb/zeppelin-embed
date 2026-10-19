@@ -130,7 +130,7 @@ fn malformed_bundle_metadata_is_refused_at_the_exact_field_boundary() {
     assert_refused(directory.path(), "truncated", &base[..8], |_| {});
     assert_refused(directory.path(), "magic", &base, |bytes| bytes[0] ^= 1);
     assert_refused(directory.path(), "layout", &base, |bytes| {
-        put_u32(bytes, 8, 3);
+        put_u32(bytes, 8, 4);
     });
     assert_refused(directory.path(), "root-reserved", &base, |bytes| {
         bytes[17] = 1;
@@ -272,8 +272,9 @@ fn fixture_offsets(bytes: &[u8]) -> FixtureOffsets {
     cursor += 4;
     for _ in 0..vocabulary {
         skip_field(bytes, &mut cursor);
-        cursor += 4;
+        cursor += 8;
     }
+    skip_field(bytes, &mut cursor); // charsmap
     let alpha = cursor;
     cursor += 8 + 4;
     skip_field(bytes, &mut cursor);
@@ -395,19 +396,21 @@ fn a_two_tower_bundle_loads_distinct_tokenizers_in_tower_order() {
 }
 
 #[test]
-fn a_layout_one_bundle_is_refused_with_a_typed_unsupported_version() {
-    // Keep the digest valid so rejection must identify the unsupported version.
-    let mut bytes = include_bytes!("fixtures/ze115/bert.zem").to_vec();
-    put_u32(&mut bytes, 8, 1);
-    rewrite_digest(&mut bytes);
-    let directory = tempdir().expect("tempdir");
-    let path = directory.path().join("layout-one.zem");
-    std::fs::write(&path, bytes).expect("write layout one bundle");
-    assert!(matches!(
-        Bundle::open(path),
-        Err(BundleError::Unsupported {
-            field: "layout version",
-            id: 1
-        })
-    ));
+fn older_bundle_layouts_are_refused_with_a_typed_unsupported_version() {
+    for version in [1, 2] {
+        // Keep the digest valid so rejection must identify the unsupported version.
+        let mut bytes = include_bytes!("fixtures/ze115/bert.zem").to_vec();
+        put_u32(&mut bytes, 8, version);
+        rewrite_digest(&mut bytes);
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("layout-one.zem");
+        std::fs::write(&path, bytes).expect("write layout one bundle");
+        assert!(matches!(
+            Bundle::open(path),
+            Err(BundleError::Unsupported {
+                field: "layout version",
+                id
+            }) if id == u64::from(version)
+        ));
+    }
 }

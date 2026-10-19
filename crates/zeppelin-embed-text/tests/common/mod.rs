@@ -119,7 +119,7 @@ fn write_fixture_bytes(path: &Path, towers: &[FixtureTower<'_>], alignment: &[u8
 
     let mut body = Vec::new();
     body.extend_from_slice(b"ZEMB0001");
-    push_u32(&mut body, 2);
+    push_u32(&mut body, 3);
     push_u32(&mut body, HEADER_LEN as u32);
     body.push(u8::try_from(towers.len()).expect("fixture tower count fits u8"));
     body.extend_from_slice(&[0; 7]);
@@ -235,8 +235,9 @@ fn write_tokenizer(output: &mut Vec<u8>, vocabulary: &[&str]) {
     push_u32(output, vocabulary.len() as u32);
     for token in vocabulary {
         push_string(output, token);
-        push_f32(output, 0.0);
+        push_f64(output, 0.0);
     }
+    push_bytes(output, &[]);
 }
 
 fn f32_bytes(values: &[f32]) -> Vec<u8> {

@@ -39,6 +39,7 @@ class ArcticQueryExport(unittest.TestCase):
             self.assertEqual(struct.unpack_from("<I", encoded, offset)[0], 6)
             offset += 4 + 2 + 4 + len("query: ")
             self.assertEqual(struct.unpack_from("<I", encoded, offset)[0], 96)
+            self.assertEqual(struct.unpack_from("<I", EXPORT["encode_tower"](tower, 64), offset)[0], 64)
             self.assertEqual(struct.unpack_from("<II", encoded, len(encoded) - 8), (2, 6))
             self.assertEqual(tower.pooling, 2)
             self.assertEqual(struct.unpack_from("<I", encoded, len(encoded) - 28)[0], 1)
