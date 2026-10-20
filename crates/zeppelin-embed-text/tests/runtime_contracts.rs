@@ -42,6 +42,44 @@ fn tokens(rows: usize) -> TokenBatch {
 }
 
 #[test]
+fn mixed_length_batch_matches_each_row_embedded_alone() {
+    // Cross the row split with ragged inputs: the batch and individual calls
+    // must agree even though they trim trailing padding to different widths.
+    for architecture in ["bert", "gte"] {
+        for compute in [ComputeUnits::Cpu, ComputeUnits::CpuAndGpu] {
+            let mut runtime = MlxRuntime::load_for_compute(
+                fixture(architecture, 1, 3),
+                TowerRole::Document,
+                compute,
+            )
+            .expect("synthetic ze115 tower");
+            let input = tokens(33);
+            let batch = runtime.embed_batch(&input).expect("mixed-length batch");
+            assert_eq!((batch.rows(), batch.dims()), (33, 3));
+            for (row, actual) in batch.values().chunks_exact(3).enumerate() {
+                let ids = if row % 2 == 0 {
+                    vec![2, 5, 6, 3]
+                } else {
+                    vec![2, 6, 3]
+                };
+                let width = ids.len();
+                let single = TokenBatch::new(ids, vec![1.0; width], 1, width)
+                    .expect("unpadded individual row");
+                let expected = runtime.embed_batch(&single).expect("individual embedding");
+                assert_eq!(actual.len(), expected.values().len());
+                for (column, (actual, expected)) in actual.iter().zip(expected.values()).enumerate()
+                {
+                    assert!(
+                        (actual - expected).abs() <= 1e-5,
+                        "{architecture} {compute:?} row={row} col={column}: {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn tiny_transformers_match_independent_cpu_reference_across_pooling_and_chunk_boundaries() {
     assert_eq!(MlxRuntime::max_eval_rows(), 32);
     for (architecture, expected) in [
