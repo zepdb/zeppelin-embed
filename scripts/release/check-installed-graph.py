@@ -306,7 +306,7 @@ class ContractTests(unittest.TestCase):
         code = '\n'.join(line[10:] for line in code.splitlines())
         code = code.replace('${{ matrix.artifact }}', 'graph-cypher')
         result = subprocess.run([sys.executable, '-c', code], cwd=ROOT,
-                                env=dict(os.environ, RELEASE_TAG='v0.7.0'),
+                                env=dict(os.environ, RELEASE_TAG='v0.8.0'),
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -319,12 +319,13 @@ class ContractTests(unittest.TestCase):
         package = json.loads(result.stdout)
         targets = {target['name']: target for target in package['targets']}
         self.assertEqual(targets['ZeppelinEmbedGraph']['url'],
-                         'https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbedGraph.xcframework.zip')
+                         'https://github.com/zepdb/zeppelin-embed/releases/download/v0.8.0/ZeppelinEmbedGraph.xcframework.zip')
         self.assertEqual(targets['ZeppelinEmbedGraph']['checksum'],
                          pin((ROOT / 'Package.swift').read_text(), graph=True))
         self.assertEqual(targets['CZeppelinEmbed']['path'], 'bindings/swift/Sources/CZeppelinEmbedGraph')
         self.assertEqual(targets['ZeppelinEmbed']['settings'],
-                         [{'kind': {'define': {'_0': 'ZE_GRAPH'}}, 'tool': 'swift'}])
+                         [{'kind': {'define': {'_0': define}}, 'tool': 'swift'}
+                          for define in ('ZE_GRAPH', 'ZE_TEXT')])
         env['ZE_USE_LOCAL_XCFRAMEWORK'] = '1'
         result = subprocess.run(['swift', 'package', '--package-path', str(ROOT),
                                  'dump-package'], env=env, capture_output=True, text=True)

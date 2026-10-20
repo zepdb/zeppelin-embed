@@ -19,7 +19,7 @@ test-support = []
 crate-type = ["rlib", "staticlib"]
 
 [dependencies]
-zeppelin-embed = { path = "../zeppelin-embed", version = "=0.7.0" }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.8.0" }
 libc.workspace = true
 xxhash-rust.workspace = true
 mlx-rs = { version = "=0.25.3", default-features = false, features = ["metal"] }
@@ -31,5 +31,5 @@ unicode-segmentation = "=1.12.0"
 cc = "1"
 
 [dev-dependencies]
-zeppelin-embed = { path = "../zeppelin-embed", version = "=0.7.0", features = ["test-seams"] }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.8.0", features = ["test-seams"] }
 tempfile.workspace = true

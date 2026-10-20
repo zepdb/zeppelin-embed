@@ -4,9 +4,13 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
-## Unreleased
+## 0.8.0 - 2026-10-20
 
 ### Added
+
+- The root Swift package exposes `TextStore` in release graph builds
+  (`ZE_ENABLE_GRAPH=1`), as well as local XCFramework builds.
+- `zeppelin-embed-text` is published to crates.io.
 
 - Text API documentation for Rust, C, Swift, Node and Python: default-model
   download, cache/offline settings, ingest, all query legs, and delete, with a
@@ -22,6 +26,14 @@ release and a compatible correction is a patch release.
   prebuilds have no text and throw `ZE_ERR_UNSUPPORTED`.
 
 ### Changed
+
+- MLX's process-global buffer cache is capped at 4 GiB by default during text
+  ingest (ZE-528). Override it with Rust's
+  `TextOpenOptions::with_mlx_cache_limit_bytes` or `ZE_MLX_CACHE_LIMIT_BYTES`
+  (bytes; invalid values are errors; the first setter in a process wins).
+  On an Apple M3 Max with 128 GiB, a full FiQA ingest (57,638 documents) with
+  the release FP16 default model peaked at about 7.3 GB process footprint
+  (about 112 GB before the cap), with max RSS about 4.8 GB.
 
 - Corrected text download progress documentation: intermediate byte reports
   require both 64 KiB and 100 ms; verified files also report completion (ZE-517).

@@ -655,6 +655,14 @@ files together when repackaging. Intel macOS and Windows builds throw a typed
 Electron apps must `asarUnpack` both `mlx.metallib` and `zeppelin_embed.node`,
 because MLX loads the metallib from the directory of the native binary.
 
+MLX keeps a process-global buffer cache, capped at 4 GiB by default during text
+ingest. On an Apple M3 Max with 128 GiB, a full FiQA ingest (57,638 documents)
+with the release FP16 default model peaked at about 7.3 GB process footprint
+(about 112 GB before the cap), with max RSS about 4.8 GB (ZE-528). The binding
+has no cache-limit option; set `ZE_MLX_CACHE_LIMIT_BYTES` (bytes) before the
+first text open to override the cap. Invalid values are errors; the first
+setter in a process wins.
+
 ```js
 const { TextStore } = require('@zepdb/zeppelin-embed');
 

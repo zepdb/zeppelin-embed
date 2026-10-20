@@ -20,9 +20,9 @@ let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // fails the release when this literal disagrees with the archive it attaches,
 // and prints the value to pin. `scripts/xcframework/build.sh` only reports a
 // local mismatch.
-let binaryChecksum = "4016bfdeaecae0617ef3f3e879b80451601b53902194fc384ec6eb67a58705b9" // ze:xcframework-checksum
+let binaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000" // ze:xcframework-checksum
 
-let graphBinaryChecksum = "b33dae4c31e46043c338faa1ae913132ae9a951bdf052f8f211d680ebd73f9e7" // ze:graph-xcframework-checksum
+let graphBinaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000" // ze:graph-xcframework-checksum
 
 // Framework discovery uses the framework's name; preserve the public C import
 // through a source re-export when selecting the dynamic full artifact.
@@ -44,8 +44,8 @@ if useLocalFFI {
     cTarget = .binaryTarget(
         name: binaryTargetName,
         url: graph
-            ? "https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbedGraph.xcframework.zip"
-            : "https://github.com/zepdb/zeppelin-embed/releases/download/v0.7.0/ZeppelinEmbed.xcframework.zip",
+            ? "https://github.com/zepdb/zeppelin-embed/releases/download/v0.8.0/ZeppelinEmbedGraph.xcframework.zip"
+            : "https://github.com/zepdb/zeppelin-embed/releases/download/v0.8.0/ZeppelinEmbed.xcframework.zip",
         checksum: graph ? graphBinaryChecksum : binaryChecksum
     )
 }
@@ -64,9 +64,7 @@ let localLinkerSettings: [LinkerSetting]? = useLocalFFI
 let graphSwiftSettings: [SwiftSetting]? = graph
     ? [.define("ZE_GRAPH")] + (useLocalFFI
         ? [.unsafeFlags(["-Xcc", "-DZE_GRAPH"])]
-        // Release ticket ZE-513 enables ZE_TEXT for remote (release URL) graph
-        // builds in the same commit that re-pins the graph URL and checksum.
-        : (useLocalXCFramework ? [.define("ZE_TEXT")] : []))
+        : [.define("ZE_TEXT")])
     : nil
 
 let package = Package(

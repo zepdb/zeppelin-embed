@@ -37,6 +37,14 @@ its native library. Other builds raise `ze.TextUnavailable` with
 "text API is available on macOS arm64 only" from text entry points.
 No separate MLX install or shader-library path is needed.
 
+MLX keeps a process-global buffer cache, capped at 4 GiB by default during text
+ingest. On an Apple M3 Max with 128 GiB, a full FiQA ingest (57,638 documents)
+with the release FP16 default model peaked at about 7.3 GB process footprint
+(about 112 GB before the cap), with max RSS about 4.8 GB (ZE-528). The binding
+has no cache-limit option; set `ZE_MLX_CACHE_LIMIT_BYTES` (bytes) before the
+first text open to override the cap. Invalid values are errors; the first
+setter in a process wins.
+
 ```python
 import zeppelin_embed as ze
 

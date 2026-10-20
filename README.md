@@ -160,11 +160,20 @@ Cold start at relaunch is **about 1.1 s** (open 860 ms + first hybrid query
 263 ms). First-ever startup with the CoreML cache cleared is **about 2.1 s**.
 Both measurements used a warm OS file cache (ZE-503).
 
+MLX keeps a process-global buffer cache, capped at 4 GiB by default during text
+ingest. On an Apple M3 Max with 128 GiB, a full FiQA ingest (57,638 documents)
+with the release FP16 default model peaked at about 7.3 GB process footprint
+(about 112 GB before the cap), with max RSS about 4.8 GB. Override the cap with
+Rust's `TextOpenOptions::with_mlx_cache_limit_bytes` or
+`ZE_MLX_CACHE_LIMIT_BYTES` (bytes). Bindings expose no cache-limit option: set
+the environment variable before the first text open. Invalid values are errors;
+the first setter in a process wins.
+
 Verified-cache resolution is **about 0.19 ms** for a synthetic warm-cache
 payload (ZE-517). This measures resolution, excluding model/runtime loading.
 
 Sources: ZE-499 (precision and payload size), ZE-503 (query latency and cold
-start), and ZE-517 (cached resolution).
+start), ZE-517 (cached resolution), and ZE-528 (ingest memory).
 
 See complete default-model examples for [Rust](crates/zeppelin-embed-text/README.md),
 [Python](bindings/python/README.md#text-api-macos-arm64),

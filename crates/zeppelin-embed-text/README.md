@@ -43,6 +43,14 @@ or `ZE_MODEL_OFFLINE=1` to prohibit networking; a cache miss returns
 `TextError::ModelResolution(ModelError::OfflineMiss)`. `ZE_MODEL_ENDPOINT` or
 `ModelOpenOptions.endpoint` overrides the download endpoint.
 
+MLX keeps a process-global buffer cache, capped at 4 GiB by default during text
+ingest. On an Apple M3 Max with 128 GiB, a full FiQA ingest (57,638 documents)
+with the release FP16 default model peaked at about 7.3 GB process footprint
+(about 112 GB before the cap), with max RSS about 4.8 GB (ZE-528). Override the
+cap with `TextOpenOptions::with_mlx_cache_limit_bytes` or
+`ZE_MLX_CACHE_LIMIT_BYTES` (bytes), set before the first text open. Invalid
+values are errors; the first setter in a process wins.
+
 `ModelOpenOptions.progress` receives synchronous byte counts on the calling
 thread. Intermediate reports require both at least 64 KiB and at least 100 ms
 since the last report; each verified file also reports completion. Initial

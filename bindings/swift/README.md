@@ -6,7 +6,7 @@ consumers use the checksum-pinned XCFramework binary target in the root
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.7.0")
+.package(url: "https://github.com/zepdb/zeppelin-embed", from: "0.8.0")
 ```
 
 Local source builds set `ZE_USE_LOCAL_FFI=1` after building the release FFI
@@ -58,12 +58,24 @@ artifact validation, also set `ZE_USE_LOCAL_XCFRAMEWORK=1`; the package selects
 
 ### TextStore
 
-`TextStore` is available now with a locally built full XCFramework
-(`ZE_USE_LOCAL_XCFRAMEWORK=1 ZE_ENABLE_GRAPH=1`), on macOS 14+ arm64, and from
-the next release via the release URL. It is not
-available with `ZE_USE_LOCAL_FFI=1`. It adds no binary target or second copy of core.
+`TextStore` is available from the release with `ZE_ENABLE_GRAPH=1` on macOS 14+
+arm64, or with a locally built full XCFramework
+(`ZE_USE_LOCAL_XCFRAMEWORK=1 ZE_ENABLE_GRAPH=1`). It is not available with
+`ZE_USE_LOCAL_FFI=1`. It adds no binary target or second copy of core.
 The dynamic framework includes `Resources/mlx.metallib`; preserve that resource
 when distributing your app. The default universal artifact has no text API.
+
+```sh
+ZE_ENABLE_GRAPH=1 swift build
+```
+
+MLX keeps a process-global buffer cache, capped at 4 GiB by default during text
+ingest. On an Apple M3 Max with 128 GiB, a full FiQA ingest (57,638 documents)
+with the release FP16 default model peaked at about 7.3 GB process footprint
+(about 112 GB before the cap), with max RSS about 4.8 GB (ZE-528). The binding
+has no cache-limit option; set `ZE_MLX_CACHE_LIMIT_BYTES` (bytes) before the
+first text open to override the cap. Invalid values are errors; the first
+setter in a process wins.
 
 ```swift
 import Foundation
