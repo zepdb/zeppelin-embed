@@ -72,10 +72,11 @@ jobs:
         working-directory: bindings/node
       - name: Check native source formatting
         run: xcrun clang-format --dry-run --Werror bindings/node/native/addon.cc
-      - name: Install Metal toolchain on Apple silicon
+      - name: Check Apple silicon and bundled Metal tools
         run: |
           test "$(uname -m)" = arm64
-          xcodebuild -downloadComponent MetalToolchain
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx --find metallib
       - run: npm run build:native
         working-directory: bindings/node
       - name: Verify each FFI archive carries the graph entry points
