@@ -1,13 +1,26 @@
+#![deny(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unwrap_used,
+    unsafe_op_in_unsafe_fn
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use zeppelin_embed::epoch::{EmbeddingEpoch, StoreEpoch};
+use zeppelin_embed::epoch::{EmbeddingEpoch, Normalization, StoreEpoch};
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
-use zeppelin_embed::lifecycle::{OpenOptions, ScanRescoreOptions, SearchTier, Store};
+use zeppelin_embed::ingest::SearchRequest;
+use zeppelin_embed::lifecycle::{
+    CancelToken, OpenOptions, QueryControl, ScanRescoreOptions, SearchOptions, SearchTier, Store,
+};
 use zeppelin_embed::tier::SegmentTier;
 use zeppelin_embed_bench::beir::eval::{Run, RunEntry, mean_ndcg_at_k, mean_recall_at_k};
 use zeppelin_embed_bench::beir::loader::{BeirCorpus, load_corpus};
@@ -22,10 +35,13 @@ use zeppelin_embed_text::runtime::mlx::MlxRuntime;
 use zeppelin_embed_text::tower::TowerRole;
 use zeppelin_embed_text::{
     IngestOptions, Legs, MaintenanceBudget, MaintenanceStatus, QueryBackend, QueryOptions,
-    TextDocument, TextQueryOutcome, TextStore,
+    TextDocument, TextHit, TextOpenOptions, TextQueryOutcome, TextStore,
 };
 
 const MIN_GRAPH_ROWS: u64 = 30_000;
+
+type QueryVectors = BTreeMap<usize, Vec<f32>>;
+type LoadedQueryRuntime = (Box<dyn ModelRuntime>, &'static str, &'static str);
 
 fn main() {
     if let Err(error) = run() {
@@ -41,7 +57,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "ingest" => ingest(&cli),
         "promote" => promote(&cli),
         "verify" => verify(&cli),
-        "steady" => steady(&cli),
+        "steady" => steady(&cli, false),
+        "steady-vector" => steady(&cli, true),
         "cold" => cold(&cli, process_started),
         "components" => components(&cli),
         "recall" => recall(&cli),
@@ -135,6 +152,22 @@ fn ingest(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         IngestOptions::default().embed_batch_size,
     )?;
     let maintenance_ms = cli.u64("--maintenance-ms", 0)?;
+    let cache_limit = cli
+        .optional("--mlx-cache-limit-bytes")
+        .map(|value| value.parse::<usize>())
+        .transpose()?;
+    let clear_ms = cli
+        .optional("--mlx-clear-cache-ms")
+        .map(|value| value.parse::<u64>())
+        .transpose()?;
+    let sample_ms = cli.u64("--memory-sample-ms", 1_000)?;
+    if embed_batch_size == 0 || sample_ms == 0 || clear_ms == Some(0) {
+        return Err(io::Error::other("embed batch and timer intervals must be positive").into());
+    }
+    let mut memory_out = cli
+        .optional("--memory-out")
+        .map(std::fs::File::create)
+        .transpose()?;
     if let Some(parent) = store_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -152,7 +185,48 @@ fn ingest(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::write(id_map_path(store_path, corpus_name)?, id_table)?;
     let store = TextStore::open(store_path, bundle_path, Default::default())?;
-    let report = store.ingest_text(
+    let after_open = memory_counters()?;
+    let old_cache_limit = if let Some(limit) = cache_limit {
+        let mut old = 0;
+        // SAFETY: the out pointer is valid; MLX locks its allocator internally.
+        mlx_check(
+            unsafe { mlx_set_cache_limit(&mut old, limit) },
+            "mlx_set_cache_limit",
+        )?;
+        Some(old)
+    } else {
+        None
+    };
+    // Reset only the MLX peak immediately before ingest; macOS lifetime peak
+    // intentionally still includes startup and model loading.
+    // SAFETY: this no-argument MLX call takes the allocator mutex internally.
+    mlx_check(unsafe { mlx_reset_peak_memory() }, "mlx_reset_peak_memory")?;
+    let initial = memory_counters()?;
+    let started = Instant::now();
+    MemorySample {
+        t_seconds: 0.0,
+        counters: initial,
+    }
+    .write_sample(memory_out.as_mut())?;
+    // Clones share the file offset. Main writes only before spawn and after
+    // join, so the initial, periodic and final lines cannot overlap.
+    let sampler_out = memory_out
+        .as_ref()
+        .map(std::fs::File::try_clone)
+        .transpose()?;
+    let (stop, receiver) = mpsc::channel();
+    let sampler = std::thread::Builder::new()
+        .name("ze-bench-memory".to_owned())
+        .spawn(move || {
+            sample_memory(
+                &receiver,
+                started,
+                Duration::from_millis(sample_ms),
+                clear_ms.map(Duration::from_millis),
+                sampler_out,
+            )
+        })?;
+    let result = store.ingest_text(
         &documents,
         IngestOptions {
             seal_every,
@@ -160,10 +234,52 @@ fn ingest(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             maintenance_wall_time: Duration::from_millis(maintenance_ms),
             ..Default::default()
         },
-    )?;
+    );
+    // Always stop and join, including when ingest failed. Take the final
+    // snapshot after join so sample timestamps and log writes stay ordered.
+    drop(stop);
+    let sampled = sampler
+        .join()
+        .map_err(|_| io::Error::other("memory sampler panicked"))?;
+    let after_ingest = memory_counters()?;
+    let final_sample = MemorySample {
+        t_seconds: started.elapsed().as_secs_f64(),
+        counters: after_ingest,
+    };
+    final_sample.write_sample(memory_out.as_mut())?;
+    let mut samples = vec![MemorySample {
+        t_seconds: 0.0,
+        counters: initial,
+    }];
+    samples.extend(sampled?);
+    samples.push(final_sample);
+    let maxima = memory_maxima(
+        &samples
+            .iter()
+            .map(|sample| sample.counters)
+            .collect::<Vec<_>>(),
+    );
+    let report = result?;
     let health = store.health()?;
     let output = json!({
         "kind": "ingest",
+        "memory": {
+            "units": "bytes",
+            "after_open": after_open.json(),
+            "after_ingest": after_ingest.json(),
+            "sample_maxima": maxima.json(),
+            "sample_count": samples.len(),
+            "memory_sample_ms": sample_ms,
+            "memory_out": cli.optional("--memory-out"),
+            "memory_out_format": "jsonl; each sample flushed to file and stderr",
+            "embed_batch": embed_batch_size,
+            "mlx_cache_limit_bytes": cache_limit,
+            "old_mlx_cache_limit_bytes": old_cache_limit,
+            "mlx_clear_cache_ms": clear_ms,
+            "mlx_peak_scope": "reset immediately before ingest; after_open precedes reset",
+            "sampling_policy": "non-atomic native diagnostics; pinned MLX getters read unlocked size_t fields",
+            "documents_per_second": report.documents as f64 / report.elapsed.as_secs_f64(),
+        },
         "bundle": bundle_path,
         "store": store_path,
         "corpus": corpus_name,
@@ -257,12 +373,16 @@ fn verify(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     print_json(&output)
 }
 
-fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn steady(cli: &Cli, caller_vector: bool) -> Result<(), Box<dyn std::error::Error>> {
     let beir_root = Path::new(cli.required("--beir-root")?);
     let corpus_name = cli.required("--corpus")?;
     let bundle_path = Path::new(cli.required("--bundle")?);
     let store_path = Path::new(cli.required("--store")?);
-    let legs = parse_legs(cli.required("--legs")?)?;
+    let legs = if caller_vector {
+        Legs::Dense
+    } else {
+        parse_legs(cli.required("--legs")?)?
+    };
     let requested_tier = parse_search_tier(cli.required("--tier")?)?;
     let rounds = cli.usize("--rounds", 3)?;
     let warm = cli.usize("--warm", 20)?;
@@ -279,19 +399,85 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let corpus = load_corpus(beir_root, corpus_name)?;
     let queries = test_queries(&corpus)?;
     let id_map = read_id_map(store_path, corpus_name)?;
-    let store = TextStore::open(store_path, bundle_path, Default::default())?;
+    let order = shuffled_order(queries.len(), seed);
+    let (vectors, vector_backend) = if caller_vector {
+        prepare_query_vectors(bundle_path, &queries, &order)?
+    } else {
+        (BTreeMap::new(), "(none)")
+    };
+    let open_options = if caller_vector {
+        TextOpenOptions::new(OpenOptions::read_only(), TokenizerConfig::text_default())
+    } else {
+        TextOpenOptions::default()
+    };
+    let store = TextStore::open(store_path, bundle_path, open_options)?;
     let backend = if legs == Legs::Lexical {
         "(none)"
     } else {
         backend_name(store.query_backend())
     };
+    let epoch = store.epoch();
     let physical_tier = verify_timing_store(&store, store_path)?;
-    let order = shuffled_order(queries.len(), seed);
+    let health = store.health()?;
+    // TextStore validates the bundle's document epoch; inspection adopts that
+    // persisted epoch. Both handles are read-only for the caller-vector run.
+    let vector_store = if caller_vector {
+        Some(Store::open_for_inspection(store_path)?)
+    } else {
+        None
+    };
+    let mut search_options = SearchOptions::default();
+    if let Some(tier) = requested_tier {
+        search_options = search_options.with_tier(tier);
+    }
+    if let Some(config) = rescore {
+        search_options = search_options.with_scan_rescore(config);
+    }
+    let mut parity = Vec::new();
+    let mut equal_rankings = 0_usize;
+    if let Some(core) = &vector_store {
+        if backend != vector_backend {
+            return Err(
+                io::Error::other("caller-vector and TextStore query backends differ").into(),
+            );
+        }
+        for index in &order {
+            let query = queries
+                .get(*index)
+                .ok_or_else(|| io::Error::other("query index is out of bounds"))?;
+            let vector = vectors
+                .get(index)
+                .ok_or_else(|| io::Error::other("missing query vector"))?;
+            let dense = store.query_text(&query.text, query_options)?;
+            let caller = caller_vector_query(core, vector, k, search_options, epoch)?;
+            let equal = caller
+                .hits
+                .iter()
+                .map(|hit| hit.doc_id)
+                .eq(dense.iter().map(|hit| hit.doc_id));
+            equal_rankings += usize::from(equal);
+            parity.push(json!({"query_id": query.id, "equal": equal}));
+        }
+        store.close()?;
+    }
+    let execute_query = |vector: &[f32], text: &str| match &vector_store {
+        Some(core) => caller_vector_query(core, vector, k, search_options, epoch),
+        None => store
+            .query_text_with_diagnostics(text, query_options)
+            .map_err(Into::into),
+    };
     for index in order.iter().cycle().take(warm) {
         let query = queries
             .get(*index)
             .ok_or_else(|| io::Error::other("warmup query index is out of bounds"))?;
-        let _ = store.query_text(&query.text, query_options)?;
+        let vector = match &vector_store {
+            Some(_) => vectors
+                .get(index)
+                .ok_or_else(|| io::Error::other("missing warmup vector"))?
+                .as_slice(),
+            None => &[],
+        };
+        let _ = execute_query(vector, &query.text)?;
     }
     let mut samples = Vec::with_capacity(queries.len().saturating_mul(rounds));
     let mut run = Run::new();
@@ -302,8 +488,15 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             let query = queries
                 .get(*index)
                 .ok_or_else(|| io::Error::other("query index is out of bounds"))?;
+            let vector = match &vector_store {
+                Some(_) => vectors
+                    .get(index)
+                    .ok_or_else(|| io::Error::other("missing query vector"))?
+                    .as_slice(),
+                None => &[],
+            };
             let started = Instant::now();
-            let outcome = store.query_text_with_diagnostics(&query.text, query_options)?;
+            let outcome = execute_query(vector, &query.text)?;
             let latency_ms = started.elapsed().as_secs_f64() * 1_000.0;
             samples.push(latency_ms);
             let entries = run_entries(&outcome.hits, &id_map)?;
@@ -323,10 +516,10 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| io::Error::other("steady-state sample set is empty"))?;
     let ndcg = mean_ndcg_at_k(&run, &corpus.qrels, k);
     let dimensions = Bundle::open(bundle_path)?.query_tower().embedding.dims;
-    let output = json!({
-        "kind": "steady",
+    let mut output = json!({
+        "kind": if caller_vector { "steady-vector" } else { "steady" },
         "backend": backend,
-        "leg": leg_name(legs),
+        "leg": if caller_vector { "CallerVector" } else { leg_name(legs) },
         "store_tier": segment_tier_short(physical_tier),
         "query_tier": requested_tier.map_or("unset", search_tier_name),
         "scan_rescore": scan_rescore_json(rescore),
@@ -347,14 +540,114 @@ fn steady(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         "chunk_policy": "raw chunk ranks retained in query_samples; qrels judge parents, not chunks",
         "instrumentation_enabled": zeppelin_embed::diag::QUERY_TIMING_ENABLED,
         "epoch": { "embedding": store.epoch().embedding.value(), "tokenizer": store.epoch().tokenizer.value() },
-        "segments": segments_json(&store.health()?),
+        "segments": segments_json(&health),
         "latencies_ms": samples,
         "rankings": rankings,
         "query_samples": query_samples,
     });
+    if caller_vector {
+        let object = output
+            .as_object_mut()
+            .ok_or_else(|| io::Error::other("steady output is not an object"))?;
+        object.insert("equal_rankings".to_owned(), json!(equal_rankings));
+        object.insert("parity".to_owned(), json!(parity));
+        object.insert("timing_policy".to_owned(), json!("core search_with_text and owned text materialization; embedding and parity excluded"));
+    }
     write_and_print_json(out, &output)?;
-    store.close()?;
+    match vector_store {
+        Some(core) => core.close()?,
+        None => store.close()?,
+    }
     Ok(())
+}
+
+fn prepare_query_vectors(
+    bundle_path: &Path,
+    queries: &[&zeppelin_embed_bench::beir::BeirQuery],
+    order: &[usize],
+) -> Result<(QueryVectors, &'static str), Box<dyn std::error::Error>> {
+    let bundle = Arc::new(Bundle::open(bundle_path)?);
+    let (mut runtime, _, vector_backend) = load_query_runtime(&bundle, bundle_path)?;
+    // Every query embedding is evaluated and normalized before any timing.
+    let mut vectors = BTreeMap::new();
+    for index in order {
+        let query = queries
+            .get(*index)
+            .ok_or_else(|| io::Error::other("query index is out of bounds"))?;
+        let tokens = bundle.tokenize_query(&query.text)?;
+        let embedded = runtime.embed_batch(&tokens)?;
+        let tower = &bundle.query_tower().embedding;
+        if embedded.rows() != 1 || embedded.dims() != tower.dims as usize {
+            return Err(io::Error::other("query embedding shape mismatch").into());
+        }
+        let mut vector = embedded.into_values();
+        if tower.normalization == Normalization::L2 {
+            let norm = vector
+                .iter()
+                .map(|v| f64::from(*v).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            if !norm.is_finite() || norm <= 0.0 {
+                return Err(io::Error::other("query embedding has invalid norm").into());
+            }
+            for value in &mut vector {
+                *value = (f64::from(*value) / norm) as f32;
+            }
+            let squared_norm = vector.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+            if (squared_norm - 1.0).abs() > 1.0e-5 {
+                return Err(io::Error::other("query embedding is not unit length").into());
+            }
+        }
+        vectors.insert(*index, vector);
+    }
+    drop(runtime);
+    Ok((vectors, vector_backend))
+}
+
+// Same core search and owned text materialization as TextStore's dense leg.
+fn caller_vector_query(
+    store: &Store,
+    vector: &[f32],
+    k: usize,
+    options: SearchOptions,
+    epoch: zeppelin_embed::epoch::EpochIdentity,
+) -> Result<TextQueryOutcome, Box<dyn std::error::Error>> {
+    let (outcome, hits) = store.search_with_text(
+        SearchRequest::new(vector),
+        k,
+        options,
+        QueryControl::Cancel(CancelToken::new()),
+        |outcome, materializer| {
+            outcome
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(rank, candidate)| {
+                    let row = materializer.text(rank)?;
+                    let encoded = row.document.doc_id().get();
+                    let squared_l2 = -f64::from(candidate.score());
+                    Ok(TextHit {
+                        doc_id: encoded >> 32,
+                        revision: row.document.revision().get(),
+                        chunk: u32::try_from(encoded & u128::from(u32::MAX))?,
+                        text: row.text,
+                        score: -squared_l2,
+                        vector_squared_l2: Some(squared_l2),
+                        lexical_bm25: None,
+                        epoch,
+                    })
+                })
+                .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()
+        },
+    )?;
+    Ok(TextQueryOutcome {
+        hits: hits?,
+        diagnostics: Some(outcome.diagnostics),
+        timings: None,
+        backend: None,
+        query_tokens: 0,
+        embedding_calls: 0,
+    })
 }
 
 // JSON construction stays outside the measured query boundary. Raw chunk
@@ -521,7 +814,9 @@ fn cold(cli: &Cli, process_started: Instant) -> Result<(), Box<dyn std::error::E
     let query = cli.required("--query")?;
     let legs = parse_legs(cli.required("--legs")?)?;
     let k = cli.usize("--k", 10)?;
+    let text_open_started = Instant::now();
     let store = TextStore::open(store_path, bundle_path, Default::default())?;
+    let text_store_open_ms = text_open_started.elapsed().as_secs_f64() * 1_000.0;
     let open_ms = process_started.elapsed().as_secs_f64() * 1_000.0;
     let verification_started = Instant::now();
     let health = store.health()?;
@@ -544,6 +839,7 @@ fn cold(cli: &Cli, process_started: Instant) -> Result<(), Box<dyn std::error::E
         "kind": "cold",
         "backend": backend,
         "open_ms": open_ms,
+        "text_store_open_ms": text_store_open_ms,
         "first_query_ms": first_query_ms,
         "total_ms": total_ms,
         "hits": hits.len(),
@@ -551,6 +847,45 @@ fn cold(cli: &Cli, process_started: Instant) -> Result<(), Box<dyn std::error::E
     });
     store.close()?;
     print_json(&output)
+}
+
+// Match discover_query_coreml and RuntimeClient::start in the text crate.
+fn load_query_runtime(
+    bundle: &Arc<Bundle>,
+    bundle_path: &Path,
+) -> Result<LoadedQueryRuntime, Box<dyn std::error::Error>> {
+    let model = match std::env::var("ZE_QUERY_COREML") {
+        Ok(value) if value == "off" => None,
+        Ok(value) => Some(PathBuf::from(value)),
+        Err(_) => Some(bundle_path.with_extension("mlmodelc")),
+    }
+    .filter(|path| path.is_dir());
+    if let Some(model) = model {
+        #[cfg(target_os = "macos")]
+        {
+            use zeppelin_embed_text::runtime::coreml::{ComputeUnits, CoreMlRuntime};
+            let runtime = CoreMlRuntime::load(
+                &model,
+                bundle.query_tower().embedding.dims as usize,
+                ComputeUnits::CpuAndNeuralEngine,
+            )?;
+            if runtime.sequence() < bundle.query_tower().embedding.max_tokens as usize {
+                return Err(
+                    io::Error::other("CoreML sequence is below bundle query max_tokens").into(),
+                );
+            }
+            return Ok((Box::new(runtime), "CoreML", "CoreML CPU_AND_NE requested"));
+        }
+        #[cfg(not(target_os = "macos"))]
+        return Err(io::Error::other(format!("CoreML requires macOS: {}", model.display())).into());
+    }
+    let runtime = MlxRuntime::load(Arc::clone(bundle), TowerRole::Query)?;
+    let backend = if runtime.identity().gpu {
+        "MLX GPU"
+    } else {
+        "MLX CPU"
+    };
+    Ok((Box::new(runtime), "MLX", backend))
 }
 
 fn components(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -562,13 +897,8 @@ fn components(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let document = MlxRuntime::load(Arc::clone(&bundle), TowerRole::Document)?;
     let document_tower_load_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let started = Instant::now();
-    let query = MlxRuntime::load(Arc::clone(&bundle), TowerRole::Query)?;
+    let (query, query_runtime, backend) = load_query_runtime(&bundle, bundle_path)?;
     let query_runtime_load_ms = started.elapsed().as_secs_f64() * 1_000.0;
-    let backend = if query.identity().gpu {
-        "MLX GPU"
-    } else {
-        "MLX CPU"
-    };
     drop(query);
     drop(document);
     let tokenizer = TokenizerConfig::text_default();
@@ -581,22 +911,38 @@ fn components(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         },
         tokenizer: tokenizer.epoch(),
     };
-    let directory = tempfile::tempdir()?;
+    let directory = if cli.optional("--store").is_none() {
+        Some(tempfile::tempdir()?)
+    } else {
+        None
+    };
+    let store_path = cli
+        .optional("--store")
+        .map(Path::new)
+        .or_else(|| directory.as_ref().map(|directory| directory.path()))
+        .ok_or_else(|| io::Error::other("missing component store path"))?;
     let started = Instant::now();
-    let store = Store::open(
-        directory.path(),
-        OpenOptions::default()
-            .with_epoch(epoch)
-            .with_tokenizer(tokenizer),
-    )?;
+    let store = match cli.optional("--store") {
+        // Inspection adopts the persisted document epoch and validates the
+        // tokenizer without rewriting or relabelling the FiQA store.
+        Some(path) => Store::open_for_inspection(path)?,
+        None => Store::open(
+            store_path,
+            OpenOptions::default()
+                .with_epoch(epoch)
+                .with_tokenizer(tokenizer),
+        )?,
+    };
     let store_open_ms = started.elapsed().as_secs_f64() * 1_000.0;
     store.close()?;
     print_json(&json!({
         "kind": "components",
+        "store": store_path,
         "backend": backend,
         "bundle_open_ms": bundle_open_ms,
         "document_tower_load_ms": document_tower_load_ms,
         "query_runtime_load_ms": query_runtime_load_ms,
+        "query_runtime": query_runtime,
         "store_open_ms": store_open_ms,
     }))
 }
@@ -1107,4 +1453,258 @@ fn json_u64(value: &Value, key: &str) -> Result<u64, Box<dyn std::error::Error>>
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| io::Error::other(format!("JSON field {key:?} is not a u64")).into())
+}
+
+// Signatures checked against mlx-sys 0.2.0's mlx-c/mlx/c/memory.h.
+// mlx-c is linked transitively by zeppelin-embed-text; no direct mlx-sys dependency.
+unsafe extern "C" {
+    fn mlx_get_active_memory(result: *mut usize) -> libc::c_int;
+    fn mlx_get_peak_memory(result: *mut usize) -> libc::c_int;
+    fn mlx_get_cache_memory(result: *mut usize) -> libc::c_int;
+    fn mlx_set_cache_limit(old: *mut usize, limit: usize) -> libc::c_int;
+    fn mlx_clear_cache() -> libc::c_int;
+    fn mlx_reset_peak_memory() -> libc::c_int;
+}
+
+fn mlx_check(code: libc::c_int, operation: &str) -> io::Result<()> {
+    if code != 0 {
+        return Err(io::Error::other(format!(
+            "{operation} failed with code {code}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn memory_counters() -> io::Result<MemoryCounters> {
+    let (mut active, mut cache, mut peak) = (0, 0, 0);
+    // SAFETY: each MLX out pointer is valid for one size_t.
+    // Upstream limitation: the pinned native getters read size_t fields without
+    // the allocator mutex. Aligned size_t reads cannot tear on arm64, but the
+    // reads remain unsynchronized and can be stale or mutually inconsistent.
+    // These counters are diagnostic only; they do not control engine behavior.
+    unsafe {
+        mlx_check(mlx_get_active_memory(&mut active), "mlx_get_active_memory")?;
+        mlx_check(mlx_get_cache_memory(&mut cache), "mlx_get_cache_memory")?;
+        mlx_check(mlx_get_peak_memory(&mut peak), "mlx_get_peak_memory")?;
+    }
+    // SAFETY: zero is valid for this all-integer C struct, and V4 writes its
+    // full layout into the supplied buffer. libc's rusage_info_t is void*;
+    // proc_pid_rusage treats the argument itself as the output buffer.
+    let mut usage: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+    let code = unsafe {
+        libc::proc_pid_rusage(
+            libc::getpid(),
+            libc::RUSAGE_INFO_V4,
+            std::ptr::from_mut(&mut usage).cast(),
+        )
+    };
+    if code != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(MemoryCounters {
+        mlx_active: u64::try_from(active).map_err(io::Error::other)?,
+        mlx_cache: u64::try_from(cache).map_err(io::Error::other)?,
+        mlx_peak: u64::try_from(peak).map_err(io::Error::other)?,
+        phys_footprint: usage.ri_phys_footprint,
+        lifetime_max_phys_footprint: usage.ri_lifetime_max_phys_footprint,
+        resident: usage.ri_resident_size,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn memory_counters() -> io::Result<MemoryCounters> {
+    Err(io::Error::other(
+        "ingest memory sampling requires macOS proc_pid_rusage V4",
+    ))
+}
+
+impl MemoryCounters {
+    fn json(self) -> Value {
+        json!({
+            "mlx_active": self.mlx_active, "mlx_cache": self.mlx_cache,
+            "mlx_peak": self.mlx_peak, "phys_footprint": self.phys_footprint,
+            "lifetime_max_phys_footprint": self.lifetime_max_phys_footprint,
+            "resident": self.resident,
+        })
+    }
+}
+
+struct MemorySample {
+    t_seconds: f64,
+    counters: MemoryCounters,
+}
+
+impl MemorySample {
+    fn write_sample(&self, file: Option<&mut impl io::Write>) -> io::Result<()> {
+        let line = to_string(&self.json()).map_err(io::Error::other)?;
+        if let Some(file) = file {
+            writeln!(file, "{line}")?;
+            // Flush every complete line before returning: previously emitted
+            // samples must survive a later native GPU timeout/SIGABRT.
+            file.flush()?;
+        }
+        let mut stderr = io::stderr().lock();
+        writeln!(stderr, "{line}")?;
+        stderr.flush()
+    }
+
+    fn json(&self) -> Value {
+        let counters = self.counters;
+        json!({
+            "t_seconds": self.t_seconds,
+            "mlx_active": counters.mlx_active, "mlx_cache": counters.mlx_cache,
+            "mlx_peak": counters.mlx_peak, "phys_footprint": counters.phys_footprint,
+            "lifetime_max_phys_footprint": counters.lifetime_max_phys_footprint,
+            "resident": counters.resident,
+        })
+    }
+}
+
+// One stoppable thread services both timers. In pinned MLX, clear_cache and
+// malloc/free all lock MetalAllocator::mutex_; clear releases only cached
+// buffers. The malloc path drops the lock for newBuffer and re-locks before
+// publishing allocator state, so concurrent cache clearing is supported.
+fn sample_memory(
+    stop: &mpsc::Receiver<()>,
+    started: Instant,
+    sample_interval: Duration,
+    clear_interval: Option<Duration>,
+    mut file: Option<std::fs::File>,
+) -> io::Result<Vec<MemorySample>> {
+    let mut samples = Vec::new();
+    let next_deadline = |interval| {
+        Instant::now()
+            .checked_add(interval)
+            .ok_or_else(|| io::Error::other("memory timer interval exceeds Instant range"))
+    };
+    let mut next_sample = next_deadline(sample_interval)?;
+    let mut next_clear = clear_interval.map(next_deadline).transpose()?;
+    loop {
+        let deadline = next_clear.map_or(next_sample, |clear| clear.min(next_sample));
+        match stop.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        let now = Instant::now();
+        if now >= next_sample {
+            let sample = MemorySample {
+                t_seconds: started.elapsed().as_secs_f64(),
+                counters: memory_counters()?,
+            };
+            sample.write_sample(file.as_mut())?;
+            samples.push(sample);
+            next_sample = next_deadline(sample_interval)?;
+        }
+        if next_clear.is_some_and(|clear| now >= clear) {
+            // SAFETY: clear_cache takes the allocator mutex; it does not touch
+            // active evaluation buffers. Return codes are never discarded.
+            mlx_check(unsafe { mlx_clear_cache() }, "mlx_clear_cache")?;
+            next_clear = clear_interval.map(next_deadline).transpose()?;
+        }
+    }
+    Ok(samples)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct MemoryCounters {
+    mlx_active: u64,
+    mlx_cache: u64,
+    mlx_peak: u64,
+    phys_footprint: u64,
+    lifetime_max_phys_footprint: u64,
+    resident: u64,
+}
+
+fn memory_maxima(samples: &[MemoryCounters]) -> MemoryCounters {
+    samples
+        .iter()
+        .fold(MemoryCounters::default(), |max, sample| MemoryCounters {
+            mlx_active: max.mlx_active.max(sample.mlx_active),
+            mlx_cache: max.mlx_cache.max(sample.mlx_cache),
+            mlx_peak: max.mlx_peak.max(sample.mlx_peak),
+            phys_footprint: max.phys_footprint.max(sample.phys_footprint),
+            lifetime_max_phys_footprint: max
+                .lifetime_max_phys_footprint
+                .max(sample.lifetime_max_phys_footprint),
+            resident: max.resident.max(sample.resident),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_jsonl_is_flushed_after_each_sample() -> Result<(), Box<dyn std::error::Error>> {
+        let file = tempfile::NamedTempFile::new()?;
+        let mut writer = io::BufWriter::new(file.reopen()?);
+        let mut sample = MemorySample {
+            t_seconds: 0.0,
+            counters: MemoryCounters {
+                mlx_active: 17,
+                ..Default::default()
+            },
+        };
+        sample.write_sample(Some(&mut writer))?;
+        // Read before drop: a process abort must not lose a buffered sample.
+        let first = std::fs::read_to_string(file.path())?;
+        assert!(
+            first.ends_with('\n'),
+            "first sample must already be a complete line"
+        );
+        let row: Value = from_slice(first.as_bytes())?;
+        assert_eq!(row.get("mlx_active").and_then(Value::as_u64), Some(17));
+        sample.t_seconds = 1.0;
+        sample.counters.mlx_active = 23;
+        sample.write_sample(Some(&mut writer))?;
+        let contents = std::fs::read_to_string(file.path())?;
+        assert!(contents.ends_with('\n'));
+        let rows = contents
+            .lines()
+            .map(|line| from_slice::<Value>(line.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.last()
+                .and_then(|row| row.get("mlx_active"))
+                .and_then(Value::as_u64),
+            Some(23)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn memory_maxima_retains_independent_high_water_marks() {
+        let samples = [
+            MemoryCounters {
+                mlx_active: 9,
+                mlx_cache: 2,
+                mlx_peak: 10,
+                phys_footprint: 40,
+                lifetime_max_phys_footprint: 50,
+                resident: 60,
+            },
+            MemoryCounters {
+                mlx_active: 3,
+                mlx_cache: 8,
+                mlx_peak: 12,
+                phys_footprint: 30,
+                lifetime_max_phys_footprint: 55,
+                resident: 70,
+            },
+        ];
+        assert_eq!(
+            memory_maxima(&samples),
+            MemoryCounters {
+                mlx_active: 9,
+                mlx_cache: 8,
+                mlx_peak: 12,
+                phys_footprint: 40,
+                lifetime_max_phys_footprint: 55,
+                resident: 70,
+            }
+        );
+        assert_eq!(memory_maxima(&[]), MemoryCounters::default());
+    }
 }
