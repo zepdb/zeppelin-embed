@@ -4871,11 +4871,11 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"textHealthAsync", nullptr, TextCall<TextOp::Health, true>, nullptr,
        nullptr, nullptr, napi_default, nullptr},
       {"textObservedComputeUnits", nullptr,
-       TextCall<TextOp::ObservedComputeUnits, false>, nullptr, nullptr,
-       nullptr, napi_default, nullptr},
+       TextCall<TextOp::ObservedComputeUnits, false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"textObservedComputeUnitsAsync", nullptr,
-       TextCall<TextOp::ObservedComputeUnits, true>, nullptr, nullptr,
-       nullptr, napi_default, nullptr},
+       TextCall<TextOp::ObservedComputeUnits, true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
 #endif
 
 #ifdef ZE_GRAPH

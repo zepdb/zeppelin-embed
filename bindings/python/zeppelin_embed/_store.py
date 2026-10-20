@@ -2149,7 +2149,7 @@ def open_model(
         repo = DEFAULT_MODEL_REF["repo"]
         revision = DEFAULT_MODEL_REF["revision"]
         manifest_sha256 = DEFAULT_MODEL_REF["manifest_sha256"]
-    elif any(value is None for value in pins):
+    elif repo is None or revision is None or manifest_sha256 is None:
         raise ValueError("provide all three of repo, revision and manifest_sha256, or none")
     request, path_owner = _open_request(
         path,

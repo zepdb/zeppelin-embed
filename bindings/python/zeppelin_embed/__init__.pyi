@@ -3,6 +3,7 @@ from ._errors import UnsupportedBuild as UnsupportedBuild
 from ._ffi import ABI_VERSION as ABI_VERSION
 from ._ffi import TEXT_AVAILABLE as TEXT_AVAILABLE
 from ._library import LIBRARY_PATH as LIBRARY_PATH
+from ._store import DEFAULT_MODEL_REF as DEFAULT_MODEL_REF
 from ._store import CancelToken as CancelToken
 from ._store import Store as Store
 from ._store import epoch_identity as epoch_identity
@@ -60,5 +61,3 @@ from ._types import TextLegs as TextLegs
 from ._types import TextQueryResult as TextQueryResult
 from ._types import Tier as Tier
 from ._types import VectorSpace as VectorSpace
-
-from ._store import DEFAULT_MODEL_REF as DEFAULT_MODEL_REF

@@ -171,7 +171,7 @@ jobs:
           scripts/size-budget.sh --core-archive target/ze107/legacy/release/libzeppelin_embed.a
           scripts/size-budget.sh --ffi-archive target/ze107/legacy/release/libzeppelin_embed_ffi.a
           scripts/size-budget.sh --graph-archive target/ze107/graph-cypher/release/libzeppelin_embed_ffi.a
-          python3 scripts/release/check-graph-artifact.py --legacy target/ze107/legacy/release/libzeppelin_embed_ffi.a --graph target/ze107/graph-cypher/release/libzeppelin_embed_ffi.a --output target/ze107/evidence
+          python3 scripts/release/check-graph-artifact.py --legacy target/ze107/legacy/release/libzeppelin_embed_ffi.a --graph target/ze107/graph-cypher/release/libzeppelin_embed_ffi.a --graph-only --output target/ze107/evidence
 
   platform-truth-smoke:
     name: platform-truth-smoke (macos-14)

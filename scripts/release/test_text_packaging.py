@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,6 +43,28 @@ class TextPackaging(unittest.TestCase):
         expected = {s for s in checker.expected_symbols('graph-cypher') if s.startswith('ze_text_')}
         self.assertEqual(declared, expected)
         self.assertFalse(any(s.startswith('ze_text_') for s in checker.expected_symbols('legacy')))
+
+    def test_graph_export_profiles_require_exact_symbols(self):
+        checker = load('check-graph-artifact')
+        graph = {s for s in (ROOT / 'crates/zeppelin-embed-ffi/symbols.graph.allowlist').read_text().splitlines()
+                 if s.startswith('ze_') and not s.startswith('ze_text_')}
+        for text in (False, True):
+            for suffix in ('.a', '.dylib'):
+                with self.subTest(text=text, suffix=suffix):
+                    expected = graph.copy()
+                    if text:
+                        expected |= checker.TEXT_FUNCTIONS
+                        expected |= checker.TEXT_STATIC_INTERNALS if suffix == '.a' else checker.MLX_DYLIB_GLOBALS
+                    invalid = [expected - {'ze_open'}, expected | {'ze_unexpected'},
+                               expected - {'ze_text_open'} if text else expected | {'ze_text_open'}]
+                    with patch.object(checker, 'load_packager', return_value=Mock()), \
+                         patch.object(checker.subprocess, 'run') as run:
+                        run.return_value.stdout = '\n'.join(f'00000000 T _{s}' for s in expected)
+                        checker.check_exports(Path('graph' + suffix), 'graph-cypher', text=text)
+                        for symbols in invalid:
+                            run.return_value.stdout = '\n'.join(f'00000000 T _{s}' for s in symbols)
+                            with self.assertRaisesRegex(RuntimeError, 'exports:'):
+                                checker.check_exports(Path('graph' + suffix), 'graph-cypher', text=text)
 
 
 if __name__ == '__main__':

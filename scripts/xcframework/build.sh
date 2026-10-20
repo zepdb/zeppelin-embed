@@ -231,7 +231,7 @@ attempt_slice() {
     local label="$1"
     local target="$2"
     local sdk="$3"
-    local sdk_path log archive status release_rustflags
+    local sdk_path log archive status release_rustflags compiler_runtime
     log="$WORK_DIR/$label.build.log"
     archive="$CARGO_DIR/$target/release/libzeppelin_embed_ffi.a"
     sdk_path="$(xcrun --sdk "$sdk" --show-sdk-path 2>&1)"
@@ -255,7 +255,12 @@ attempt_slice() {
     if [ "$SELECTOR" = graph-cypher ]; then
         # rustc uses -nodefaultlibs; build-std lacks __divsc3 and arm64 libSystem
         # does not export it. Link Xcode's compiler runtime for MLX's C routines.
-        release_rustflags="$release_rustflags -Clink-arg=$(xcrun clang -print-libgcc-file-name)"
+        compiler_runtime="$(xcrun clang -print-resource-dir)/lib/darwin/libclang_rt.osx.a"
+        if [ ! -f "$compiler_runtime" ]; then
+            echo "ERROR: Darwin compiler runtime is missing: $compiler_runtime" >&2
+            return 1
+        fi
+        release_rustflags="$release_rustflags -Clink-arg=$compiler_runtime"
     fi
     if [ -n "$PREBUILT_ARCHIVE" ]; then
         archive="$PREBUILT_ARCHIVE"
@@ -279,6 +284,7 @@ attempt_slice() {
         echo
     } >> "$SLICE_EVIDENCE"
     if [ "$status" -ne 0 ] || [ ! -f "$archive" ]; then
+        tail -n 120 "$log" >&2
         echo "ERROR: required slice $label was not built (exit $status)" >&2
         return 1
     fi

@@ -37,7 +37,7 @@ TEXT_STATIC_INTERNALS = {
 MLX_DYLIB_GLOBALS = {'default_mlx_error_handler', 'noop_mlx_error_handler_data_deleter'}
 
 
-def expected_symbols(artifact, static=False):
+def expected_symbols(artifact, static=False, text=True):
     if artifact not in ('legacy', 'graph-cypher'):
         raise ValueError(f'unknown artifact: {artifact}')
     # Both allowlists retain the frozen response-free ABI. Graph-free graph
@@ -45,20 +45,20 @@ def expected_symbols(artifact, static=False):
     name = 'symbols.graph.allowlist' if artifact == 'graph-cypher' else 'symbols.allowlist'
     symbols = {s for s in (ROOT / 'crates/zeppelin-embed-ffi' / name).read_text().splitlines()
             if s.startswith('ze_') and not s.startswith('ze_text_')}
-    if artifact == 'graph-cypher':
+    if artifact == 'graph-cypher' and text:
         return symbols | TEXT_FUNCTIONS | (TEXT_STATIC_INTERNALS if static else set())
     return symbols
 
 
-def check_exports(archive, artifact):
+def check_exports(archive, artifact, text=True):
     result = subprocess.run([load_packager().llvm_tool('llvm-nm'), '--extern-only', '--defined-only', str(archive)], text=True, capture_output=True, check=True)
     raw = result.stdout
     static = archive.suffix == '.a'
     # Archives also carry every MLX/Rust global; dylibs export only the ABI.
     observed = {line.split()[-1].lstrip('_') for line in raw.splitlines()
                 if len(line.split()) == 3 and (not static or re.fullmatch(r'_?ze_\w+', line.split()[-1]))}
-    expected = expected_symbols(artifact, static=static)
-    if artifact == 'graph-cypher' and not static:
+    expected = expected_symbols(artifact, static=static, text=text)
+    if artifact == 'graph-cypher' and text and not static:
         expected |= MLX_DYLIB_GLOBALS
     if observed != expected:
         raise RuntimeError(f'{artifact} exports: missing={sorted(expected-observed)}, unexpected={sorted(observed-expected)}')
@@ -83,16 +83,16 @@ def measure(path, output):
                 stripped_allocated_kib=int(subprocess.check_output(['du', '-k', str(stripped)], text=True).split()[0]))
 
 
-def check_artifact(legacy, graph, output):
+def check_artifact(legacy, graph, output, text=True):
     output.mkdir(parents=True, exist_ok=True)
     report = {}
     for identity, source in [('legacy', legacy), ('graph-cypher', graph)]:
-        check_exports(source, identity)
+        check_exports(source, identity, text=text)
         detail = output / identity
         detail.mkdir(exist_ok=True)
         trimmed = output / f'{identity}.a'
         load_packager().package('archive', source, trimmed)
-        check_exports(trimmed, identity)
+        check_exports(trimmed, identity, text=text)
         report[identity] = dict(source=str(source.resolve()), original=measure(source, detail), trimmed=measure(trimmed, detail))
     consumer = output / 'graph-artifact-consumer'
     command = ['clang', '-std=c11', '-Wall', '-Wextra', '-Werror', '-mmacosx-version-min=14.0',
@@ -121,5 +121,7 @@ if __name__ == '__main__':
     parser.add_argument('--legacy', type=Path, required=True)
     parser.add_argument('--graph', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--graph-only', action='store_true',
+                        help='require graph exports without text; default requires the full graph+text artifact')
     args = parser.parse_args()
-    check_artifact(args.legacy, args.graph, args.output)
+    check_artifact(args.legacy, args.graph, args.output, text=not args.graph_only)

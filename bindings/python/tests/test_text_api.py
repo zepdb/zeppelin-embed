@@ -168,6 +168,7 @@ def test_open_model_offline_miss(tmp_path: Path) -> None:
 
 def test_default_model_matches_rust_constant_and_requires_complete_pins(tmp_path: Path) -> None:
     import ctypes as ct
+
     from zeppelin_embed._library import LIBRARY
     from zeppelin_embed._structures import ZeTextModelRef
 
