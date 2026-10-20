@@ -66,6 +66,15 @@ pub enum RuntimeError {
     Tokenization(String),
     /// An MLX operation failed.
     Mlx(String),
+    /// ZE_MLX_CACHE_LIMIT_BYTES is not a byte count representable as usize.
+    InvalidCacheLimit,
+    /// An MLX cache C API call returned a nonzero status.
+    MlxCache {
+        /// Native function that failed.
+        operation: &'static str,
+        /// Native return status.
+        status: libc::c_int,
+    },
     /// A required tensor was absent.
     MissingTensor(String),
     /// Tensor bytes or array dimensions disagreed with metadata.
@@ -81,6 +90,12 @@ impl std::fmt::Display for RuntimeError {
         match self {
             Self::Tokenization(detail) => write!(formatter, "tokenization failed: {detail}"),
             Self::Mlx(detail) => write!(formatter, "MLX failed: {detail}"),
+            Self::InvalidCacheLimit => formatter.write_str(
+                "ZE_MLX_CACHE_LIMIT_BYTES must be a nonnegative integer byte count fitting usize",
+            ),
+            Self::MlxCache { operation, status } => {
+                write!(formatter, "{operation} failed with status {status}")
+            }
             Self::MissingTensor(name) => write!(formatter, "required tensor {name} is absent"),
             Self::Shape(detail) => write!(formatter, "model shape mismatch: {detail}"),
             Self::UnsupportedDtype(name) => {
@@ -110,6 +125,7 @@ pub trait ModelRuntime {
 pub mod coreml;
 /// MLX GPU runtime.
 pub mod mlx;
+pub(crate) mod mlx_cache;
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
@@ -128,6 +144,11 @@ mod tests {
         for error in [
             RuntimeError::Tokenization("tokens".to_owned()),
             RuntimeError::Mlx("mlx".to_owned()),
+            RuntimeError::InvalidCacheLimit,
+            RuntimeError::MlxCache {
+                operation: "mlx_clear_cache",
+                status: 1,
+            },
             RuntimeError::MissingTensor("weight".to_owned()),
             RuntimeError::Shape("shape".to_owned()),
             RuntimeError::UnsupportedDtype("weight".to_owned()),

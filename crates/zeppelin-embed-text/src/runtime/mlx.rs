@@ -24,7 +24,7 @@ pub struct MlxRuntime {
     gpu: bool,
 }
 
-fn mlx_calls() -> &'static Mutex<()> {
+pub(super) fn mlx_calls() -> &'static Mutex<()> {
     static CALLS: OnceLock<Mutex<()>> = OnceLock::new();
     CALLS.get_or_init(|| Mutex::new(()))
 }
@@ -135,6 +135,7 @@ impl MlxRuntime {
         role: TowerRole,
         compute_units: ComputeUnits,
     ) -> Result<Self, RuntimeError> {
+        super::mlx_cache::initialize(None)?;
         let _call = mlx_calls()
             .lock()
             .map_err(|_| RuntimeError::Mlx("MLX call mutex is poisoned".to_owned()))?;

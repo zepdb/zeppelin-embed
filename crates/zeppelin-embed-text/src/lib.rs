@@ -43,6 +43,7 @@ pub use query::{
     Legs, ObservedComputeUnits, QueryBackend, QueryOptions, TextHit, TextQueryOutcome,
     TextQueryTimings,
 };
+pub use runtime::mlx_cache::DEFAULT_MLX_CACHE_LIMIT_BYTES;
 pub use zeppelin_embed::lifecycle::SearchTier;
 pub use zeppelin_embed::tier::{
     MaintenanceBudget, MaintenanceReport, MaintenanceStatus, SegmentTier,

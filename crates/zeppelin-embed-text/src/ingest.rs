@@ -236,13 +236,28 @@ pub struct TextIngestReport {
 pub struct TextOpenOptions {
     store: OpenOptions,
     lexical: TokenizerConfig,
+    mlx_cache_limit_bytes: Option<usize>,
 }
 
 impl TextOpenOptions {
     /// Creates text options around an existing core policy and analyzer.
     #[must_use]
     pub const fn new(store: OpenOptions, lexical: TokenizerConfig) -> Self {
-        Self { store, lexical }
+        Self {
+            store,
+            lexical,
+            mlx_cache_limit_bytes: None,
+        }
+    }
+
+    /// Sets the process-global MLX buffer cache limit in bytes (zero disables caching).
+    /// The first runtime's setting wins; later opens do not change it. At first
+    /// startup this option overrides ZE_MLX_CACHE_LIMIT_BYTES, then
+    /// DEFAULT_MLX_CACHE_LIMIT_BYTES. An invalid environment value is an error.
+    #[must_use]
+    pub const fn with_mlx_cache_limit_bytes(mut self, bytes: usize) -> Self {
+        self.mlx_cache_limit_bytes = Some(bytes);
+        self
     }
 }
 
@@ -322,6 +337,7 @@ impl TextStore {
             Err(error) => return Err(TextError::Seal(error)),
         };
         let versions = load_versions(&store, reconcile)?;
+        crate::runtime::mlx_cache::initialize(options.mlx_cache_limit_bytes)?;
         let runtime =
             RuntimeClient::start(Arc::clone(&bundle), discover_query_coreml(&bundle_path))?;
         Ok(Self {
@@ -423,6 +439,7 @@ impl TextStore {
 
     /// Runs bounded parallel tokenization, one MLX embed stream, caller-thread
     /// writes, periodic seals, and budgeted maintenance.
+    /// Clears the process-global MLX buffer cache before returning, including on error.
     pub fn ingest_text(
         &self,
         documents: &[TextDocument],
@@ -435,6 +452,20 @@ impl TextStore {
     /// to record the commit-1 end-to-end baseline.
     #[doc(hidden)]
     pub fn ingest_text_serialized(
+        &self,
+        documents: &[TextDocument],
+        options: IngestOptions,
+    ) -> Result<TextIngestReport, TextError> {
+        let started = Instant::now();
+        let result = self.ingest_text_serialized_inner(documents, options);
+        crate::runtime::mlx_cache::clear()?;
+        result.map(|mut report| {
+            report.elapsed = started.elapsed();
+            report
+        })
+    }
+
+    fn ingest_text_serialized_inner(
         &self,
         documents: &[TextDocument],
         options: IngestOptions,
@@ -505,6 +536,21 @@ impl TextStore {
 
     /// Runs ingest with an explicit cooperative cancellation token.
     pub fn ingest_text_controlled(
+        &self,
+        documents: &[TextDocument],
+        options: IngestOptions,
+        control: IngestControl,
+    ) -> Result<TextIngestReport, TextError> {
+        let started = Instant::now();
+        let result = self.ingest_text_controlled_inner(documents, options, control);
+        crate::runtime::mlx_cache::clear()?;
+        result.map(|mut report| {
+            report.elapsed = started.elapsed();
+            report
+        })
+    }
+
+    fn ingest_text_controlled_inner(
         &self,
         documents: &[TextDocument],
         options: IngestOptions,
