@@ -40,15 +40,14 @@ No separate MLX install or shader-library path is needed.
 ```python
 import zeppelin_embed as ze
 
-with ze.open_text("text-store", "model.zem") as store:
-    store.ingest_text([7, 9], ["the bronze zeppelin", "marine biology field notes"])
+with ze.open_model("text-store") as store:  # downloads the default model on first use
+    store.ingest_text([7], ["the bronze zeppelin"])
     for legs in ("dense", "lexical", "hybrid"):
         result = store.query_text("bronze zeppelin", k=1, legs=legs, tier="exact")
         print(result.hits, result.diagnostics)
-    store.ingest_text([7], ["bronze"], revisions=[2])  # replace the previous revision
-    store.delete_text([9])  # removes every chunk belonging to document 9
     print(store.health())
     store.maintain(wall_time_ns=10_000_000, bytes=1_000_000)
+    store.delete_text([7])  # removes every chunk belonging to document 7
 ```
 
 To download and verify a model from Hugging Face, call
@@ -59,9 +58,19 @@ Omit all three pins (`ze.open_model("text-store")`) to use
 `d64b817c4021a3f1b9bded3152d9afdf9ac813e7`. Explicit pins must be supplied together;
 a partial set is an error.
 The native resolver honors `ZE_MODEL_CACHE`, `ZE_MODEL_OFFLINE`, and
-`ZE_MODEL_ENDPOINT`. `progress(done, total)` runs synchronously at file boundaries
-and must not reenter model resolution; callback exceptions propagate after resolution.
-`offline=True` verifies a cached bundle and raises `ze.NotFound` on a cache miss.
+`ZE_MODEL_ENDPOINT`. The first open downloads and verifies the pinned model;
+subsequent opens reuse the verified cache. `cache_dir` overrides `ZE_MODEL_CACHE`
+and the default `~/Library/Caches/zeppelin-embed/models`.
+`progress(done, total)` runs synchronously with byte counts. Intermediate reports
+require both at least 64 KiB and at least 100 ms since the last report; each
+verified file also reports completion. Initial `(0, 0)` means fetching the
+manifest. Callbacks must not reenter model resolution; callback exceptions
+propagate after resolution.
+`offline=True` (or `ZE_MODEL_OFFLINE=1`) prohibits network access and raises
+`ze.NotFound` on a cache miss. `ze.open_text("text-store", "model.zem")` opens a
+preinstalled bundle. See the [model card](https://huggingface.co/aghatage/zeppelin-embed-clean71-arctic-m-v2/blob/d64b817c4021a3f1b9bded3152d9afdf9ac813e7/README.md)
+and [root text API guide](../../README.md#text-api-macos-apple-silicon) for model
+limits, download size, and measured performance.
 
 `ingest_text` and `query_text` accept `cancel_token=ze.CancelToken()` or
 `deadline_ns` (a relative monotonic budget), mutually exclusive. Cancellation

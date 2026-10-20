@@ -1,21 +1,58 @@
 # Zeppelin Embed Text
 
-Local text embedding and retrieval over Zeppelin Embed stores. Load a `.zem`
-model bundle, ingest text with `TextStore::ingest_text`, and search with
-`TextStore::query_text` using dense, lexical, or hybrid retrieval.
-
-Requires macOS on Apple silicon and Xcode with the Metal toolchain. MLX runs
-the embedding models; the crate also includes a CoreML query runtime.
+Local text embedding and dense (vector), lexical (BM25), or hybrid retrieval
+without supplying your own vectors. Requires macOS on Apple silicon; source
+builds need Xcode with the Metal toolchain.
 
 ```sh
 xcodebuild -downloadComponent MetalToolchain
 cargo add zeppelin-embed-text
 ```
 
-Applications supply a local `.zem` model bundle to `TextStore::open`.
+Open the published default model, ingest, query every leg, and delete:
 
-See the [project repository](https://github.com/zepdb/zeppelin-embed) for model
-tooling and API usage.
+```rust
+use zeppelin_embed_text::{
+    IngestOptions, Legs, ModelOpenOptions, ModelRef, QueryOptions, TextDocument, TextStore,
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let store = TextStore::open_model(
+        "text-store", &ModelRef::default_model(), ModelOpenOptions::default(),
+    )?;
+    store.ingest_text(
+        &[TextDocument::new(1, 1, "The bronze zeppelin flies above the city.")],
+        IngestOptions::default(),
+    )?;
+    for legs in [Legs::Dense, Legs::Lexical, Legs::Hybrid] {
+        let hits = store.query_text("bronze zeppelin", QueryOptions::new(5).with_legs(legs))?;
+        println!("{hits:?}");
+    }
+    store.delete_text(&[1])?; // deletes every chunk of this caller document
+    store.close()?;
+    Ok(())
+}
+```
+
+`ModelRef::default_model()` uses the [published model card](https://huggingface.co/aghatage/zeppelin-embed-clean71-arctic-m-v2/blob/d64b817c4021a3f1b9bded3152d9afdf9ac813e7/README.md)
+at revision `d64b817c4021a3f1b9bded3152d9afdf9ac813e7`.
+The first open downloads and verifies the pinned model; subsequent opens reuse
+the verified cache. Set `ModelOpenOptions.cache_dir` to override `ZE_MODEL_CACHE`
+and the default `~/Library/Caches/zeppelin-embed/models`. Set `offline: true`
+or `ZE_MODEL_OFFLINE=1` to prohibit networking; a cache miss returns
+`TextError::ModelResolution(ModelError::OfflineMiss)`. `ZE_MODEL_ENDPOINT` or
+`ModelOpenOptions.endpoint` overrides the download endpoint.
+
+`ModelOpenOptions.progress` receives synchronous byte counts on the calling
+thread. Intermediate reports require both at least 64 KiB and at least 100 ms
+since the last report; each verified file also reports completion. Initial
+`(0, 0)` means fetching the manifest. Do not reenter model resolution from the
+callback.
+
+For a preinstalled bundle, `TextStore::open(path, bundle_path, options)` remains
+available. Caller document IDs must fit in 96 bits; a higher revision replaces
+the previous document and its chunks. See the [root text API guide](../../README.md#text-api-macos-apple-silicon)
+for tower details, download size, and measured performance.
 
 Licensed under [GPL-3.0-only](https://www.gnu.org/licenses/gpl-3.0.html).
 

@@ -8,6 +8,10 @@ release and a compatible correction is a patch release.
 
 ### Added
 
+- Text API documentation for Rust, C, Swift, Node and Python: default-model
+  download, cache/offline settings, ingest, all query legs, and delete, with a
+  model card and qualification measurements (ZE-512).
+
 - Pinned the published default text model across Rust, C, Python, Node and Swift, with verified cached downloads.
 
 - Node `TextStore` (macOS arm64 only): `open` / `openAsync` on a model
@@ -18,6 +22,9 @@ release and a compatible correction is a patch release.
   prebuilds have no text and throw `ZE_ERR_UNSUPPORTED`.
 
 ### Changed
+
+- Corrected text download progress documentation: intermediate byte reports
+  require both 64 KiB and 100 ms; verified files also report completion (ZE-517).
 
 - The Node darwin-arm64 addon now requires macOS 13.0 (was 11.0), the MLX
   Metal 3.0 floor. The Intel addon still targets macOS 11.0. The npm tarball grows by

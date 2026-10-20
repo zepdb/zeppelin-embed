@@ -2137,7 +2137,10 @@ def open_model(
     """Download/verify a pinned HF model, then open its text store.
 
     Omit all three pins to use DEFAULT_MODEL_REF; partial pins are invalid.
-    Progress runs synchronously at file boundaries; it must not reenter model resolution.
+    Progress reports byte counts synchronously. Intermediate reports require both
+    at least 64 KiB and at least 100 ms since the last report; each verified file
+    also reports completion. Initial (0, 0) means fetching the manifest.
+    The callback must not reenter model resolution.
     Callback exceptions are propagated after native resolution returns.
     """
     _require_text()

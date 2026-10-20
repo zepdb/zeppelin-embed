@@ -66,13 +66,18 @@ The dynamic framework includes `Resources/mlx.metallib`; preserve that resource
 when distributing your app. The default universal artifact has no text API.
 
 ```swift
+import Foundation
 import ZeppelinEmbed
 
-let store = try await TextStore.open(at: storeURL, bundle: bundleURL)
+let storeURL = URL.applicationSupportDirectory.appending(path: "ZeppelinText")
+let store = try await TextStore.open(at: storeURL, model: .default)
 let report = try await store.ingest([
     TextDocument(id: DocumentID(high: 0, low: 1), revision: 1, text: "hello world")
 ])
-let result = try await store.query("hello", legs: .hybrid, k: 10)
+for legs in [TextLegs.dense, .lexical, .hybrid] {
+    let result = try await store.query("hello", legs: legs, k: 5)
+    print(result.hits)
+}
 let health = try await store.health()
 // Run more slices if the returned status is .budgetExhausted.
 let maintenance = try await store.maintain(
@@ -89,9 +94,20 @@ To download a pinned model, use
 the manifest pin is a 64-hex SHA-256. The call runs on a detached task, like
 `ZeppelinStore`. The optional `@Sendable` progress closure receives
 `completedBytes` and `totalBytes` on that task's thread; total is zero while
-fetching the manifest. Dispatch UI updates to the main actor. A cache
-directory overrides the default cache; `offline: true` prohibits downloading
-and an offline miss throws `ZeppelinError.notFound`.
+fetching the manifest. Intermediate reports require both at least 64 KiB and
+at least 100 ms since the last report; each verified file also reports completion.
+Dispatch UI updates to the main actor; do not reenter model resolution from the
+callback.
+
+The first open downloads and verifies the pinned model; subsequent opens reuse
+the verified cache. `cacheDirectory` overrides `ZE_MODEL_CACHE` and the default
+`~/Library/Caches/zeppelin-embed/models`. `offline: true` or `ZE_MODEL_OFFLINE=1`
+prohibits networking; an offline miss throws `ZeppelinError.notFound`.
+`ZE_MODEL_ENDPOINT` overrides the download endpoint.
+`TextStore.open(at: storeURL, bundle: bundleURL)` opens a preinstalled bundle.
+See the [model card](https://huggingface.co/aghatage/zeppelin-embed-clean71-arctic-m-v2/blob/d64b817c4021a3f1b9bded3152d9afdf9ac813e7/README.md)
+and [root text API guide](../../README.md#text-api-macos-apple-silicon) for model
+limits, download size, and measured performance.
 
 Ingest and query use V2 calls. Ordinary calls bridge Task cancellation to a
 native cancel token. A nonzero `deadlineNanoseconds` instead selects the native

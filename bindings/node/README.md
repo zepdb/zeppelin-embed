@@ -657,22 +657,27 @@ because MLX loads the metallib from the directory of the native binary.
 
 ```js
 const { TextStore } = require('@zepdb/zeppelin-embed');
-const store = await TextStore.openAsync('./notes', '/models/model.zem');
-try {
-  // Caller ids are unsigned bigints smaller than 2^96.
-  await store.ingestAsync([
-    { id: 1n, revision: 1n, text: 'Harbour lights at dusk' },
-  ]);
-  const result = await store.queryAsync({
-    text: 'harbour', k: 5, legs: 'hybrid', signal: new AbortController().signal,
-  });
-  console.log(result.hits);
-  console.log(await store.healthAsync());
-  await store.maintainAsync({ wallTimeNs: 100000000n, bytes: 67108864n });
-  await store.deleteAsync([1n]);
-} finally {
-  store.close();
+
+async function main() {
+  const store = await TextStore.openModel({ path: './notes' }); // default model
+  try {
+    // Caller ids are unsigned bigints smaller than 2^96.
+    await store.ingestAsync([
+      { id: 1n, revision: 1n, text: 'Harbour lights at dusk' },
+    ]);
+    for (const legs of ['dense', 'lexical', 'hybrid']) {
+      const result = await store.queryAsync({ text: 'harbour', k: 5, legs });
+      console.log(result.hits);
+    }
+    await store.deleteAsync([1n]);
+  } finally {
+    store.close();
+  }
 }
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
 ```
 
 `open`, `ingest`, `query`, `delete`, `maintain` and `health` also have synchronous
@@ -693,5 +698,15 @@ To download and cache a model, use the asynchronous `TextStore.openModel` with
 64-hex SHA-256. Omit all three pins (`TextStore.openModel({path})`) to use
 `TextStore.defaultModel`: `aghatage/zeppelin-embed-clean71-arctic-m-v2` at
 `d64b817c4021a3f1b9bded3152d9afdf9ac813e7`. A partial set of pins is an error. `onProgress({done, total})` receives
-bigint byte counts on the JS thread; `(0n, 0n)` means fetching the manifest.
-`offline: true` requires a verified cache hit and never downloads.
+bigint byte counts on the JS thread. Intermediate reports require both at least
+64 KiB and at least 100 ms since the last report; each verified file also reports
+completion. `(0n, 0n)` means fetching the manifest.
+
+The first open downloads and verifies the pinned model; subsequent opens reuse
+the verified cache. `cacheDir` overrides `ZE_MODEL_CACHE` and the default
+`~/Library/Caches/zeppelin-embed/models`. `offline: true` or `ZE_MODEL_OFFLINE=1`
+prohibits networking; a cache miss throws `ZE_ERR_NOT_FOUND`. `ZE_MODEL_ENDPOINT`
+overrides the download endpoint. `TextStore.openAsync(path, bundlePath)` opens a
+preinstalled bundle. See the [model card](https://huggingface.co/aghatage/zeppelin-embed-clean71-arctic-m-v2/blob/d64b817c4021a3f1b9bded3152d9afdf9ac813e7/README.md)
+and [root text API guide](../../README.md#text-api-macos-apple-silicon) for model
+limits, download size, and measured performance.
