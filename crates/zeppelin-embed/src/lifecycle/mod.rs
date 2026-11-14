@@ -796,6 +796,29 @@ thread_local! {
     > = const { std::cell::RefCell::new(None) };
 }
 
+/// Makes an adopted `wal.ze` and then its directory entry durable, in the
+/// durability modes that sync (ZE-538).
+fn sync_adopted_wal(
+    vfs: &dyn crate::vfs::Vfs,
+    directory: &Path,
+    wal_path: &Path,
+    policy: DurabilityPolicy,
+) -> Result<(), StoreError> {
+    if let SyncRequirement::Sync(kind) = policy.data_file_sync() {
+        vfs.sync(wal_path, kind).map_err(|source| StoreError::Io {
+            path: wal_path.to_path_buf(),
+            source,
+        })?;
+    }
+    if let SyncRequirement::Sync(kind) = policy.directory_sync() {
+        vfs.sync(directory, kind).map_err(|source| StoreError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
 #[cfg(any(test, feature = "test-seams"))]
 fn with_storage_open_controller<R>(
     controller: Option<&StorageFaultController>,
@@ -3290,22 +3313,10 @@ impl Store {
         )?;
         let mut active = recovered.active;
         let recovered_wal = recovered.wal;
-        // ZE-538: adopt the WAL bytes and dirent before schema evolution or
-        // later writes can durably depend on the recovered end.
-        if options.access_mode == AccessMode::ReadWrite && recovered_wal.is_some() {
-            if let SyncRequirement::Sync(kind) = durability_policy.data_file_sync() {
-                vfs.sync(&wal_path, kind).map_err(|source| StoreError::Io {
-                    path: wal_path.clone(),
-                    source,
-                })?;
-            }
-            if let SyncRequirement::Sync(kind) = durability_policy.directory_sync() {
-                vfs.sync(path, kind).map_err(|source| StoreError::Io {
-                    path: path.to_path_buf(),
-                    source,
-                })?;
-            }
-        }
+        // ZE-538/ZE-549: an adopted WAL and its dirent become durable before
+        // anything durably depends on the recovered end, but only once the
+        // store can no longer be refused: a refused open issues no sync.
+        let mut adopt_wal = options.access_mode == AccessMode::ReadWrite && recovered_wal.is_some();
         let sealed_tombstones = recovered.tombstones;
         #[cfg(feature = "graph-cypher")]
         let graph_replay = recovered.graph;
@@ -3335,6 +3346,9 @@ impl Store {
             #[cfg(not(feature = "graph-cypher"))]
             let defer_commit = false;
             if !defer_commit {
+                if std::mem::take(&mut adopt_wal) {
+                    sync_adopted_wal(vfs.as_ref(), path, &wal_path, durability_policy)?;
+                }
                 publication
                     .commit_manifest(vfs.as_ref(), path, &manifest, durability_policy)
                     .map_err(StoreError::Manifest)?;
@@ -3352,6 +3366,9 @@ impl Store {
             && !manifest_exists
             && (options.epoch.is_some() || options.schema.is_some())
         {
+            if std::mem::take(&mut adopt_wal) {
+                sync_adopted_wal(vfs.as_ref(), path, &wal_path, durability_policy)?;
+            }
             let mut publication = crate::ingest::ManifestPublication::before_writer_creation();
             publication
                 .commit_manifest(
@@ -3494,6 +3511,9 @@ impl Store {
                 options.access_mode,
                 options.graph_document.clone(),
             )?;
+        }
+        if std::mem::take(&mut adopt_wal) {
+            sync_adopted_wal(store.vfs.as_ref(), path, &wal_path, durability_policy)?;
         }
         #[cfg(feature = "graph-cypher")]
         if let Some(manifest) = pending_graph_schema {

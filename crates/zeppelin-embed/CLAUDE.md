@@ -3,8 +3,9 @@
 ## ZE-538 Durable-mode gaps
 
 - A syncing writable open syncs an adopted WAL and then its directory before
-  schema evolution or later writes can depend on its recovered end. Derived,
-  Durable/None and read-only opens add no adoption syncs.
+  the first manifest commit that depends on its recovered end, and otherwise
+  after graph recovery admits the store: a refused open issues no sync
+  (ZE-549). Derived, Durable/None and read-only opens add no adoption syncs.
 - Namespace relocation retains every source lock through return. Create empty
   destination lock stubs without opening the source lock files.
 - Snapshot export validates every sealed segment's checksums before copying
