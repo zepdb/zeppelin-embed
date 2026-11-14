@@ -29,6 +29,8 @@ use zeppelin_embed::tier::{MaintenanceBudget, MaintenanceReport, MaintenanceStat
 
 const CALLER_BITS: u32 = 96;
 const DEFAULT_MAINTENANCE_BYTES: u64 = 256 * 1024 * 1024;
+// One core merge batch admits 16 inputs: the previous output plus 15 seals.
+const MERGE_EVERY_SEALS: usize = 15;
 
 const CHUNK_BITS: u32 = 32;
 
@@ -276,6 +278,7 @@ pub struct TextStore {
     epoch: EpochIdentity,
     document_epoch: EpochIdentity,
     versions: Mutex<BTreeMap<DocId, Revision>>,
+    seals_since_merge: AtomicUsize,
 }
 
 impl TextStore {
@@ -331,7 +334,10 @@ impl TextStore {
             .map_err(TextError::Store)?,
         );
         let reconcile = match store.seal() {
-            Ok(_) => true,
+            Ok(_) => {
+                store.merge_sealed().map_err(TextError::Seal)?;
+                true
+            }
             // A read-only handle cannot reconcile; the next read-write open does.
             Err(StoreError::ReadOnly) => false,
             Err(error) => return Err(TextError::Seal(error)),
@@ -348,6 +354,7 @@ impl TextStore {
             epoch,
             document_epoch,
             versions: Mutex::new(versions),
+            seals_since_merge: AtomicUsize::new(0),
         })
     }
 
@@ -471,6 +478,7 @@ impl TextStore {
         options: IngestOptions,
     ) -> Result<TextIngestReport, TextError> {
         validate_ingest_options(documents, options)?;
+        self.merge_due_segments()?;
         let started = Instant::now();
         let previous_versions = self.capture_versions(documents)?;
         let jobs = build_jobs(
@@ -518,6 +526,7 @@ impl TextStore {
             self.store.seal().map_err(TextError::Seal)?;
             seals = seals.saturating_add(1);
         }
+        self.seals_since_merge.fetch_add(seals, Ordering::Relaxed);
         self.record_versions(documents, options.chunk_policy, &previous_versions)?;
         self.finish_ingest_maintenance(options)?;
         let generation = self.store.health().map_err(TextError::Store)?.generation;
@@ -557,6 +566,7 @@ impl TextStore {
         control: IngestControl,
     ) -> Result<TextIngestReport, TextError> {
         validate_ingest_options(documents, options)?;
+        self.merge_due_segments()?;
         control.external_checkpoint()?;
         let started = Instant::now();
         let previous_versions = self.capture_versions(documents)?;
@@ -794,6 +804,7 @@ impl TextStore {
         if let Some(error) = first_error {
             return Err(error);
         }
+        self.seals_since_merge.fetch_add(seals, Ordering::Relaxed);
         self.record_versions(documents, options.chunk_policy, &previous_versions)?;
         self.finish_ingest_maintenance(options)?;
         let generation = self.store.health().map_err(TextError::Store)?.generation;
@@ -808,6 +819,19 @@ impl TextStore {
             all_threads_joined,
             elapsed: started.elapsed(),
         })
+    }
+
+    fn merge_due_segments(&self) -> Result<(), TextError> {
+        if self.seals_since_merge.load(Ordering::Relaxed) >= MERGE_EVERY_SEALS {
+            self.store
+                .merge_sealed()
+                .map_err(|error| TextError::Pipeline {
+                    stage: "segment merge",
+                    detail: error.to_string(),
+                })?;
+            self.seals_since_merge.store(0, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     fn finish_ingest_maintenance(&self, options: IngestOptions) -> Result<(), TextError> {

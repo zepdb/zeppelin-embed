@@ -55,6 +55,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse()?;
     match cli.command.as_str() {
         "ingest" => ingest(&cli),
+        "notes" => notes(&cli),
         "promote" => promote(&cli),
         "verify" => verify(&cli),
         "steady" => steady(&cli, false),
@@ -139,6 +140,76 @@ impl Cli {
             .map(Vec::as_slice)
             .ok_or_else(|| io::Error::other("missing --inputs").into())
     }
+}
+
+fn notes(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let corpus = load_corpus(
+        Path::new(cli.required("--beir-root")?),
+        cli.required("--corpus")?,
+    )?;
+    let bundle = Path::new(cli.required("--bundle")?);
+    let path = Path::new(cli.required("--store")?);
+    let docs = cli.usize("--docs", 1_000)?;
+    let queries = cli.usize("--queries", 200)?;
+    if docs == 0 || docs > corpus.documents.len() || queries == 0 || path.exists() {
+        return Err(io::Error::other(
+            "notes requires a fresh store and positive available samples",
+        )
+        .into());
+    }
+    let first = corpus
+        .queries
+        .first()
+        .ok_or_else(|| io::Error::other("corpus has no queries"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let store = TextStore::open(path, bundle, Default::default())?;
+    let mut ingest_ms = Vec::with_capacity(docs);
+    for (index, document) in corpus.documents.iter().take(docs).enumerate() {
+        let document = TextDocument::new(u128::try_from(index + 1)?, 1, document.title.clone());
+        let started = Instant::now();
+        store.ingest_text(&[document], IngestOptions::default())?;
+        ingest_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
+    store.close()?;
+    drop(store);
+    let started = Instant::now();
+    let store = TextStore::open(path, bundle, Default::default())?;
+    let reopen_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let options = QueryOptions::new(10).with_legs(Legs::Hybrid);
+    let started = Instant::now();
+    let _ = store.query_text(&first.text, options)?;
+    let first_query_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let mut query_ms = Vec::with_capacity(queries);
+    for query in corpus.queries.iter().cycle().take(queries) {
+        let started = Instant::now();
+        let _ = store.query_text(&query.text, options)?;
+        query_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+    }
+    let query_summary =
+        percentiles(&query_ms).ok_or_else(|| io::Error::other("no query samples"))?;
+    let ingest_summary =
+        percentiles(&ingest_ms).ok_or_else(|| io::Error::other("no ingest samples"))?;
+    let sealed_segments = store
+        .health()?
+        .segments
+        .iter()
+        .filter(|segment| matches!(segment.source, zeppelin_embed::ingest::RowSource::Sealed(_)))
+        .count();
+    println!(
+        "{}",
+        to_string(&json!({
+            "sealed_segments": sealed_segments,
+            "reopen_ms": reopen_ms,
+            "first_query_ms": first_query_ms,
+            "query_p50_ms": query_summary.p50,
+            "ingest_mean_ms": ingest_summary.mean,
+            "ingest_max_ms": ingest_ms.iter().copied().fold(0.0_f64, f64::max),
+        }))?
+    );
+    store.close()?;
+    Ok(())
 }
 
 fn ingest(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {

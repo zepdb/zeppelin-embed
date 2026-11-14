@@ -1,5 +1,9 @@
 # Text embedding crate guide
 
+- Writable open merges small sealed segments before loading versions. Both ingest
+  paths merge before writing after 15 seals; a `segment merge` error writes none
+  of the current call and leaves the merge due for retry.
+
 - Step 08 admits pinned pure-Rust `unicode-normalization-alignments` 0.1.12
   and `unicode_categories` 0.1.1 in this outer crate only. They are the source
   tokenizers 0.22.2 Unicode helpers and avoid hand-maintained normalization
