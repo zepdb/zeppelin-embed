@@ -183,6 +183,183 @@ mod tests {
         idf * (tf * 2.2) / (tf + 1.2 * (0.25 + 0.75 * f64::from(length) / average))
     }
 
+    fn exhaustive_weighted(
+        index: &LexicalIndex,
+        query: &PreparedWeightedQuery,
+        allowed: &[&DocBitmap],
+        k: usize,
+    ) -> Vec<(GlobalDocId, u64)> {
+        let mut full = std::collections::BTreeMap::<GlobalDocId, f64>::new();
+        for expansion in query.expansions() {
+            let term = crate::fts::search::TermQuery {
+                terms: vec![expansion.term.clone()],
+                fields: query.scoring().query().fields.clone(),
+            };
+            let result = if allowed.is_empty() {
+                crate::fts::search::search(
+                    index,
+                    &term,
+                    index.document_count() as usize,
+                    crate::fts::bm25::Bm25Params::beir(),
+                )
+            } else {
+                crate::fts::search::search_allow_list_driven(
+                    index,
+                    &term,
+                    index.document_count() as usize,
+                    crate::fts::bm25::Bm25Params::beir(),
+                    allowed,
+                )
+            }
+            .expect("exhaustive term");
+            for hit in result.hits {
+                *full.entry(hit.doc).or_default() +=
+                    hit.score * (f64::from(expansion.boost_thousandths) / 1000.0);
+            }
+        }
+        let mut full = full.into_iter().collect::<Vec<_>>();
+        full.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        full.truncate(k);
+        full.into_iter()
+            .map(|(doc, score)| (doc, score.to_bits()))
+            .collect()
+    }
+
+    #[test]
+    fn ze541_weighted_bound_terms_follow_the_pivot() {
+        let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+        let mut segment = SegmentIndex::new();
+        for row in 0..4096 {
+            let mut words = vec!["filler".to_owned()];
+            if row % 10 == 0 {
+                words.push("anchor".to_owned());
+            }
+            for term in 0..32 {
+                if row == term * 109 + 3 {
+                    words.push(format!("sparse{term}"));
+                }
+            }
+            segment
+                .push_document(&analyzer, &Document::with_text(&words.join(" ")))
+                .expect("document");
+        }
+        let mut index = LexicalIndex::new();
+        index.push_segment(segment).expect("seal");
+        let terms =
+            std::iter::once("anchor".to_owned()).chain((0..32).map(|term| format!("sparse{term}")));
+        let query = PreparedWeightedQuery::new(
+            &index,
+            terms
+                .map(|term| LexicalExpansion {
+                    term: term.into_bytes(),
+                    boost_thousandths: 1000,
+                    kind: LexicalMatchKind::Term,
+                })
+                .collect(),
+            FieldWeights::flat(&[FieldId(0)]),
+        )
+        .expect("prepare");
+        let expected = exhaustive_weighted(&index, &query, &[], 10);
+        crate::fts::preparation_observer::begin();
+        let actual = search(
+            &index,
+            &query,
+            10,
+            &[],
+            || Ok::<_, ()>(()),
+            |_| Ok(true),
+            |_| Ok(()),
+        )
+        .unwrap_or_else(|_| panic!("weighted"));
+        let bounds = crate::fts::preparation_observer::take_with_bounds().4;
+        assert_eq!(
+            actual
+                .hits
+                .iter()
+                .map(|(doc, score)| (*doc, score.to_bits()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        const RED_ON_MAIN: usize = 12_210;
+        println!("ZE541 weighted bounds={bounds} red_on_main={RED_ON_MAIN}");
+        assert!(
+            3 * bounds <= RED_ON_MAIN,
+            "3 * bounds={} > main={RED_ON_MAIN}",
+            3 * bounds
+        );
+    }
+
+    #[test]
+    fn ze541_weighted_matches_exhaustive_at_the_expansion_cap() {
+        use rand::Rng;
+        let mut rng = crate::test_support::seeded_rng(
+            "fts::prune::weighted::tests::ze541_weighted_matches_exhaustive_at_the_expansion_cap",
+        );
+        let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+        let mut segment = SegmentIndex::new();
+        for row in 0..4096 {
+            let mut words = vec![
+                "filler".to_owned();
+                if row < 64 {
+                    1
+                } else {
+                    rng.random_range(20..70)
+                }
+            ];
+            for term in 0..32 {
+                if row % (2 + term * 3) == 0 || rng.random_range(0..1000) < 3 {
+                    let tf = if row < 64 { 12 } else { rng.random_range(1..4) };
+                    words.extend(vec![format!("term{term}"); tf]);
+                }
+            }
+            segment
+                .push_document(&analyzer, &Document::with_text(&words.join(" ")))
+                .expect("document");
+        }
+        let mut index = LexicalIndex::new();
+        index.push_segment(segment).expect("seal");
+        let allowed = DocBitmap::from_ids((0..4096).filter(|row| row % 7 != 0));
+        for count in [33, 64] {
+            let query = PreparedWeightedQuery::new(
+                &index,
+                (0..count)
+                    .map(|slot| LexicalExpansion {
+                        term: format!("term{}", slot % 32).into_bytes(),
+                        boost_thousandths: [0, u16::MAX, 1, 1000][slot % 4],
+                        kind: LexicalMatchKind::Term,
+                    })
+                    .collect(),
+                FieldWeights::flat(&[FieldId(0)]),
+            )
+            .expect("prepare");
+            for allow in [vec![], vec![&allowed]] {
+                for k in [1, 10, 100] {
+                    let expected = exhaustive_weighted(&index, &query, &allow, k);
+                    let actual = search(
+                        &index,
+                        &query,
+                        k,
+                        &allow,
+                        || Ok::<_, ()>(()),
+                        |_| Ok(true),
+                        |_| Ok(()),
+                    )
+                    .unwrap_or_else(|_| panic!("weighted"));
+                    assert_eq!(
+                        actual
+                            .hits
+                            .iter()
+                            .map(|(doc, score)| (*doc, score.to_bits()))
+                            .collect::<Vec<_>>(),
+                        expected,
+                        "expansions={count} k={k} filtered={}",
+                        !allow.is_empty()
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn ze263_cursor_merge_work_scales_with_postings() {
         let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
@@ -501,6 +678,7 @@ pub(crate) fn search<Control>(
         reserve(scratch_bytes).map_err(ControlledSearchError::Control)?;
         let mut cursors = Vec::with_capacity(prepared.expansions().len());
         let mut live = Vec::with_capacity(prepared.expansions().len());
+        let mut at = Vec::with_capacity(prepared.expansions().len());
         let mut heads = BinaryHeap::with_capacity(prepared.expansions().len());
         for (slot, expansion) in prepared.expansions().iter().enumerate() {
             if slot.is_multiple_of(64) {
@@ -553,52 +731,78 @@ pub(crate) fn search<Control>(
             let Some(&CursorHead(Reverse((first, _)))) = heads.peek() else {
                 break;
             };
+            // Pop the equal-row prefix in expansion order. Cursors above
+            // it contribute skipped zeroes to both bounds at this pivot.
+            at.clear();
+            while heads.peek().is_some_and(|head| (head.0).0.0 == first) {
+                work.step()?;
+                #[cfg(test)]
+                HEAD_WORK.with(|count| count.set(count.get() + 1));
+                if let Some(CursorHead(Reverse((_, slot)))) = heads.pop() {
+                    at.push(slot);
+                }
+            }
             let threshold = heap.threshold();
             let mut pivot = first;
             if heap.is_full() {
-                bound_terms = bound_terms.saturating_add(cursors.len());
-                if bound_through_controlled(&cursors, first, &mut work)? < threshold {
-                    live.clear();
-                    let mut ordered = heads.clone();
-                    while let Some(CursorHead(Reverse((row, _)))) = ordered.pop() {
-                        work.step()?;
-                        if live.last() != Some(&row) {
-                            live.push(row);
-                        }
-                    }
-                    let mut failure = None;
-                    let position = live.partition_point(|row| {
-                        if failure.is_some() {
-                            return false;
-                        }
-                        bound_terms = bound_terms.saturating_add(cursors.len());
-                        match bound_through_controlled(&cursors, *row, &mut work) {
-                            Ok(bound) => bound < threshold,
-                            Err(error) => {
-                                failure = Some(error);
-                                false
-                            }
-                        }
-                    });
-                    if let Some(error) = failure {
-                        return Err(error);
-                    }
-                    let Some(&row) = live.get(position) else {
+                bound_terms = bound_terms.saturating_add(at.len());
+                let bound = sum_bounds_controlled(at.iter().map(|slot| {
+                    work.step()?;
+                    let cursor = cursors.get(*slot).ok_or(ControlledSearchError::Index(
+                        crate::fts::index::IndexError::CursorSlotMissing { slot: *slot },
+                    ))?;
+                    Ok::<f64, ControlledSearchError<Control>>(cursor.bound(cursor.term.upper_bound))
+                }))?;
+                if bound < threshold {
+                    let Some(&CursorHead(Reverse((next, _)))) = heads.peek() else {
                         break;
                     };
-                    pivot = row;
+                    bound_terms = bound_terms.saturating_add(cursors.len());
+                    if bound_through_controlled(&cursors, next, &mut work)? >= threshold {
+                        pivot = next;
+                    } else {
+                        live.clear();
+                        live.push(first);
+                        for head in heads.iter() {
+                            work.step()?;
+                            live.push((head.0).0.0);
+                        }
+                        live.sort_unstable();
+                        live.dedup();
+                        let mut failure = None;
+                        let position = live.partition_point(|row| {
+                            if failure.is_some() {
+                                return false;
+                            }
+                            bound_terms = bound_terms.saturating_add(cursors.len());
+                            match bound_through_controlled(&cursors, *row, &mut work) {
+                                Ok(bound) => bound < threshold,
+                                Err(error) => {
+                                    failure = Some(error);
+                                    false
+                                }
+                            }
+                        });
+                        if let Some(error) = failure {
+                            return Err(error);
+                        }
+                        let Some(&row) = live.get(position) else {
+                            break;
+                        };
+                        pivot = row;
+                    }
                 }
             }
-            if first < pivot {
-                seek_heads(&mut heads, &mut cursors, pivot, &mut work)?;
-                continue;
-            }
-            if heap.is_full() {
-                // No all-row accumulator, including short posting lists.
-                // The metadata horizon covers every contributing field run.
-                let mut edge: Option<u32> = None;
-                let bound = sum_bounds_controlled(cursors.iter().map(|cursor| {
+            let mut target = (first < pivot).then_some(pivot);
+            if target.is_none() && heap.is_full() {
+                // The next head bounds the zero contribution of all cursors
+                // above the pivot; only the popped cursors need block reads.
+                let mut edge = heads.peek().map(|head| (head.0).0.0.saturating_sub(1));
+                let bound = sum_bounds_controlled(at.iter().map(|slot| {
                     work.step()?;
+                    let cursor = cursors.get(*slot).ok_or(ControlledSearchError::Index(
+                        crate::fts::index::IndexError::CursorSlotMissing { slot: *slot },
+                    ))?;
                     let stream = &cursor.term.stream;
                     if let Some(horizon) = stream.bound_horizon_for_controlled(pivot, &mut work)? {
                         edge = Some(edge.map_or(horizon, |held| held.min(horizon)));
@@ -607,14 +811,29 @@ pub(crate) fn search<Control>(
                         stream.bound_for_controlled(pivot, &cursor.term.scorer, &mut work)?,
                     ))
                 }))?;
-                bound_terms = bound_terms.saturating_add(cursors.len());
+                bound_terms = bound_terms.saturating_add(at.len());
                 if bound < threshold {
                     let Some(next) = edge.and_then(|row| row.checked_add(1)) else {
                         break;
                     };
-                    seek_heads(&mut heads, &mut cursors, next, &mut work)?;
-                    continue;
+                    target = Some(next);
                 }
+            }
+            if let Some(target) = target {
+                for slot in &at {
+                    work.step()?;
+                    let cursor = cursors.get_mut(*slot).ok_or(ControlledSearchError::Index(
+                        crate::fts::index::IndexError::CursorSlotMissing { slot: *slot },
+                    ))?;
+                    #[cfg(test)]
+                    HEAD_SEEKS.with(|count| count.set(count.get() + 1));
+                    cursor.term.stream.seek_controlled(target, &mut work)?;
+                    if let Some(row) = cursor.term.current() {
+                        heads.push(CursorHead(Reverse((row, *slot))));
+                    }
+                }
+                seek_heads(&mut heads, &mut cursors, target, &mut work)?;
+                continue;
             }
             let length = match lengths
                 .and_then(|lengths| lengths.get(pivot as usize))
@@ -626,13 +845,8 @@ pub(crate) fn search<Control>(
                 }
             };
             let mut score = 0.0;
-            while heads.peek().is_some_and(|head| (head.0).0.0 == pivot) {
+            for slot in at.iter().copied() {
                 work.step()?;
-                #[cfg(test)]
-                HEAD_WORK.with(|count| count.set(count.get() + 1));
-                let Some(CursorHead(Reverse((_, slot)))) = heads.pop() else {
-                    break;
-                };
                 let cursor = cursors.get_mut(slot).ok_or(ControlledSearchError::Index(
                     crate::fts::index::IndexError::CursorSlotMissing { slot },
                 ))?;

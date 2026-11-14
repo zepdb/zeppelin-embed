@@ -195,3 +195,64 @@ fn pruned_query_allocations_do_not_scale_with_postings() {
          {SMALL_MATCHES} matches, {large} at {LARGE_MATCHES}"
     );
 }
+
+#[test]
+#[allow(clippy::expect_used, clippy::panic)]
+fn weighted_query_allocations_do_not_scale_with_pivots() {
+    use crate::fts::query::{LexicalExpansion, LexicalMatchKind, PreparedWeightedQuery};
+    let measure = |rows: usize| {
+        let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+        let mut segment = SegmentIndex::new();
+        for row in 0..rows {
+            let text = if row == 0 {
+                "alpha alpha alpha alpha beta beta beta beta".to_owned()
+            } else {
+                format!(
+                    "{} {}",
+                    if row % 2 == 0 { "alpha" } else { "beta" },
+                    "filler ".repeat(40)
+                )
+            };
+            segment
+                .push_document(&analyzer, &Document::with_text(&text))
+                .expect("document");
+        }
+        let mut index = LexicalIndex::new();
+        index.push_segment(segment).expect("seal");
+        let query = PreparedWeightedQuery::new(
+            &index,
+            ["alpha", "beta"]
+                .into_iter()
+                .map(|term| LexicalExpansion {
+                    term: term.as_bytes().to_vec(),
+                    boost_thousandths: 1000,
+                    kind: LexicalMatchKind::Term,
+                })
+                .collect(),
+            FieldWeights::flat(&[DEFAULT_FIELD]),
+        )
+        .expect("prepare");
+        let run = || {
+            crate::fts::prune::weighted::search(
+                &index,
+                &query,
+                1,
+                &[],
+                || Ok::<_, ()>(()),
+                |_| Ok(true),
+                |_| Ok(()),
+            )
+        };
+        drop(run().unwrap_or_else(|_| panic!("warmup")));
+        let (result, report) = crate::allocation_audit::audit_engine_path(run);
+        drop(result.unwrap_or_else(|_| panic!("weighted")));
+        report.allocations
+    };
+    let small = measure(SMALL_MATCHES);
+    let large = measure(LARGE_MATCHES);
+    println!("ZE541 weighted allocations small={small} large={large}");
+    assert!(
+        large <= small + GROWTH_ALLOWANCE,
+        "weighted allocations: small={small}, large={large}, allowance={GROWTH_ALLOWANCE}"
+    );
+}

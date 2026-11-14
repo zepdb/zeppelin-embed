@@ -6,6 +6,8 @@
 //! here as a changed result rather than as a silently missing document.
 #![allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
 
+mod test_support;
+
 use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, RngSeed};
 
@@ -484,4 +486,65 @@ fn block_skipping_returns_bit_identical_hits_and_scores() {
         "no cell in the grid skipped a block, so this proved nothing about \
          skipping; the fixture no longer produces skippable blocks"
     );
+}
+
+#[test]
+fn ze541_many_term_queries_match_exhaustive_bit_for_bit() {
+    use rand::Rng;
+    let mut rng = test_support::seeded_rng("ze541_many_term_queries_match_exhaustive_bit_for_bit");
+    let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+    let texts = (0..3072)
+        .map(|row| {
+            let mut words = vec![
+                "filler".to_owned();
+                if row % 1024 < 64 {
+                    1
+                } else {
+                    rng.random_range(10..80)
+                }
+            ];
+            for term in 0..32 {
+                if rng.random_range(0..100) < 3 + 60 / (term + 1) {
+                    words.extend(vec![
+                        format!("term{term}");
+                        if row % 1024 < 64 {
+                            12
+                        } else {
+                            rng.random_range(1..5)
+                        }
+                    ]);
+                }
+            }
+            words.join(" ")
+        })
+        .collect::<Vec<_>>();
+    let index = build_index(&analyzer, &texts, &[1024, 1024, 1024]);
+    for count in [8, 16, 24, 32] {
+        let query = TermQuery::flat(
+            (0..count)
+                .map(|term| format!("term{term}").into_bytes())
+                .collect(),
+            &[DEFAULT_FIELD],
+        );
+        for k in [1, 10, 100] {
+            let expected = search(&index, &query, k, Bm25Params::default()).expect("oracle");
+            for strategy in [Prune::BlockMaxWand, Prune::BlockMaxMaxscore] {
+                let actual = search_pruned(&index, &query, k, Bm25Params::default(), strategy)
+                    .expect("pruned");
+                assert_eq!(
+                    actual
+                        .hits
+                        .iter()
+                        .map(|hit| (hit.doc, hit.score.to_bits()))
+                        .collect::<Vec<_>>(),
+                    expected
+                        .hits
+                        .iter()
+                        .map(|hit| (hit.doc, hit.score.to_bits()))
+                        .collect::<Vec<_>>(),
+                    "{strategy:?} terms={count} k={k}"
+                );
+            }
+        }
+    }
 }

@@ -43,6 +43,7 @@ use super::{TermCursor, TopK};
 
 #[cfg(test)]
 thread_local! {
+    static SORT_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static METADATA_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -92,31 +93,29 @@ pub(crate) fn run_controlled<E>(
 ) -> Result<(), E> {
     let mut work = crate::fts::control::WorkCheck::new(check);
     work.check_now()?;
-    for cursor in cursors.iter_mut() {
+    let mut live: Vec<(u32, usize)> = Vec::with_capacity(cursors.len());
+    for (slot, cursor) in cursors.iter_mut().enumerate() {
         work.step()?;
         cursor.stream.reset_controlled(&mut work)?;
+        if let Some(row) = cursor.current() {
+            live.push((row, slot));
+        }
     }
 
-    // Hoisted to the query frame. This buffer used to be allocated and freed
-    // once per pivot iteration, which on a single-term query is once per
-    // posting -- the dominant allocation on the pruned path.
-    //
-    // Each entry caches the cursor's current row beside its slot. Rows are
-    // read once per iteration instead of through the cursor table on every
-    // comparison, and no cursor moves between the fill and the last read,
-    // so the cache cannot go stale.
-    let mut live: Vec<(u32, usize)> = Vec::with_capacity(cursors.len());
-
+    // Refresh the previous pivot's order instead of rebuilding in slot
+    // order. Only a prefix can have moved, so the sort keeps its sorted tail.
     loop {
         work.step()?;
-        // Order live cursors by current document.
-        live.clear();
-        for (slot, cursor) in cursors.iter().enumerate() {
+        for _ in 0..live.len() {
             work.step()?;
-            if let Some(row) = cursor.current() {
-                live.push((row, slot));
-            }
         }
+        live.retain_mut(|(row, slot)| {
+            cursors
+                .get(*slot)
+                .and_then(TermCursor::current)
+                .map(|current| *row = current)
+                .is_some()
+        });
         if live.is_empty() {
             break;
         }
@@ -125,7 +124,11 @@ pub(crate) fn run_controlled<E>(
         // sharing a row keep slot order and the pivot choice stays
         // reproducible -- without a closure through the cursor table per
         // comparison.
-        live.sort_unstable();
+        live.sort_unstable_by(|a, b| {
+            #[cfg(test)]
+            SORT_COMPARISONS.with(|count| count.set(count.get() + 1));
+            a.cmp(b)
+        });
 
         let threshold = heap.threshold();
 
@@ -373,6 +376,67 @@ mod tests {
     use crate::fts::sealed::TermStream;
     use crate::fts::search::FieldWeights;
     use crate::fts::tokenizer::{Analyzer, TokenizerConfig};
+
+    #[test]
+    fn ze541_wand_sort_work_uses_previous_order() {
+        use rand::Rng;
+        let mut rng = crate::test_support::seeded_rng(
+            "fts::prune::wand::tests::ze541_wand_sort_work_uses_previous_order",
+        );
+        let analyzer =
+            Analyzer::new(crate::fts::tokenizer::Profile::Code.config()).expect("analyzer");
+        let n = 16_usize;
+        let mut source = SegmentIndex::new();
+        for _ in 0..4096 {
+            let mut words = vec!["filler".to_owned(); rng.random_range(1..40)];
+            for term in 0..n {
+                if rng.random_range(0..100) < 2 + term % 7 {
+                    words.extend(vec![format!("term{term}"); rng.random_range(1..5)]);
+                }
+            }
+            source
+                .push_document(&analyzer, &Document::with_text(&words.join(" ")))
+                .expect("document");
+        }
+        let mut index = LexicalIndex::new();
+        index.push_segment(source).expect("seal");
+        let query = crate::fts::search::TermQuery::flat(
+            (0..n)
+                .map(|term| format!("term{term}").into_bytes())
+                .collect(),
+            &[DEFAULT_FIELD],
+        );
+        let expected =
+            crate::fts::search::search(&index, &query, 10, Bm25Params::default()).expect("oracle");
+        SORT_COMPARISONS.with(|count| count.set(0));
+        let actual = super::super::search_pruned(
+            &index,
+            &query,
+            10,
+            Bm25Params::default(),
+            super::super::Strategy::BlockMaxWand,
+        )
+        .expect("wand");
+        let comparisons = SORT_COMPARISONS.with(std::cell::Cell::get);
+        assert_eq!(
+            actual
+                .hits
+                .iter()
+                .map(|hit| (hit.doc, hit.score.to_bits()))
+                .collect::<Vec<_>>(),
+            expected
+                .hits
+                .iter()
+                .map(|hit| (hit.doc, hit.score.to_bits()))
+                .collect::<Vec<_>>()
+        );
+        const MAIN_SORT_COMPARISONS: usize = 109_074;
+        println!("ZE541 SORT comparisons={comparisons} main={MAIN_SORT_COMPARISONS}");
+        assert!(
+            5 * comparisons <= 4 * MAIN_SORT_COMPARISONS,
+            "comparison work={comparisons} must fall by at least 20% from main={MAIN_SORT_COMPARISONS}"
+        );
+    }
 
     #[test]
     fn astra_18_wand_cancels_during_metadata_only_skip() {
