@@ -13,25 +13,29 @@
 //!
 //! * the committed header is byte-for-byte what cbindgen generates (this part
 //!   is platform-neutral and is the drift gate the repository relies on);
-//! * every `ze_*` the header declares is actually exported by the DLL;
-//! * the DLL exports nothing beginning `ze_` that the header does not declare;
+//! * every `ze_*` the build's headers declare is actually exported by the DLL;
+//! * the DLL exports nothing beginning `ze_` that those headers do not declare;
 //! * the feature-gated `ze_text_*` surface stays out of a default build;
 //! * the static archive is the implementation library and not an import stub.
 
-#![cfg(windows)]
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(windows)]
 use std::process::Command;
 
 /// The header gate is pinned to one cbindgen line, as on macOS.
+#[cfg(windows)]
 const CBINDGEN_VERSION_PREFIX: &str = "cbindgen 0.29.";
 
 fn crate_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+#[cfg(windows)]
 fn workspace_root() -> PathBuf {
     crate_dir()
         .parent()
@@ -74,6 +78,49 @@ fn committed_header() -> String {
     std::fs::read_to_string(crate_dir().join("include/zeppelin_embed.h")).expect("committed header")
 }
 
+fn declared_build_functions(exported: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut declared = declared_functions(&committed_header());
+    let graph_header =
+        std::fs::read_to_string(crate_dir().join("include/zeppelin_graph_contracts.h"))
+            .expect("committed graph header");
+    let graph_declared = declared_functions(&graph_header);
+    // Inspect the actual DLL: graph entries also ship as refusal stubs in
+    // graph-free builds. Any exact graph entry requires the entire surface,
+    // so missing exports still fail the reverse check.
+    if !graph_declared.is_disjoint(exported) {
+        declared.extend(graph_declared);
+    }
+    declared
+}
+
+#[test]
+fn committed_headers_declare_the_full_graph_export_surface() {
+    // Even a DLL missing other graph entries must require the whole header.
+    let exported = BTreeSet::from(["ze_store_cypher".to_owned()]);
+    let declared = declared_build_functions(&exported);
+    assert!(declared.contains("ze_store_cypher"));
+    assert!(declared.contains("ze_graph_response_free"));
+    let declared_without_text = declared
+        .into_iter()
+        .filter(|name| !name.starts_with("ze_text_"))
+        .collect::<BTreeSet<_>>();
+    let allowed = include_str!("../symbols.graph.allowlist")
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(declared_without_text, allowed);
+}
+
+#[test]
+fn committed_headers_require_only_core_without_graph_exports() {
+    let exported = BTreeSet::from(["ze_abi_version".to_owned()]);
+    assert_eq!(
+        declared_build_functions(&exported),
+        declared_functions(&committed_header())
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Header drift.
 // ---------------------------------------------------------------------------
@@ -83,6 +130,7 @@ fn committed_header() -> String {
 /// This is platform-neutral, and it is the gate that makes every C-visible
 /// change regenerated and committed rather than hand-edited.
 #[test]
+#[cfg(windows)]
 fn the_committed_header_is_the_exact_cbindgen_output() {
     let version = match Command::new("cbindgen").arg("--version").output() {
         Ok(output) => String::from_utf8(output.stdout).expect("UTF-8 cbindgen version"),
@@ -148,6 +196,7 @@ fn the_committed_header_is_the_exact_cbindgen_output() {
 // ---------------------------------------------------------------------------
 
 /// Locates `dumpbin.exe` from the installed Visual Studio toolset.
+#[cfg(windows)]
 fn dumpbin() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("ZE_DUMPBIN") {
         let path = PathBuf::from(explicit);
@@ -178,6 +227,7 @@ fn dumpbin() -> Option<PathBuf> {
 
 /// Builds the release FFI artifacts with the default (non-`text`) features and
 /// returns `(static archive, dll, import library)`.
+#[cfg(windows)]
 fn build_release_artifacts() -> (PathBuf, PathBuf, PathBuf) {
     let workspace = workspace_root();
     let target_dir = workspace.join("target/ffi-header-gate-windows");
@@ -215,6 +265,7 @@ fn build_release_artifacts() -> (PathBuf, PathBuf, PathBuf) {
 }
 
 /// Every symbol the DLL exports, from `dumpbin /exports`.
+#[cfg(windows)]
 fn dll_exports(dumpbin: &Path, dll: &Path) -> BTreeSet<String> {
     let output = Command::new(dumpbin)
         .arg("/exports")
@@ -236,9 +287,10 @@ fn dll_exports(dumpbin: &Path, dll: &Path) -> BTreeSet<String> {
         .collect()
 }
 
-/// The DLL's export table must match the committed header exactly, in both
+/// The DLL's export table must match the committed headers exactly, in both
 /// directions, and must not carry the feature-gated text surface.
 #[test]
+#[cfg(windows)]
 #[ignore = "manual full-build qualification; builds the release DLL and inspects it"]
 fn the_committed_header_matches_the_dll_export_table() {
     let Some(dumpbin) = dumpbin() else {
@@ -273,9 +325,9 @@ fn the_committed_header_matches_the_dll_export_table() {
          library next to the import library ({import_len} bytes); they may have been swapped"
     );
 
-    let declared = declared_functions(&committed_header());
     let exported = dll_exports(&dumpbin, &dll);
     assert!(!exported.is_empty(), "dumpbin reported no ze_* exports");
+    let declared = declared_build_functions(&exported);
 
     let declared_default = declared
         .iter()
