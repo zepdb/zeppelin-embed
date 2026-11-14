@@ -873,6 +873,42 @@ pub(crate) fn write_segment_with_documents_payloads(
     publish_segment(vfs, directory, build, policy, &bytes)
 }
 
+/// Writes document payloads while carrying authenticated row-preserving graph bytes.
+pub(crate) fn write_segment_with_carried_graph_and_documents_payloads(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    build: SegmentBuild<'_>,
+    graph_bytes: &[u8],
+    payloads: SegmentPayloads<'_>,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    let graph = decode_node_blocks(graph_bytes)?;
+    if graph.layout().dims() != build.dims {
+        return Err(SegmentError::Geometry(format!(
+            "graph dimensions {}, segment dimensions {}",
+            graph.layout().dims(),
+            build.dims
+        )));
+    }
+    if graph.node_count() != build.columns.row_count() {
+        return Err(SegmentError::Geometry(format!(
+            "graph nodes {}, segment rows {}",
+            graph.node_count(),
+            build.columns.row_count()
+        )));
+    }
+    let bytes = encode_segment_inner(
+        build,
+        Some(graph_bytes.to_vec()),
+        Some(payloads.documents),
+        payloads.metadata,
+        payloads.text,
+        payloads.postings,
+        &[],
+    )?;
+    publish_segment(vfs, directory, build, policy, &bytes)
+}
+
 /// Writes and atomically publishes a segment containing fixed-stride graph blocks.
 pub fn write_segment_with_graph(
     vfs: &dyn Vfs,

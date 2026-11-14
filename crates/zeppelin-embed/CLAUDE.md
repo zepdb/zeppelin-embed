@@ -490,6 +490,14 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   time. Orphan replacement files and old segments are swept against the current
   manifest during recovery; the durable intent is the sole completion marker.
 
+## ZE-537 row-preserving graph rewrites
+
+- Rewrites that retain every row in its original position carry region kind 7
+  byte-for-byte after checksum, graph geometry and node-count validation.
+  Tombstoned rows remain valid waypoints and are excluded from query results.
+- Compaction that removes or renumbers rows omits the graph; maintenance rebuilds
+  it for the new row ids. Corrupt carried graphs fail the mutation before WAL append.
+
 ## ZE-217 delete-by-predicate invariants
 
 - `delete_matching` holds maintenance -> state -> writer -> WAL for the

@@ -17,11 +17,12 @@ use crate::meta::{
     AliveSet, Column, ColumnInput, ColumnStore, ColumnStoreBuilder, ColumnValue, TIMESTAMP_COLUMN,
 };
 use crate::quant::Bit4Factors;
-use crate::segment::layout::Int8Factors;
+use crate::segment::layout::{Int8Factors, RegionKind};
 use crate::segment::reader::SegmentReader;
 use crate::segment::writer::{
     SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPayloads, SegmentPostings,
-    SegmentStoredMetadata, SegmentStoredText, write_segment_with_documents_payloads,
+    SegmentStoredMetadata, SegmentStoredText,
+    write_segment_with_carried_graph_and_documents_payloads, write_segment_with_documents_payloads,
 };
 use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 use crate::vfs::Vfs;
@@ -1976,18 +1977,35 @@ fn rewrite_segment(
             bytes,
         });
     let postings = postings.as_deref().map(|bytes| SegmentPostings { bytes });
-    let written = write_segment_with_documents_payloads(
-        vfs,
-        directory,
-        build,
-        SegmentPayloads {
-            documents,
-            metadata,
-            text,
-            postings,
-        },
-        policy,
-    )
+    let payloads = SegmentPayloads {
+        documents,
+        metadata,
+        text,
+        postings,
+    };
+    // Graph node ids remain valid only when every row keeps its original position.
+    let rows_preserved = survivors.len() == reader.meta().row_count as usize
+        && survivors.iter().copied().eq(0..survivors.len());
+    let written = if rows_preserved
+        && reader
+            .directory()
+            .iter()
+            .any(|entry| entry.kind == RegionKind::GraphNodeBlocks.id())
+    {
+        let graph_bytes = reader
+            .region(RegionKind::GraphNodeBlocks)
+            .map_err(StoreError::Segment)?;
+        write_segment_with_carried_graph_and_documents_payloads(
+            vfs,
+            directory,
+            build,
+            graph_bytes,
+            payloads,
+            policy,
+        )
+    } else {
+        write_segment_with_documents_payloads(vfs, directory, build, payloads, policy)
+    }
     .map_err(StoreError::Segment)?;
     let mut written = written;
     written.clustering_key_range = clustering_range(&columns, &alive)?;

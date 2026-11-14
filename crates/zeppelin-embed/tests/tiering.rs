@@ -3,7 +3,11 @@
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use rand::Rng;
+
+mod test_support;
 
 use tempfile::{TempDir, tempdir};
 use xxhash_rust::xxh3::xxh3_64;
@@ -14,10 +18,13 @@ use zeppelin_embed::format::frame::{FILE_HEADER_LEN, FILE_TRAILER_LEN};
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
+use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
-    DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, SearchRequest,
 };
-use zeppelin_embed::lifecycle::{CancelToken, QueryControl, SearchOptions};
+use zeppelin_embed::lifecycle::{
+    CancelToken, GraphSearchOptions, QueryControl, SearchOptions, SearchTier,
+};
 use zeppelin_embed::lifecycle::{InMemorySegment, InMemorySegmentFactors, OpenOptions, Store};
 use zeppelin_embed::meta::{AliveSet, ColumnStore, ColumnStoreBuilder, Schema};
 use zeppelin_embed::quant::{Bit4Factors, quantize_bit4};
@@ -705,4 +712,314 @@ fn queries_never_error_or_miss_acked_docs_during_maintain() {
     assert_eq!(report.graphs_built, 1);
     assert!(queries > 16);
     assert!(graph_queries > 0);
+}
+
+fn ze537_budget() -> MaintenanceBudget {
+    MaintenanceBudget {
+        wall_time: MAINTENANCE_TEST_BUDGET,
+        bytes: u64::MAX,
+    }
+}
+
+fn ze537_graph_fixture() -> (TempDir, Store) {
+    let directory = tempdir().expect("ZE-537 directory");
+    let store = open_sift_store(directory.path(), "open ZE-537 store");
+    let documents = (1..=128)
+        .map(|d| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(d), Revision::new(1)),
+                fixture_vector(d as f32),
+            )
+            .with_timestamp(d as i64)
+        })
+        .collect();
+    store
+        .ingest(IngestBatch::new(documents).with_epoch(sift_epoch().identity()))
+        .expect("ingest ZE-537 fixture");
+    store.seal().expect("seal ZE-537 fixture");
+    assert_eq!(maintain_test(&store, ze537_budget()).graphs_built, 1);
+    (directory, store)
+}
+
+fn ze537_graph_options() -> SearchOptions {
+    SearchOptions::default().with_tier(SearchTier::Graph(
+        GraphSearchOptions::new(GraphSearchProfile::SiftClass)
+            .with_ef(128)
+            .with_seed(0x00c0_ffee),
+    ))
+}
+
+fn ze537_search(store: &Store, k: usize, options: SearchOptions) -> Vec<(DocId, u32)> {
+    store
+        .search(
+            SearchRequest::new(&fixture_vector(63.2)),
+            k,
+            options,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("ZE-537 search")
+        .candidates
+        .iter()
+        .map(|hit| {
+            (
+                hit.document().expect("document identity").doc_id(),
+                hit.score().to_bits(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn ze537_sealed_delete_keeps_graph_region_bytes() {
+    let (_directory, store) = ze537_graph_fixture();
+    let before = store.snapshot().expect("before snapshot");
+    let source = &before.segments()[0];
+    let graph = source
+        .region(RegionKind::GraphNodeBlocks)
+        .expect("source graph");
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(63)]))
+        .expect("delete sealed document");
+    let after = store.snapshot().expect("after snapshot");
+    assert_eq!(after.segments().len(), 1);
+    let replacement = &after.segments()[0];
+    assert_ne!(replacement.meta().id, source.meta().id);
+    assert_eq!(replacement.meta().row_count, source.meta().row_count);
+    assert_eq!(
+        replacement.alive().expect("alive bitmap").tombstone_count(),
+        1
+    );
+    assert!(has_graph(&store), "lost graph region");
+    assert_eq!(
+        replacement
+            .region(RegionKind::GraphNodeBlocks)
+            .expect("carried graph"),
+        graph
+    );
+    assert_eq!(maintain_test(&store, ze537_budget()).graphs_built, 0);
+}
+
+#[test]
+fn ze537_graph_results_equal_pre_delete_minus_deleted_row() {
+    let (_directory, store) = ze537_graph_fixture();
+    let exact = SearchOptions::default().with_tier(SearchTier::Exact);
+    let before = ze537_search(&store, 11, ze537_graph_options());
+    assert_eq!(before, ze537_search(&store, 11, exact));
+    assert!(before.iter().any(|(id, _)| *id == DocId::new(63)));
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(63)]))
+        .expect("delete sealed document");
+    let after = ze537_search(&store, 10, ze537_graph_options());
+    let expected = before
+        .into_iter()
+        .filter(|(id, _)| *id != DocId::new(63))
+        .collect::<Vec<_>>();
+    assert_eq!(after, expected);
+    assert_eq!(after, ze537_search(&store, 10, exact));
+    assert!(after.iter().all(|(id, _)| *id != DocId::new(63)));
+}
+
+#[test]
+fn ze537_sealed_update_keeps_graph() {
+    let (_directory, store) = ze537_graph_fixture();
+    store
+        .ingest(
+            IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(63), Revision::new(2)),
+                fixture_vector(500.0),
+            )])
+            .with_epoch(sift_epoch().identity()),
+        )
+        .expect("update sealed document");
+    let outcome = store
+        .search(
+            SearchRequest::new(&fixture_vector(63.2)),
+            129,
+            SearchOptions::default(),
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("Auto after update");
+    assert_eq!(outcome.graph_stats.segments_traversed, 1);
+    assert!(has_graph(&store), "lost graph region on update");
+    assert!(
+        outcome
+            .candidates
+            .iter()
+            .all(|hit| hit.document()
+                != Some(DocumentVersion::new(DocId::new(63), Revision::new(1))))
+    );
+}
+
+#[test]
+fn ze537_reopen_validates_and_serves_carried_graph() {
+    let (directory, store) = ze537_graph_fixture();
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(63)]))
+        .expect("delete before reopen");
+    store.close().expect("close before reopen");
+    let store = open_sift_store(directory.path(), "reopen carried graph");
+    {
+        let snapshot = store.snapshot().expect("reopened snapshot");
+        let segment = &snapshot.segments()[0];
+        segment.validate_all().expect("validate carried segment");
+        segment.graph_node_blocks().expect("reopened graph");
+    }
+    assert!(
+        zeppelin_embed::verify::verify_store(directory.path())
+            .expect("verify store")
+            .is_clean()
+    );
+    assert_eq!(
+        ze537_search(&store, 10, ze537_graph_options()),
+        ze537_search(
+            &store,
+            10,
+            SearchOptions::default().with_tier(SearchTier::Exact)
+        ),
+    );
+}
+
+fn ze537_segment_names(path: &std::path::Path) -> Vec<std::ffi::OsString> {
+    let mut names = fs::read_dir(path)
+        .expect("list store")
+        .map(|entry| entry.expect("store entry"))
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "zseg"))
+        .map(|entry| entry.file_name())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+#[test]
+fn ze537_corrupt_graph_region_fails_delete_loudly() {
+    let (directory, store) = ze537_graph_fixture();
+    let id = store.snapshot().expect("source snapshot").segments()[0]
+        .meta()
+        .id;
+    store.close().expect("close before corruption");
+    let path = directory.path().join(id.file_name());
+    let mut bytes = fs::read(&path).expect("read source segment");
+    let entry = region_entry_offset(&bytes, RegionKind::GraphNodeBlocks.id());
+    let offset = usize::try_from(read_u64(&bytes, entry + 8)).expect("graph offset");
+    bytes[offset] ^= 1;
+    fs::write(&path, bytes).expect("corrupt graph byte");
+    let store = open_sift_store(directory.path(), "reopen corrupt graph");
+    let names = ze537_segment_names(directory.path());
+    let generation = store.snapshot().expect("before refusal").generation();
+    assert!(
+        store
+            .delete(DeleteBatch::new(vec![DocId::new(63)]))
+            .is_err(),
+        "delete accepted corrupt source graph"
+    );
+    assert_eq!(ze537_segment_names(directory.path()), names);
+    assert_eq!(
+        store.snapshot().expect("after refusal").generation(),
+        generation
+    );
+    assert!(
+        ze537_search(
+            &store,
+            10,
+            SearchOptions::default().with_tier(SearchTier::Exact)
+        )
+        .iter()
+        .any(|(id, _)| *id == DocId::new(63))
+    );
+}
+
+#[test]
+#[ignore = "ZE-537 paired release measurement"]
+fn ze537_measure_delete_on_30k_graph_segment() {
+    let mut rng = test_support::seeded_rng("tiering::ze537_measure_delete_on_30k_graph_segment");
+    let directory = tempdir().expect("measurement source");
+    let store = open_sift_store(directory.path(), "open measurement source");
+    for start in (0..30_720).step_by(4_096) {
+        let documents = (start..(start + 4_096).min(30_720))
+            .map(|row| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(row as u128 + 1), Revision::new(1)),
+                    (0..DIMS).map(|_| rng.random_range(-1.0_f32..1.0)).collect(),
+                )
+                .with_timestamp(row as i64 + 1)
+            })
+            .collect();
+        store
+            .ingest(IngestBatch::new(documents).with_epoch(sift_epoch().identity()))
+            .expect("ingest measurement batch");
+    }
+    store.seal().expect("seal measurement source");
+    while maintain_test(&store, ze537_budget()).graphs_built != 0 {}
+    let (old_bytes, graph_region_bytes) = {
+        let snapshot = store.snapshot().expect("measurement source snapshot");
+        let source = &snapshot.segments()[0];
+        (
+            fs::metadata(directory.path().join(source.meta().id.file_name()))
+                .expect("source size")
+                .len(),
+            source
+                .region(RegionKind::GraphNodeBlocks)
+                .expect("source graph")
+                .len(),
+        )
+    };
+    store.close().expect("close measurement source");
+    let queries = (0..20)
+        .map(|_| {
+            (0..DIMS)
+                .map(|_| rng.random_range(-1.0_f32..1.0))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for rep in 1..=2 {
+        let copy = tempdir().expect("measurement copy");
+        for entry in fs::read_dir(directory.path()).expect("list measurement source") {
+            let entry = entry.expect("source entry");
+            if entry.file_type().expect("entry type").is_file() {
+                fs::copy(entry.path(), copy.path().join(entry.file_name()))
+                    .expect("copy store file");
+            }
+        }
+        let store = open_sift_store(copy.path(), "open measurement copy");
+        let started = Instant::now();
+        store
+            .delete(DeleteBatch::new(vec![DocId::new(63)]))
+            .expect("measurement delete");
+        let delete_us = started.elapsed().as_micros();
+        let new_bytes = {
+            let snapshot = store.snapshot().expect("measurement replacement");
+            fs::metadata(
+                copy.path()
+                    .join(snapshot.segments()[0].meta().id.file_name()),
+            )
+            .expect("replacement size")
+            .len()
+        };
+        let has_graph = has_graph(&store);
+        let started = Instant::now();
+        let report = maintain_test(&store, ze537_budget());
+        let maintain_us = started.elapsed().as_micros();
+        println!(
+            "ZE537 rep={rep} delete_us={delete_us} old_bytes={old_bytes} new_bytes={new_bytes} graph_region_bytes={graph_region_bytes} has_graph={has_graph} maintain_us={maintain_us} graphs_built={}",
+            report.graphs_built
+        );
+        for query in &queries {
+            let outcome = store
+                .search(
+                    SearchRequest::new(query),
+                    10,
+                    SearchOptions::default().with_tier(SearchTier::Exact),
+                    QueryControl::Cancel(CancelToken::new()),
+                )
+                .expect("measurement Exact query");
+            assert!(
+                outcome.candidates.iter().all(|hit| hit
+                    .document()
+                    .expect("document identity")
+                    .doc_id()
+                    != DocId::new(63))
+            );
+        }
+        store.close().expect("close measurement copy");
+    }
 }
