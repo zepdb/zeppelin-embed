@@ -11,7 +11,7 @@
 )]
 #![warn(missing_docs)]
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 extern crate self as zeppelin_embed_text;
 
 /// Model architecture implementations.

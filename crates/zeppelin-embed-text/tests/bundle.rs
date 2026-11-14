@@ -1,9 +1,47 @@
 #![allow(clippy::expect_used)]
 
+use std::sync::Arc;
 use tempfile::tempdir;
 use zeppelin_embed_text::bundle::{Bundle, BundleError};
+use zeppelin_embed_text::runtime::{RuntimeError, mlx::MlxRuntime};
+use zeppelin_embed_text::tower::TowerRole;
 
 mod common;
+
+#[test]
+fn bundle_open_hashes_each_body_byte_once() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("pair.zem");
+    common::write_fixture_bundle(
+        &path,
+        &[
+            common::FixtureTower::document("document"),
+            common::FixtureTower::query("query"),
+        ],
+        b"pair",
+    );
+    let body = std::fs::metadata(&path).expect("length").len() - 16;
+    let bundle = Bundle::open(&path).expect("open");
+    assert_eq!(bundle.hashed_bytes(), body);
+    // Fixture towers have the same tensor lengths; the query section ends at the trailer.
+    let first_query = bundle
+        .tensor("query/embeddings.word_embeddings.weight")
+        .expect("query tensor")
+        .offset as u64;
+    let query_bytes = body - first_query;
+    bundle.verify_tower(TowerRole::Query).expect("verify query");
+    assert_eq!(bundle.hashed_bytes(), body + 2 * query_bytes);
+    bundle.verify_tower(TowerRole::Query).expect("cached query");
+    assert_eq!(bundle.hashed_bytes(), body + 2 * query_bytes);
+    bundle
+        .verify_tower(TowerRole::Document)
+        .expect("verify document");
+    assert_eq!(bundle.hashed_bytes(), body + 4 * query_bytes);
+    bundle
+        .verify_tower(TowerRole::Document)
+        .expect("cached document");
+    assert_eq!(bundle.hashed_bytes(), body + 4 * query_bytes);
+}
 
 #[test]
 fn tokenizer_vocabulary_must_fit_each_towers_word_embedding_rows() {
@@ -48,11 +86,14 @@ fn a_bundle_with_a_corrupted_tensor_digest_is_refused_before_any_tensor_is_mappe
     bytes[trailer..].copy_from_slice(&digest.to_le_bytes());
     std::fs::write(&path, bytes).expect("rewrite corrupted fixture");
 
-    let error = match Bundle::open(&path) {
-        Ok(_) => panic!("corrupted tensor must be rejected"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, BundleError::TensorDigest { .. }));
+    let bundle = Arc::new(Bundle::open(&path).expect("trailer-valid bundle opens"));
+    assert!(matches!(
+        bundle.verify_tower(TowerRole::Document),
+        Err(BundleError::TensorDigest { .. })
+    ));
+    assert!(
+        matches!(MlxRuntime::load(bundle, TowerRole::Document), Err(RuntimeError::Shape(detail)) if detail.contains("tensor") && detail.contains("digest mismatch"))
+    );
 }
 
 #[test]
@@ -117,11 +158,14 @@ fn a_tower_weights_digest_must_equal_its_exact_tensor_section() {
     bytes[trailer..].copy_from_slice(&digest.to_le_bytes());
     std::fs::write(&path, bytes).expect("rewrite fixture");
 
-    let error = match Bundle::open(&path) {
-        Ok(_) => panic!("forged tower weights digest must fail"),
-        Err(error) => error,
-    };
-    assert!(matches!(error, BundleError::WeightsDigest { .. }));
+    let bundle = Arc::new(Bundle::open(&path).expect("trailer-valid bundle opens"));
+    assert!(matches!(
+        bundle.verify_tower(TowerRole::Document),
+        Err(BundleError::WeightsDigest { .. })
+    ));
+    assert!(
+        matches!(MlxRuntime::load(bundle, TowerRole::Document), Err(RuntimeError::Shape(detail)) if detail.contains("weights digest mismatch"))
+    );
 }
 
 #[test]

@@ -3,6 +3,7 @@ use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::runtime::RuntimeError;
 use crate::tokenizer::{ModelTokenizer, TokenizerKind};
@@ -192,10 +193,14 @@ pub struct Bundle {
     alignment_digest: Vec<u8>,
     digest: u128,
     alpha: f64,
+    hashed_bytes: AtomicU64,
+    tensor_order: Vec<String>,
+    document_verified: AtomicBool,
+    query_verified: AtomicBool,
 }
 
 impl Bundle {
-    /// Opens, validates, and pre-faults the query tower of one `.zem` file.
+    /// Opens one `.zem` file, validating its trailer digest and metadata.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, BundleError> {
         let path = path.as_ref();
         let mapping = Arc::new(MappedFile::open(path)?);
@@ -282,22 +287,6 @@ impl Bundle {
         }
         cursor.take(header_len.saturating_sub(cursor.position()))?;
 
-        for tensor in tensors.values() {
-            let tensor_bytes = bytes
-                .get(tensor.offset..tensor.offset.saturating_add(tensor.length))
-                .ok_or_else(|| {
-                    BundleError::Format(format!("tensor {} is out of bounds", tensor.name))
-                })?;
-            if xxhash_rust::xxh3::xxh3_64(tensor_bytes) != tensor.digest {
-                return Err(BundleError::TensorDigest {
-                    name: tensor.name.clone(),
-                });
-            }
-        }
-        verify_weights_digest(&document, &tensor_order, &tensors, bytes)?;
-        if !Arc::ptr_eq(&document, &query) {
-            verify_weights_digest(&query, &tensor_order, &tensors, bytes)?;
-        }
         for (prefix, tokenizer) in [
             ("document/", &document_tokenizer),
             (
@@ -332,9 +321,59 @@ impl Bundle {
             alignment_digest,
             digest: actual_digest,
             alpha,
+            hashed_bytes: AtomicU64::new(digest_start as u64),
+            tensor_order,
+            document_verified: AtomicBool::new(false),
+            query_verified: AtomicBool::new(false),
         };
-        bundle.prefault_query()?;
         Ok(bundle)
+    }
+
+    /// Returns the bytes processed by bundle digest checks.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hashed_bytes(&self) -> u64 {
+        self.hashed_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Checks the selected tower's tensor and weights digests before loading.
+    /// Successful verification is cached for this immutable bundle.
+    pub fn verify_tower(&self, role: TowerRole) -> Result<(), BundleError> {
+        let (tower, verified) = match role {
+            TowerRole::Document => (&self.document, &self.document_verified),
+            TowerRole::Query if self.is_symmetric() => (&self.document, &self.document_verified),
+            TowerRole::Query => (&self.query, &self.query_verified),
+        };
+        if verified.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let prefix = match tower.role {
+            TowerRole::Document => "document/",
+            TowerRole::Query => "query/",
+        };
+        for tensor in self
+            .tensors
+            .values()
+            .filter(|tensor| tensor.name.starts_with(prefix))
+        {
+            let bytes = self.tensor_bytes(tensor)?;
+            self.hashed_bytes
+                .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+            if xxhash_rust::xxh3::xxh3_64(bytes) != tensor.digest {
+                return Err(BundleError::TensorDigest {
+                    name: tensor.name.clone(),
+                });
+            }
+        }
+        verify_weights_digest(
+            tower,
+            &self.tensor_order,
+            &self.tensors,
+            self.mapping.bytes(),
+            &self.hashed_bytes,
+        )?;
+        verified.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Returns the document slot declaration.
@@ -442,22 +481,6 @@ impl Bundle {
         self.tokenizer(TowerRole::Document)
             .encode_batch(texts, self.document.embedding.max_tokens as usize)
     }
-
-    fn prefault_query(&self) -> Result<(), BundleError> {
-        for tensor in self
-            .tensors
-            .values()
-            .filter(|tensor| tensor.name.starts_with("query/") || self.is_symmetric())
-        {
-            let bytes = self.tensor_bytes(tensor)?;
-            let mut offset = 0_usize;
-            while offset < bytes.len() {
-                let _ = bytes.get(offset).copied();
-                offset = offset.saturating_add(4096);
-            }
-        }
-        Ok(())
-    }
 }
 
 fn verify_weights_digest(
@@ -465,6 +488,7 @@ fn verify_weights_digest(
     tensor_order: &[String],
     tensors: &BTreeMap<String, TensorDescriptor>,
     bundle: &[u8],
+    hashed_bytes: &AtomicU64,
 ) -> Result<(), BundleError> {
     let prefix = match tower.role {
         TowerRole::Document => "document/",
@@ -478,6 +502,7 @@ fn verify_weights_digest(
         let bytes = bundle
             .get(tensor.offset..tensor.offset.saturating_add(tensor.length))
             .ok_or_else(|| BundleError::Format(format!("tensor {name} is out of bounds")))?;
+        hashed_bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
         digest.update(bytes);
     }
     if tower.embedding.weights_digest.as_slice() != digest.digest128().to_le_bytes() {

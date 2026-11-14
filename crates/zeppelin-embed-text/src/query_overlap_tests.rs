@@ -54,6 +54,7 @@ fn fake_store(
         bundle,
         analyzer,
         runtime: RuntimeClient {
+            document_loads: Arc::new(AtomicUsize::new(0)),
             #[cfg(target_os = "macos")]
             compute_plan: None,
             query_backend: QueryBackend {
@@ -72,6 +73,13 @@ fn fake_store(
         epoch,
         document_epoch,
         versions: Mutex::new(BTreeMap::new()),
+        seals_since_merge: std::sync::atomic::AtomicUsize::new(0),
+        warm_cancel: CancelToken::new(),
+        warm: Mutex::new(WarmThread {
+            thread: None,
+            error: None,
+            vector_warmed: false,
+        }),
     }
 }
 

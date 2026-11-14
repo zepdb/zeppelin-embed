@@ -135,7 +135,10 @@ impl MlxRuntime {
         role: TowerRole,
         compute_units: ComputeUnits,
     ) -> Result<Self, RuntimeError> {
-        super::mlx_cache::initialize(None)?;
+        bundle
+            .verify_tower(role)
+            .map_err(|error| RuntimeError::Shape(error.to_string()))?;
+        super::mlx_cache::apply()?;
         let _call = mlx_calls()
             .lock()
             .map_err(|_| RuntimeError::Mlx("MLX call mutex is poisoned".to_owned()))?;

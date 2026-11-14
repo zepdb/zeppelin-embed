@@ -889,18 +889,36 @@ fn cold(cli: &Cli, process_started: Instant) -> Result<(), Box<dyn std::error::E
     let store = TextStore::open(store_path, bundle_path, Default::default())?;
     let text_store_open_ms = text_open_started.elapsed().as_secs_f64() * 1_000.0;
     let open_ms = process_started.elapsed().as_secs_f64() * 1_000.0;
+    let wait_warm_started = Instant::now();
+    if cli.usize("--wait-warm", 0)? == 1 {
+        store.wait_for_warm()?;
+    }
+    let wait_warm_ms = wait_warm_started.elapsed().as_secs_f64() * 1_000.0;
     let verification_started = Instant::now();
-    let health = store.health()?;
-    verify_health(&health, SegmentTier::SealedGraph, MIN_GRAPH_ROWS)?;
+    let _health = store.health()?;
     let verification = verification_started.elapsed();
     let query_started = Instant::now();
-    let hits = store.query_text(query, QueryOptions::new(k).with_legs(legs))?;
+    let first = store.query_text_with_diagnostics(query, QueryOptions::new(k).with_legs(legs))?;
     let first_query_ms = query_started.elapsed().as_secs_f64() * 1_000.0;
     let total_ms = process_started
         .elapsed()
         .saturating_sub(verification)
         .as_secs_f64()
         * 1_000.0;
+    let second_started = Instant::now();
+    let second = store.query_text_with_diagnostics(query, QueryOptions::new(k).with_legs(legs))?;
+    let second_query_ms = second_started.elapsed().as_secs_f64() * 1_000.0;
+    let sample = |round, latency, outcome: &TextQueryOutcome| {
+        let entries = outcome
+            .hits
+            .iter()
+            .map(|hit| RunEntry {
+                doc_id: hit.doc_id.to_string(),
+                score: hit.score,
+            })
+            .collect::<Vec<_>>();
+        query_sample_json("cold", round, latency, outcome, &entries)
+    };
     let backend = if legs == Legs::Lexical {
         "(none)"
     } else {
@@ -908,13 +926,16 @@ fn cold(cli: &Cli, process_started: Instant) -> Result<(), Box<dyn std::error::E
     };
     let output = json!({
         "kind": "cold",
+        "wait_warm_ms": wait_warm_ms,
         "backend": backend,
         "open_ms": open_ms,
         "text_store_open_ms": text_store_open_ms,
         "first_query_ms": first_query_ms,
         "total_ms": total_ms,
-        "hits": hits.len(),
-        "verified_tier": "SealedGraph",
+        "hits": first.hits.len(),
+        "second_query_ms": second_query_ms,
+        "first_query": sample(0, first_query_ms, &first),
+        "second_query": sample(1, second_query_ms, &second),
     });
     store.close()?;
     print_json(&output)

@@ -77,3 +77,14 @@
   `;ze-text-unigram=2` for corrected Unigram evaluation. Legacy uncased
   WordPiece implies BERT default accent stripping;
   new exports record the effective strip flag and reject unsupported contracts.
+
+- Bundle open validates the trailer and metadata in one body hash pass. Tensor
+  and weights digests are checked per tower before MLX load; successful checks
+  are cached for that immutable bundle. CoreML query-only opens neither load
+  the MLX document tower nor apply MLX cache policy. A paired document tower
+  loads on first ingest; typed load failures leave it unloaded for retry.
+- Open starts the named `ze-text-warm` worker for lexical caches followed by
+  one k=1 core vector search with a unit basis vector and the same cancellation
+  token. It does not embed text or load the document tower. Close and Drop
+  cancel and join it before closing runtime and store resources; close reports
+  non-cancellation warm-up failures after both resources have been closed.

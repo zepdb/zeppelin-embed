@@ -113,6 +113,7 @@ fn fake_client(
     let thread =
         std::thread::spawn(move || run_fake_embedding_commands(receiver, &worker_closed, embed));
     RuntimeClient {
+        document_loads: Arc::new(AtomicUsize::new(0)),
         #[cfg(target_os = "macos")]
         compute_plan: None,
         query_backend: QueryBackend {

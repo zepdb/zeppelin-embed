@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -279,6 +279,8 @@ pub struct TextStore {
     document_epoch: EpochIdentity,
     versions: Mutex<BTreeMap<DocId, Revision>>,
     seals_since_merge: AtomicUsize,
+    warm_cancel: CancelToken,
+    warm: Mutex<WarmThread>,
 }
 
 impl TextStore {
@@ -343,9 +345,47 @@ impl TextStore {
             Err(error) => return Err(TextError::Seal(error)),
         };
         let versions = load_versions(&store, reconcile)?;
-        crate::runtime::mlx_cache::initialize(options.mlx_cache_limit_bytes)?;
+        crate::runtime::mlx_cache::configure(options.mlx_cache_limit_bytes)?;
         let runtime =
             RuntimeClient::start(Arc::clone(&bundle), discover_query_coreml(&bundle_path))?;
+        let warm_cancel = CancelToken::new();
+        let warm_store = Arc::clone(&store);
+        let warm_dims = bundle.document_tower().embedding.dims as usize;
+        let warm_control = QueryControl::Cancel(warm_cancel.clone());
+        let warm = std::thread::Builder::new()
+            .name("ze-text-warm".to_owned())
+            .spawn(move || {
+                use zeppelin_embed::ingest::StoreLexicalError;
+                use zeppelin_embed::lifecycle::QueryError;
+                match warm_store.warm_lexical(warm_control.clone()) {
+                    Err(StoreLexicalError::Query(
+                        QueryError::Cancelled { .. }
+                        | QueryError::Scan(zeppelin_embed::scan::ScanError::Cancelled { .. }),
+                    )) => return Ok(false),
+                    result => result.map_err(TextError::Lexical)?,
+                }
+                let mut vector = vec![0.0; warm_dims];
+                let first = vector.first_mut().ok_or(TextError::InvalidInput(
+                    "vector warm-up requires a nonzero dimension",
+                ))?;
+                *first = 1.0;
+                match warm_store.search(
+                    SearchRequest::new(&vector),
+                    1,
+                    SearchOptions::new(Default::default()),
+                    warm_control,
+                ) {
+                    Err(
+                        QueryError::Cancelled { .. }
+                        | QueryError::Scan(zeppelin_embed::scan::ScanError::Cancelled { .. }),
+                    ) => Ok(false),
+                    result => result.map(|_| true).map_err(TextError::Query),
+                }
+            })
+            .map_err(|error| TextError::Pipeline {
+                stage: "warm start",
+                detail: error.to_string(),
+            })?;
         Ok(Self {
             store,
             bundle,
@@ -355,6 +395,13 @@ impl TextStore {
             document_epoch,
             versions: Mutex::new(versions),
             seals_since_merge: AtomicUsize::new(0),
+            warm_cancel,
+            warm: Mutex::new(WarmThread {
+                thread: Some(warm),
+                error: None,
+                #[cfg(test)]
+                vector_warmed: false,
+            }),
         })
     }
 
@@ -384,6 +431,50 @@ impl TextStore {
             return plan.observed_compute_units().map_err(TextError::Runtime);
         }
         Ok(None)
+    }
+
+    /// Waits for open-time warm-up to finish.
+    #[doc(hidden)]
+    pub fn wait_for_warm(&self) -> Result<(), TextError> {
+        let warm = self.join_warm()?;
+        match &warm.error {
+            Some(error) => Err(TextError::Pipeline {
+                stage: "warm",
+                detail: error.to_string(),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    fn join_warm(&self) -> Result<MutexGuard<'_, WarmThread>, TextError> {
+        let mut warm = self.warm.lock().map_err(|_| TextError::Pipeline {
+            stage: "warm join",
+            detail: "join mutex poisoned".to_owned(),
+        })?;
+        if let Some(thread) = warm.thread.take() {
+            warm.error = match thread.join() {
+                Ok(Ok(_vector_warmed)) => {
+                    #[cfg(test)]
+                    {
+                        warm.vector_warmed = _vector_warmed;
+                    }
+                    None
+                }
+                Ok(Err(error)) => Some(error),
+                Err(_) => Some(TextError::Pipeline {
+                    stage: "warm join",
+                    detail: "thread panicked".to_owned(),
+                }),
+            };
+        }
+        Ok(warm)
+    }
+
+    /// Returns successful document-tower loads for this store session.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn document_tower_loads(&self) -> usize {
+        self.runtime.document_loads.load(Ordering::Relaxed)
     }
 
     /// Returns current store health without changing engine behavior.
@@ -1130,8 +1221,13 @@ impl TextStore {
 
     /// Closes runtime resources and the underlying store.
     pub fn close(&self) -> Result<(), TextError> {
-        self.runtime.close()?;
-        self.store.close().map_err(TextError::Store)
+        self.warm_cancel.cancel();
+        let warm = self
+            .join_warm()
+            .and_then(|mut warm| warm.error.take().map_or(Ok(()), Err));
+        let runtime = self.runtime.close();
+        let store = self.store.close().map_err(TextError::Store);
+        warm.and(runtime).and(store)
     }
 
     fn dense_hits(
@@ -1693,6 +1789,20 @@ fn stage_elapsed(started: Option<Instant>) -> Duration {
     started.map_or(Duration::ZERO, |started| started.elapsed())
 }
 
+struct WarmThread {
+    thread: Option<JoinHandle<Result<bool, TextError>>>,
+    #[cfg(test)]
+    vector_warmed: bool,
+    // Retain failures after wait_for_warm so close still returns the typed error.
+    error: Option<TextError>,
+}
+
+impl Drop for TextStore {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}
+
 struct RuntimeEmbedding {
     batch: EmbeddingBatch,
     queue_wait: Duration,
@@ -1814,14 +1924,6 @@ impl QueryRuntime {
         }
     }
 
-    fn embed(&mut self, tokens: &TokenBatch) -> Result<EmbeddingBatch, RuntimeError> {
-        match self {
-            Self::Mlx(runtime) => runtime.embed_batch(tokens),
-            #[cfg(target_os = "macos")]
-            Self::CoreMl(runtime) => runtime.embed_batch(tokens),
-        }
-    }
-
     fn embed_controlled(
         &mut self,
         tokens: &TokenBatch,
@@ -1842,10 +1944,15 @@ impl QueryRuntime {
     }
 }
 
+enum DocumentTower {
+    Unloaded,
+    Loaded(Box<MlxRuntime>),
+}
+
 enum RuntimeSet {
-    Symmetric(MlxRuntime),
+    Symmetric(Box<MlxRuntime>),
     Pair {
-        document: MlxRuntime,
+        document: DocumentTower,
         query: QueryRuntime,
     },
 }
@@ -1858,18 +1965,20 @@ impl RuntimeSet {
         }
     }
 
-    fn embed(
+    fn load_document(
         &mut self,
-        role: TowerRole,
-        tokens: &TokenBatch,
-    ) -> Result<EmbeddingBatch, RuntimeError> {
-        match self {
-            Self::Symmetric(runtime) => runtime.embed_batch(tokens),
-            Self::Pair { document, query } => match role {
-                TowerRole::Document => document.embed_batch(tokens),
-                TowerRole::Query => query.embed(tokens),
-            },
+        bundle: &Arc<Bundle>,
+        document_loads: &AtomicUsize,
+    ) -> Result<(), TextError> {
+        if let Self::Pair { document, .. } = self
+            && matches!(document, DocumentTower::Unloaded)
+        {
+            bundle.verify_tower(TowerRole::Document)?;
+            let runtime = MlxRuntime::load(Arc::clone(bundle), TowerRole::Document)?;
+            *document = DocumentTower::Loaded(Box::new(runtime));
+            document_loads.fetch_add(1, Ordering::Relaxed);
         }
+        Ok(())
     }
 
     fn embed_controlled(
@@ -1879,14 +1988,19 @@ impl RuntimeSet {
         closed: &AtomicBool,
         control: Option<&QueryControl>,
     ) -> Result<EmbeddingBatch, TextError> {
-        let Some(control) = control else {
-            return self.embed(role, tokens).map_err(embedding_error);
-        };
-        let mut checkpoint = || check_runtime_control(closed, Some(control));
+        let mut checkpoint = || check_runtime_control(closed, control);
         match self {
             Self::Symmetric(runtime) => runtime.embed_batch_controlled(tokens, &mut checkpoint),
             Self::Pair { document, query } => match role {
-                TowerRole::Document => document.embed_batch_controlled(tokens, &mut checkpoint),
+                TowerRole::Document => match document {
+                    DocumentTower::Loaded(runtime) => {
+                        runtime.embed_batch_controlled(tokens, &mut checkpoint)
+                    }
+                    DocumentTower::Unloaded => Err(TextError::Pipeline {
+                        stage: "document load",
+                        detail: "document tower was not loaded".to_owned(),
+                    }),
+                },
                 TowerRole::Query => query.embed_controlled(tokens, &mut checkpoint),
             },
         }
@@ -1908,6 +2022,7 @@ fn mlx_backend(runtime: &MlxRuntime) -> QueryBackend {
 }
 
 struct RuntimeClient {
+    document_loads: Arc<AtomicUsize>,
     query_backend: QueryBackend,
     #[cfg(target_os = "macos")]
     compute_plan: Option<crate::runtime::coreml::CoreMlComputePlan>,
@@ -1931,48 +2046,42 @@ impl RuntimeClient {
         let (init_sender, init_receiver) = mpsc::sync_channel(0);
         let closed = Arc::new(AtomicBool::new(false));
         let worker_closed = Arc::clone(&closed);
+        let document_loads = Arc::new(AtomicUsize::new(0));
+        let worker_loads = Arc::clone(&document_loads);
         let thread = std::thread::Builder::new()
             .name("ze-text-embed".to_owned())
             .spawn(move || {
-                let runtimes = MlxRuntime::load(Arc::clone(&bundle), TowerRole::Document).and_then(
-                    |document| {
-                        if bundle.is_symmetric() && query_coreml.is_none() {
-                            return Ok(RuntimeSet::Symmetric(document));
-                        }
-                        let dims = bundle.query_tower().embedding.dims as usize;
-                        let query = match query_coreml {
-                            // A model that was found but will not load is a
-                            // broken artifact, not a reason to quietly run
-                            // something else.
-                            #[cfg(target_os = "macos")]
-                            Some(path) => crate::runtime::coreml::CoreMlRuntime::load(
-                                &path,
-                                dims,
-                                coreml_policy,
-                            )
-                            .and_then(|runtime| {
-                                let max_tokens = bundle.query_tower().embedding.max_tokens;
-                                if runtime.sequence() < max_tokens as usize {
-                                    return Err(RuntimeError::Shape(format!(
-                                        "CoreML query sequence length {} is below bundle query max_tokens {max_tokens}",
-                                        runtime.sequence()
-                                    )));
-                                }
-                                Ok(QueryRuntime::CoreMl(Box::new(runtime)))
-                            })?,
-                            #[cfg(not(target_os = "macos"))]
-                            Some(_) => {
-                                return Err(RuntimeError::Mlx(
-                                    "CoreML is available on macOS only".to_owned(),
-                                ));
+                let runtimes = (|| -> Result<RuntimeSet, TextError> {
+                    if bundle.is_symmetric() && query_coreml.is_none() {
+                        let document = MlxRuntime::load(Arc::clone(&bundle), TowerRole::Document)?;
+                        worker_loads.fetch_add(1, Ordering::Relaxed);
+                        return Ok(RuntimeSet::Symmetric(Box::new(document)));
+                    }
+                    let dims = bundle.query_tower().embedding.dims as usize;
+                    let query = match query_coreml {
+                        // A present but unloadable artifact is a hard error.
+                        #[cfg(target_os = "macos")]
+                        Some(path) => crate::runtime::coreml::CoreMlRuntime::load(
+                            &path, dims, coreml_policy,
+                        ).and_then(|runtime| {
+                            let max_tokens = bundle.query_tower().embedding.max_tokens;
+                            if runtime.sequence() < max_tokens as usize {
+                                return Err(RuntimeError::Shape(format!(
+                                    "CoreML query sequence length {} is below bundle query max_tokens {max_tokens}",
+                                    runtime.sequence()
+                                )));
                             }
-                            None => MlxRuntime::load(Arc::clone(&bundle), TowerRole::Query)
-                                .map(Box::new)
-                                .map(QueryRuntime::Mlx)?,
-                        };
-                        Ok(RuntimeSet::Pair { document, query })
-                    },
-                );
+                            Ok(QueryRuntime::CoreMl(Box::new(runtime)))
+                        })?,
+                        #[cfg(not(target_os = "macos"))]
+                        Some(_) => return Err(TextError::Runtime(RuntimeError::Mlx(
+                            "CoreML is available on macOS only".to_owned(),
+                        ))),
+                        None => MlxRuntime::load(Arc::clone(&bundle), TowerRole::Query)
+                            .map(Box::new).map(QueryRuntime::Mlx)?,
+                    };
+                    Ok(RuntimeSet::Pair { document: DocumentTower::Unloaded, query })
+                })();
                 let mut runtimes = match runtimes {
                     Ok(runtimes) => {
                         let _ = init_sender.send(Ok(runtimes.query_backend()));
@@ -1984,6 +2093,9 @@ impl RuntimeClient {
                     }
                 };
                 run_embedding_commands(receiver, &worker_closed, |role, tokens, control| {
+                    if role == TowerRole::Document {
+                        runtimes.load_document(&bundle, &worker_loads)?;
+                    }
                     runtimes.embed_controlled(role, tokens, &worker_closed, control)
                 });
             })
@@ -1996,6 +2108,7 @@ impl RuntimeClient {
             detail: "thread closed before reporting initialization".to_owned(),
         })??;
         Ok(Self {
+            document_loads,
             query_backend,
             #[cfg(target_os = "macos")]
             compute_plan,
@@ -2321,3 +2434,144 @@ mod query_control_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "query_overlap_tests.rs"]
 mod query_overlap_tests;
+
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
+mod lazy_document_fixtures;
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod lazy_document_tests {
+    use super::*;
+
+    fn assert_lazy_bits(bundle: Arc<Bundle>) {
+        let tokens = bundle
+            .tokenize_document_chunks(&["bronze zeppelin".to_owned()])
+            .expect("tokens");
+        let runtime = RuntimeClient::start(Arc::clone(&bundle), None).expect("worker");
+        assert_eq!(
+            runtime.document_loads.load(Ordering::Relaxed),
+            0,
+            "no document load at open"
+        );
+        let mut direct =
+            MlxRuntime::load(Arc::clone(&bundle), TowerRole::Document).expect("direct document");
+        let bits = |batch: &EmbeddingBatch| {
+            batch
+                .values()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        let expected = bits(&direct.embed_batch(&tokens).expect("direct bits"));
+        for _ in 0..2 {
+            let actual = runtime
+                .embed(TowerRole::Document, tokens.clone(), false)
+                .expect("lazy bits");
+            assert_eq!(bits(&actual), expected);
+            assert_eq!(runtime.document_loads.load(Ordering::Relaxed), 1);
+        }
+        runtime.close().expect("join worker");
+    }
+
+    #[test]
+    fn lazy_document_tower_loads_once_with_bit_identical_embeddings() {
+        let root = tempfile::tempdir().expect("fixture");
+        let path = root.path().join("pair.zem");
+        lazy_document_fixtures::write_fixture_bundle(
+            &path,
+            &[
+                lazy_document_fixtures::FixtureTower::document("document"),
+                lazy_document_fixtures::FixtureTower::query("query"),
+            ],
+            b"pair",
+        );
+        assert_lazy_bits(Arc::new(Bundle::open(path).expect("bundle")));
+    }
+
+    #[test]
+    fn open_warms_vector_and_close_cancels_and_joins() {
+        let root = tempfile::tempdir().expect("fixture");
+        let model = root.path().join("pair.zem");
+        lazy_document_fixtures::write_fixture_bundle(
+            &model,
+            &[
+                lazy_document_fixtures::FixtureTower::document("document"),
+                lazy_document_fixtures::FixtureTower::query("query"),
+            ],
+            b"pair",
+        );
+        let path = root.path().join("store");
+        let writer = TextStore::open(&path, &model, Default::default()).expect("writer");
+        writer
+            .ingest_text_serialized(
+                &[
+                    TextDocument::new(1, 1, "bronze"),
+                    TextDocument::new(2, 1, "bronze zeppelin"),
+                ],
+                Default::default(),
+            )
+            .expect("seed");
+        let query_bits = |store: &TextStore| {
+            [Legs::Dense, Legs::Hybrid]
+                .into_iter()
+                .map(|legs| {
+                    store
+                        .query_text("bronze", QueryOptions::new(10).with_legs(legs))
+                        .expect("query")
+                        .into_iter()
+                        .map(|hit| (hit.doc_id, hit.score.to_bits()))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = query_bits(&writer);
+        writer.close().expect("close writer");
+        drop(writer);
+        let store = TextStore::open(&path, &model, Default::default()).expect("reopen");
+        let generation = store.health().expect("health").generation;
+        store.wait_for_warm().expect("join warm");
+        {
+            let warm = store.warm.lock().expect("warm state");
+            assert!(
+                warm.vector_warmed,
+                "one vector search must complete during warm-up"
+            );
+            assert!(warm.thread.is_none());
+        }
+        assert_eq!(store.document_tower_loads(), 0);
+        assert_eq!(store.health().expect("health").generation, generation);
+        assert_eq!(
+            query_bits(&store),
+            expected,
+            "warm search must preserve ids and score bits"
+        );
+        store.close().expect("close warmed store");
+        assert!(
+            QueryControl::Cancel(store.warm_cancel.clone())
+                .checkpoint()
+                .is_err()
+        );
+        assert!(store.warm.lock().expect("warm state").thread.is_none());
+        drop(store);
+        let store = TextStore::open(&path, &model, Default::default()).expect("immediate close");
+        store.close().expect("cancel and join warm worker");
+        assert!(
+            QueryControl::Cancel(store.warm_cancel.clone())
+                .checkpoint()
+                .is_err()
+        );
+        assert!(store.warm.lock().expect("joined by close").thread.is_none());
+        assert_eq!(store.document_tower_loads(), 0);
+    }
+
+    #[test]
+    #[ignore = "requires ZE_TEXT_BUNDLE and native Metal"]
+    fn real_bundle_lazy_document_tower_matches_eager_bits() {
+        let path = std::env::var_os("ZE_TEXT_BUNDLE").expect("set ZE_TEXT_BUNDLE");
+        let bundle = Arc::new(Bundle::open(path).expect("real bundle"));
+        assert!(!bundle.is_symmetric(), "release pair required");
+        assert_lazy_bits(bundle);
+    }
+}

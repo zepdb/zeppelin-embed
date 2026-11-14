@@ -12,18 +12,27 @@ unsafe extern "C" {
     fn mlx_clear_cache() -> libc::c_int;
 }
 
-// MLX's allocator is process-global, so later stores must not reset host policy.
-static INITIALIZED: OnceLock<Result<(), RuntimeError>> = OnceLock::new();
+// Configuration is pure; only loading an MLX tower applies the process policy.
+static CONFIGURED: OnceLock<usize> = OnceLock::new();
+static APPLIED: OnceLock<Result<(), RuntimeError>> = OnceLock::new();
 
-pub(crate) fn initialize(option: Option<usize>) -> Result<(), RuntimeError> {
-    if let Some(result) = INITIALIZED.get() {
-        return result.clone();
+pub(crate) fn configure(option: Option<usize>) -> Result<(), RuntimeError> {
+    if CONFIGURED.get().is_some() {
+        return Ok(());
     }
     let env = std::env::var_os("ZE_MLX_CACHE_LIMIT_BYTES");
     let limit = resolve_limit(option, env.as_deref())?;
-    INITIALIZED
-        .get_or_init(|| set_limit(limit).map(|_| ()))
-        .clone()
+    CONFIGURED.get_or_init(|| limit);
+    Ok(())
+}
+
+pub(crate) fn apply() -> Result<(), RuntimeError> {
+    configure(None)?;
+    let limit = CONFIGURED
+        .get()
+        .copied()
+        .ok_or_else(|| RuntimeError::Mlx("MLX cache policy was not configured".to_owned()))?;
+    APPLIED.get_or_init(|| set_limit(limit).map(|_| ())).clone()
 }
 
 fn set_limit(limit: usize) -> Result<usize, RuntimeError> {
@@ -44,6 +53,11 @@ fn set_limit(limit: usize) -> Result<usize, RuntimeError> {
 }
 
 pub(crate) fn clear() -> Result<(), RuntimeError> {
+    match APPLIED.get() {
+        None => return Ok(()),
+        Some(Err(error)) => return Err(error.clone()),
+        Some(Ok(())) => {}
+    }
     let _call = super::mlx::mlx_calls()
         .lock()
         .map_err(|_| RuntimeError::Mlx("MLX call mutex is poisoned".to_owned()))?;
