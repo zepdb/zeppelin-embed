@@ -1,14 +1,24 @@
 #![allow(clippy::expect_used)]
 
+mod test_support;
+
+use rand::Rng;
 use tempfile::{TempDir, tempdir};
-use zeppelin_embed::ingest::{RowSource, SearchRequest};
+use zeppelin_embed::ingest::{
+    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, RowSource,
+    SearchCandidate, SearchRequest,
+};
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
     CancelToken, OpenOptions, QueryControl, SearchOptions, SearchTier, Store,
 };
 use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::commit_manifest;
-use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
+use zeppelin_embed::meta::{
+    AliveSet, ColumnStoreBuilder, Predicate, PredicateValue, RangeBound, RangePredicate, Schema,
+    TIMESTAMP_COLUMN,
+};
+use zeppelin_embed::planner::ScanReason;
 use zeppelin_embed::quant::quantize_bit4;
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use zeppelin_embed::segment::{SegmentId, SegmentMeta};
@@ -148,15 +158,15 @@ fn auto_preserves_single_segment_score_scales() {
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("single F32 Auto query");
-    let exact_scan = exact_store
+    let exact_tier = exact_store
         .search(
             SearchRequest::new(&query),
             1,
-            SearchOptions::default().with_tier(SearchTier::Scan),
+            SearchOptions::default().with_tier(SearchTier::Exact),
             QueryControl::Cancel(CancelToken::new()),
         )
-        .expect("single F32 Scan query");
-    assert_eq!(exact_auto.candidates, exact_scan.candidates);
+        .expect("single F32 Exact query");
+    assert_eq!(exact_auto.candidates, exact_tier.candidates);
     assert!(exact_auto.diagnostics.exact_rescore);
     exact_store.close().expect("close exact store");
 
@@ -174,15 +184,220 @@ fn auto_preserves_single_segment_score_scales() {
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect("single Bit4 Auto query");
-    let estimated_scan = estimated_store
+    let estimated_exact = estimated_store
         .search(
             SearchRequest::new(&query),
             1,
-            SearchOptions::default().with_tier(SearchTier::Scan),
+            SearchOptions::default().with_tier(SearchTier::Exact),
             QueryControl::Cancel(CancelToken::new()),
         )
-        .expect("single Bit4 Scan query");
-    assert_eq!(estimated_auto.candidates, estimated_scan.candidates);
-    assert!(!estimated_auto.diagnostics.exact_rescore);
+        .expect("single Bit4 Exact query");
+    assert_eq!(estimated_auto.candidates, estimated_exact.candidates);
+    assert!(estimated_auto.diagnostics.exact_rescore);
     estimated_store.close().expect("close estimated store");
+}
+
+const PROBE: [f32; DIMS] = [2.0, -1.0, 3.0, 0.5];
+
+fn graphless_store(name: &str) -> (TempDir, Store, Vec<(DocId, Vec<f32>)>) {
+    let directory = tempdir().expect("store directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    let mut rng = test_support::seeded_rng(name);
+    let mut rows = Vec::new();
+    for batch in 0..3 {
+        let documents = (0..12)
+            .map(|offset| {
+                let index = batch * 12 + offset;
+                let (id, vector) = if offset == 0 {
+                    // The lowest document id is in the active tail; all three
+                    // identical vectors straddle the k=2 cut across segments.
+                    (
+                        DocId::new((30 - batch * 10) as u128),
+                        vec![3.0, -1.0, 3.0, 0.5],
+                    )
+                } else {
+                    (
+                        DocId::new(100 + index as u128),
+                        (0..DIMS)
+                            .map(|_| rng.random_range(32..72) as f32 / 8.0)
+                            .collect(),
+                    )
+                };
+                rows.push((id, vector.clone()));
+                IngestDocument::new(DocumentVersion::new(id, Revision::new(1)), vector)
+                    .with_timestamp(index as i64)
+            })
+            .collect();
+        store.ingest(IngestBatch::new(documents)).expect("ingest");
+        if batch < 2 {
+            store.seal().expect("seal without graph maintenance");
+        }
+    }
+    let deleted = [DocId::new(102), DocId::new(114), DocId::new(126)];
+    store
+        .delete(DeleteBatch::new(deleted.to_vec()))
+        .expect("delete in each source");
+    rows.retain(|(id, _)| !deleted.contains(id));
+    (directory, store, rows)
+}
+
+fn control() -> QueryControl {
+    QueryControl::Cancel(CancelToken::new())
+}
+
+fn scored_ids(hits: &[SearchCandidate]) -> Vec<(DocId, u32)> {
+    hits.iter()
+        .map(|hit| {
+            (
+                hit.document().expect("document").doc_id(),
+                hit.score().to_bits(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn unset_tier_without_a_graph_equals_exact() {
+    let (_directory, store, _) =
+        graphless_store("auto_score_scale::unset_tier_without_a_graph_equals_exact");
+    for k in [1, 10, 2] {
+        let default = store
+            .search(
+                SearchRequest::new(&PROBE),
+                k,
+                SearchOptions::default(),
+                control(),
+            )
+            .expect("default");
+        let exact = store
+            .search(
+                SearchRequest::new(&PROBE),
+                k,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                control(),
+            )
+            .expect("Exact");
+        assert_eq!(
+            scored_ids(&default.candidates),
+            scored_ids(&exact.candidates),
+            "k={k}"
+        );
+        if k == 2 {
+            assert_eq!(
+                exact
+                    .candidates
+                    .iter()
+                    .map(|hit| hit.document().expect("document").doc_id())
+                    .collect::<Vec<_>>(),
+                vec![DocId::new(10), DocId::new(20)]
+            );
+        }
+    }
+    store.close().expect("close");
+}
+
+#[test]
+fn unset_tier_filtered_equals_exact() {
+    let (_directory, store, _) =
+        graphless_store("auto_score_scale::unset_tier_filtered_equals_exact");
+    let predicate = Predicate::Range(RangePredicate {
+        column: TIMESTAMP_COLUMN,
+        lower: Some(RangeBound::inclusive(PredicateValue::I64(8))),
+        upper: Some(RangeBound::inclusive(PredicateValue::I64(30))),
+    });
+    let ids = [10, 20, 30, 102, 111, 114, 119, 126, 129, 134].map(DocId::new);
+    // Check both entry points even on RED so one failure cannot hide the other.
+    let mut equal = Vec::new();
+    for k in [1, 10, 2] {
+        let default = store
+            .search_filtered(
+                SearchRequest::new(&PROBE),
+                &predicate,
+                k,
+                SearchOptions::default(),
+                control(),
+            )
+            .expect("filtered default");
+        let exact = store
+            .search_filtered(
+                SearchRequest::new(&PROBE),
+                &predicate,
+                k,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                control(),
+            )
+            .expect("filtered Exact");
+        equal.push(scored_ids(&default.candidates) == scored_ids(&exact.candidates));
+        let request = SearchRequest::new(&PROBE).with_eligible(&ids);
+        let default = store
+            .search(request, k, SearchOptions::default(), control())
+            .expect("eligible default");
+        let exact = store
+            .search(
+                request,
+                k,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                control(),
+            )
+            .expect("eligible Exact");
+        equal.push(scored_ids(&default.candidates) == scored_ids(&exact.candidates));
+    }
+    assert_eq!(
+        equal,
+        vec![true; 6],
+        "timestamp and eligible-id equality for each k"
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn unset_tier_diagnostics_are_truthful() {
+    let (_directory, store, rows) =
+        graphless_store("auto_score_scale::unset_tier_diagnostics_are_truthful");
+    let default = store
+        .search(
+            SearchRequest::new(&PROBE),
+            10,
+            SearchOptions::default(),
+            control(),
+        )
+        .expect("default");
+    assert!(default.diagnostics.exact_rescore);
+    assert!(!default.diagnostics.approximate);
+    assert!(
+        default
+            .diagnostics
+            .plan
+            .iter()
+            .all(|plan| !matches!(plan.scan_reason, Some(ScanReason::ExplicitTier(_))))
+    );
+    for hit in default.candidates {
+        let id = hit.document().expect("document").doc_id();
+        let (_, row) = rows
+            .iter()
+            .find(|(key, _)| *key == id)
+            .expect("live original vector");
+        let distance: f64 = row
+            .iter()
+            .zip(PROBE)
+            .map(|(a, b)| (f64::from(*a) - f64::from(b)).powi(2))
+            .sum();
+        assert_eq!(
+            f64::from(hit.score()),
+            -distance,
+            "independent squared L2 for {id:?}"
+        );
+    }
+    for tier in [SearchTier::Scan, SearchTier::Auto] {
+        let explicit = store
+            .search(
+                SearchRequest::new(&PROBE),
+                10,
+                SearchOptions::default().with_tier(tier),
+                control(),
+            )
+            .expect("explicit coarse tier");
+        assert!(!explicit.diagnostics.exact_rescore, "{tier:?}");
+    }
+    store.close().expect("close");
 }

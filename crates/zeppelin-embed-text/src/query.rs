@@ -45,9 +45,9 @@ impl QueryOptions {
     /// Selects the vector-search tier used by dense and hybrid retrieval.
     ///
     /// Leaving this unset is not the same as selecting [`SearchTier::Auto`].
-    /// An unset tier lets each leg apply its own contract. Hybrid selects
-    /// [`SearchTier::Auto`] when the snapshot has a published graph and
-    /// [`SearchTier::Exact`] otherwise; an explicit tier is honoured as given.
+    /// An unset tier selects exact scoring without a published graph for both
+    /// dense and hybrid retrieval, and permits graph traversal when available.
+    /// An explicit tier is honoured as given, including Auto estimates.
     #[must_use]
     pub const fn with_tier(mut self, tier: SearchTier) -> Self {
         self.tier = Some(tier);

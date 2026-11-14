@@ -301,7 +301,7 @@ fn execute_pinned(
     };
     let full_precision = matches!(options.tier(), SearchTier::Exact | SearchTier::Graph(_))
         || (matches!(options.tier(), SearchTier::Auto)
-            && auto_uses_full_precision(snapshot, active));
+            && auto_uses_full_precision(options, snapshot, active));
 
     if !active.is_empty() {
         execute_active_filtered(

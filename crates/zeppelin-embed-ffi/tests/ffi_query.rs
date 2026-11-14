@@ -278,6 +278,8 @@ fn a_vector_only_query_returns_the_same_hits_as_ze_search_with_no_tier_preferenc
     assert_eq!(result.has_fusion, 0);
     let hits = unsafe { std::slice::from_raw_parts(result.hits, result.hit_count) };
     let mut search_request = common::valid_search_request(&probe);
+    search_request.has_tier = 0;
+    search_request.tier = 0;
     search_request.k = 3;
     let mut search: ZeSearchResult = common::sized_zeroed();
     assert_eq!(
@@ -923,4 +925,43 @@ fn query_v2_eligibility_is_optional_and_filters_both_legs() {
             ZeErrorCode::ZeErrInvalidArgument
         );
     }
+}
+
+#[test]
+fn no_tier_preference_reports_true_squared_l2() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        common::ingest_rows(store.handle, 3, DIMENSION),
+        ZeErrorCode::ZeOk
+    );
+    let probe = vector(0);
+    let mut request = common::valid_query_request(&probe);
+    request.k = 3;
+    request.has_tier = 0;
+    let (code, mut default) = query(store.handle, &request);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    request.has_tier = 1;
+    request.tier = 1;
+    let (code, mut exact) = query(store.handle, &request);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let hits = unsafe { std::slice::from_raw_parts(default.hits, default.hit_count) };
+    let expected = unsafe { std::slice::from_raw_parts(exact.hits, exact.hit_count) };
+    assert_eq!(default.hit_count, exact.hit_count);
+    // Check the score contract first to expose the old negative-distance bug.
+    assert!(
+        hits.iter().all(|hit| hit.vector_squared_l2 >= 0.0),
+        "default returned negative squared L2"
+    );
+    assert_eq!(default.exact_rescore, 1);
+    assert_eq!(default.approximate, 0);
+    for (hit, oracle) in hits.iter().zip(expected) {
+        assert_eq!(hit.doc_id, oracle.doc_id);
+        assert_eq!(hit.score.to_bits(), oracle.score.to_bits());
+        assert_eq!(
+            hit.vector_squared_l2.to_bits(),
+            oracle.vector_squared_l2.to_bits()
+        );
+    }
+    assert_eq!(ze_query_result_free(&mut default), ZeErrorCode::ZeOk);
+    assert_eq!(ze_query_result_free(&mut exact), ZeErrorCode::ZeOk);
 }

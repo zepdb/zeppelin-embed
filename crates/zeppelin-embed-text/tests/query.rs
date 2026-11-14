@@ -307,3 +307,35 @@ fn astra_18_expired_text_entry_never_returns_partial_hits() {
     }
     store.close().expect("close");
 }
+
+#[test]
+fn dense_query_without_a_tier_is_exact() {
+    use zeppelin_embed::lifecycle::SearchTier;
+    let directory = tempdir().expect("store directory");
+    let path = directory.path().join("fixture.zem");
+    common::write_symmetric_fixture_bundle(&path);
+    let store =
+        TextStore::open(directory.path().join("store"), &path, Default::default()).expect("open");
+    store
+        .ingest_text(
+            &[
+                TextDocument::new(1, 1, "bronze zeppelin"),
+                TextDocument::new(2, 1, "silver airship"),
+                TextDocument::new(3, 1, "harbour lights"),
+            ],
+            IngestOptions::default(),
+        )
+        .expect("ingest three documents");
+    let options = QueryOptions::new(3).with_legs(Legs::Dense);
+    let default = store
+        .query_text_with_diagnostics("bronze zeppelin", options)
+        .expect("default dense");
+    let exact = store
+        .query_text("bronze zeppelin", options.with_tier(SearchTier::Exact))
+        .expect("Exact dense");
+    let diagnostics = default.diagnostics.expect("dense diagnostics");
+    assert!(diagnostics.exact_rescore);
+    assert!(!diagnostics.approximate);
+    assert_eq!(default.hits, exact);
+    store.close().expect("close");
+}

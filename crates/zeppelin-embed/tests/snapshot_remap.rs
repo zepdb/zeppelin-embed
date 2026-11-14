@@ -11,8 +11,8 @@ use zeppelin_embed::ingest::{
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use zeppelin_embed::lifecycle::{
-    CancelToken, InMemorySegment, InMemorySegmentFactors, OpenOptions, QueryControl, Store,
-    StoreError,
+    CancelToken, InMemorySegment, InMemorySegmentFactors, OpenOptions, QueryControl, SearchOptions,
+    SearchTier, Store, StoreError,
 };
 use zeppelin_embed::manifest::Manifest;
 use zeppelin_embed::manifest::io::commit_manifest;
@@ -399,7 +399,7 @@ fn int8_store_search_rejects_checksum_valid_wrong_stride() {
         .search(
             SearchRequest::new(&query),
             ROWS,
-            ScanOptions { thread_budget: 1 },
+            SearchOptions::new(ScanOptions { thread_budget: 1 }).with_tier(SearchTier::Scan),
             QueryControl::Cancel(CancelToken::new()),
         )
         .expect_err("wrong Int8 stride must fail Store search");

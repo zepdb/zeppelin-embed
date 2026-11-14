@@ -1233,8 +1233,8 @@ impl TextStore {
 
     /// Applies an explicit tier only when the caller asked for one.
     ///
-    /// An unset tier must stay unset: each leg has its own contract for the
-    /// no-preference case, and hybrid resolves it from graph availability.
+    /// An unset tier must stay unset: dense and hybrid retrieval select exact
+    /// scoring without a published graph and permit graph traversal otherwise.
     fn search_options(options: QueryOptions) -> SearchOptions {
         if let Some(config) = options.scan_rescore {
             return SearchOptions::default().with_scan_rescore(config);

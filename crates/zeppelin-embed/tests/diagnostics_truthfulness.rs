@@ -162,7 +162,7 @@ fn an_exact_flag_implies_equality_with_the_oracle() {
                 .collect::<BTreeSet<_>>();
 
             prop_assert!(!outcome.diagnostics.approximate);
-            prop_assert!(!outcome.diagnostics.exact_rescore);
+            prop_assert!(outcome.diagnostics.exact_rescore);
             prop_assert_eq!(actual, expected);
             Ok(())
         })
@@ -190,7 +190,7 @@ fn the_reported_plan_equals_the_branch_the_executor_actually_took() {
 
     assert_eq!(outcome.diagnostics.plan, outcome.plans);
     assert!(!outcome.diagnostics.approximate);
-    assert!(!outcome.diagnostics.exact_rescore);
+    assert!(outcome.diagnostics.exact_rescore);
     store.close().expect("close store");
 }
 
@@ -202,7 +202,7 @@ fn counters_are_consistent_and_move_by_known_deltas() {
             .search(
                 SearchRequest::new(&[1.0, 0.0]),
                 3,
-                SearchOptions::default(),
+                SearchOptions::default().with_tier(SearchTier::Scan),
                 QueryControl::Cancel(CancelToken::new()),
             )
             .expect("query store")

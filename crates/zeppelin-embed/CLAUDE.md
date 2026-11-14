@@ -1305,3 +1305,13 @@ row. Keep the original mutation order for duplicate/provenance validation.
 Retained recovery mappings may reuse a fully validated immutable page proof
 within that state. Charge its bitmap when retaining the mapping, retain artifact
 framing and ancestor-bound checks, and never share a proof between states.
+
+
+## ZE-536 no-preference dense scores
+
+- An unset tier selects exact f32 squared-L2 scoring on graphless snapshots,
+  including filtered and eligible-id queries, sealed segments and the active
+  tail. It retains automatic plan reasons and reports `exact_rescore = true`.
+- Explicit Auto and Scan retain their quantized estimate contracts. Graph
+  traversal and hybrid tier resolution are unchanged. Tests of scan-pool or
+  quantized byte counters must select Scan explicitly.

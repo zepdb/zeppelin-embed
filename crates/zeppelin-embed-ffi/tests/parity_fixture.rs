@@ -135,7 +135,9 @@ fn query_json(
                 ),
                 hit.doc_id.high,
                 hit.doc_id.low,
-                hit.score,
+                // An exact match scores -0.0; write it unsigned so strict JSON
+                // consumers (Node `Object.is`) compare it equal to their 0.
+                hit.score + 0.0,
                 optional_score(hit.vector_squared_l2),
                 optional_score(hit.lexical_bm25),
             )

@@ -1680,6 +1680,8 @@ pub(crate) fn auto_graph_search_options(
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchTier {
     /// Select graph traversal per sealed segment when that graph is published.
+    /// Explicit Auto may return quantized estimates without a graph. Leaving
+    /// the tier unset instead selects exact scoring on graphless snapshots.
     #[default]
     Auto,
     /// Exhaustively score full-precision vectors. Large scans share at most
@@ -7184,7 +7186,7 @@ fn search_pinned(
     }
     let full_precision = matches!(options.tier(), SearchTier::Exact | SearchTier::Graph(_))
         || (matches!(options.tier(), SearchTier::Auto)
-            && auto_uses_full_precision(snapshot, active));
+            && auto_uses_full_precision(options, snapshot, active));
 
     // Reuse one bounded worker lane across this pinned query's segments.
     let exact_lane = if full_precision {
@@ -8399,9 +8401,13 @@ fn vector_fault_source(
 }
 
 pub(crate) fn auto_uses_full_precision(
+    options: SearchOptions,
     snapshot: &PublishedSnapshot,
     active: &crate::ingest::ActiveSegment,
 ) -> bool {
+    if options.explicit_tier().is_none() {
+        return true;
+    }
     let mut has_exact = false;
     let mut has_estimated = !active.is_empty();
     for segment in snapshot.segments() {
