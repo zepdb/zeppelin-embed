@@ -1408,9 +1408,20 @@ fn publish_consolidation(
         )
         .map_err(StoreError::Manifest)
         .map_err(MaintenanceError::Store)?;
-    let remapped =
-        PublishedSnapshot::load_on_vfs(&store.directory, &store.accounting, store.vfs.as_ref())
-            .map_err(MaintenanceError::Store)?;
+    let remapped = {
+        let reuse = store.snapshot.read().map_err(|_| {
+            MaintenanceError::Store(StoreError::Synchronization {
+                component: "published snapshot",
+            })
+        })?;
+        PublishedSnapshot::load_on_vfs(
+            &store.directory,
+            &store.accounting,
+            store.vfs.as_ref(),
+            reuse.as_deref(),
+        )
+        .map_err(MaintenanceError::Store)?
+    };
     let mut published = store.snapshot.write().map_err(|_| {
         MaintenanceError::Store(StoreError::Synchronization {
             component: "published snapshot",
@@ -1606,9 +1617,20 @@ fn publish_transition(
         )
         .map_err(StoreError::Manifest)
         .map_err(MaintenanceError::Store)?;
-    let remapped =
-        PublishedSnapshot::load_on_vfs(&store.directory, &store.accounting, store.vfs.as_ref())
-            .map_err(MaintenanceError::Store)?;
+    let remapped = {
+        let reuse = store.snapshot.read().map_err(|_| {
+            MaintenanceError::Store(StoreError::Synchronization {
+                component: "published snapshot",
+            })
+        })?;
+        PublishedSnapshot::load_on_vfs(
+            &store.directory,
+            &store.accounting,
+            store.vfs.as_ref(),
+            reuse.as_deref(),
+        )
+        .map_err(MaintenanceError::Store)?
+    };
     let mut published = store.snapshot.write().map_err(|_| {
         MaintenanceError::Store(StoreError::Synchronization {
             component: "published snapshot",

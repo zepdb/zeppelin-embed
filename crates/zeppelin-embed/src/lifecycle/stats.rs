@@ -995,6 +995,7 @@ impl<T> Accounted<Vec<T>> {
         self.value.dedup();
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve_additional_bytes(&mut self, additional: u64) -> Result<(), StoreError> {
         match self._reservation.as_mut() {
             Some(reservation) => reservation.grow(additional),
@@ -1432,6 +1433,8 @@ mod tests {
         let snapshot = mapped.snapshot().expect("mapped snapshot");
         let segment = snapshot.segments().first().expect("fixture segment");
         let expected_snapshot_bytes = std::mem::size_of::<SegmentReader>()
+            + std::mem::size_of::<crate::segment::reader::SegmentReaderCore>()
+            + 2 * std::mem::size_of::<usize>()
             + std::mem::size_of_val(segment.directory())
             + segment.retained_validation_bytes()
             + usize::try_from(baseline.snapshot_bytes).expect("baseline snapshot bytes fit usize")
@@ -1580,8 +1583,10 @@ mod tests {
         store.snapshot().expect("same handle remains usable");
 
         let published = published_store();
-        let snapshot_bytes =
-            std::mem::size_of::<SegmentReader>() + 6 * std::mem::size_of::<RegionEntry>();
+        let snapshot_bytes = std::mem::size_of::<SegmentReader>()
+            + std::mem::size_of::<crate::segment::reader::SegmentReaderCore>()
+            + 2 * std::mem::size_of::<usize>()
+            + 6 * std::mem::size_of::<RegionEntry>();
         let budget =
             u64::try_from(snapshot_bytes.saturating_sub(1)).expect("snapshot budget fits u64");
         let needed = u64::try_from(snapshot_bytes).expect("snapshot bytes fit u64");

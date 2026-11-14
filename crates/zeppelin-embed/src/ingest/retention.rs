@@ -302,8 +302,21 @@ impl Store {
         // Construct and validate the replacement snapshot before crossing the
         // manifest commit point. After commit, publication is an in-memory
         // pointer swap and cannot fail on segment I/O or accounting budget.
-        let remapped =
-            PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            PublishedSnapshot::from_manifest(
+                vfs,
+                &self.directory,
+                &manifest,
+                &self.accounting,
+                reuse.as_deref(),
+            )?
+        };
         publication
             .commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
             .map_err(StoreError::Manifest)?;

@@ -184,6 +184,7 @@ impl Store {
             &self.directory,
             &manifest,
             &self.accounting,
+            Some(snapshot),
         )?);
         Ok(NamespaceStage {
             active: ActiveState {

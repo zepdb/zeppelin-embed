@@ -1,6 +1,7 @@
 //! Read-only memory-mapped segment validation and lazy region access.
 
 use std::fs::File;
+use std::ops::Deref;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::Path;
@@ -58,6 +59,7 @@ struct SegmentCostCounters {
     columns_decode_bytes: AtomicU64,
     alive_hash_bytes: AtomicU64,
     alive_decode_bytes: AtomicU64,
+    stored_text_hash_bytes: AtomicU64,
 }
 
 /// Test-only deterministic costs observed while reading immutable segments.
@@ -82,6 +84,8 @@ pub struct SegmentCostSnapshot {
     pub alive_hash_bytes: u64,
     /// Alive-state bytes heap-decoded into query-ready state.
     pub alive_decode_bytes: u64,
+    /// Bytes hashed while validating stored source text.
+    pub stored_text_hash_bytes: u64,
 }
 
 /// Test-only scoped collector for deterministic segment read-path costs.
@@ -138,6 +142,7 @@ impl SegmentCostAudit {
             columns_decode_bytes: self.counters.columns_decode_bytes.load(Ordering::Relaxed),
             alive_hash_bytes: self.counters.alive_hash_bytes.load(Ordering::Relaxed),
             alive_decode_bytes: self.counters.alive_decode_bytes.load(Ordering::Relaxed),
+            stored_text_hash_bytes: self.counters.stored_text_hash_bytes.load(Ordering::Relaxed),
         }
     }
 }
@@ -155,6 +160,7 @@ fn account_region_hash(kind: RegionKind, bytes: usize) {
             RegionKind::Postings => &counters.postings_hash_bytes,
             RegionKind::Columns => &counters.columns_hash_bytes,
             RegionKind::Alive => &counters.alive_hash_bytes,
+            RegionKind::StoredText => &counters.stored_text_hash_bytes,
             _ => return,
         };
         let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -431,8 +437,12 @@ struct ParsedHeader {
     entries: Vec<RegionEntry>,
 }
 
-/// Validated read-only memory mapping with lazy region checksum verification.
-pub struct SegmentReader {
+/// Shared immutable mapping, validation state, caches and their accounting.
+///
+/// Exposed only as the dereference target of [`SegmentReader`]; fields remain
+/// private so a published core cannot be mutated or rebound to another schema.
+#[doc(hidden)]
+pub struct SegmentReaderCore {
     mapping: MappedFile,
     meta: SegmentMeta,
     #[cfg(any(test, feature = "test-seams"))]
@@ -440,7 +450,7 @@ pub struct SegmentReader {
     header_length: usize,
     entries: Vec<RegionEntry>,
     document_versions_validation: OnceLock<Result<(), DocumentVersionValidationError>>,
-    // Set by the query path once the stored-text region has passed its checksum
+    // Set once the stored-text region has passed its checksum
     // and every row offset has been walked; the public `stored_text` never
     // consults it and verifies on every call.
     stored_text_validated: OnceLock<()>,
@@ -451,6 +461,8 @@ pub struct SegmentReader {
     vector_factors_validated: OnceLock<()>,
     rescore_valid_chunks: Mutex<Box<[u64]>>,
     query_accounting: Option<Arc<crate::lifecycle::stats::Accounting>>,
+    _snapshot_accounting: Option<crate::lifecycle::stats::AccountedCounter>,
+    _mapping_reservation: Option<crate::lifecycle::stats::MappingReservation>,
     int8_factors_cache: OnceLock<CachedQueryValue<Arc<Vec<crate::scan::Int8Factors>>>>,
     postings_cache: OnceLock<CachedQueryValue<Arc<crate::fts::sealed::SealedSegment>>>,
     columns_cache: OnceLock<CachedQueryValue<Arc<ColumnStore>>>,
@@ -462,14 +474,27 @@ pub struct SegmentReader {
     // Sealed rows ordered by persisted document identity so an exact revision
     // resolves by binary search instead of a full row scan.
     document_version_index_cache: OnceLock<CachedQueryValue<Arc<Box<[u32]>>>>,
-    // Inline cached graph metadata is covered by this reader's exactly
-    // accounted snapshot slot; its heap-backed scratch is charged to Cache.
+    // Inline cached graph metadata is covered by the shared core's snapshot
+    // charge; its heap-backed scratch is charged to Cache.
     pub(crate) graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache,
     // Query-independent half of the fusion vector ceiling. The enclosure is a
     // property of this sealed segment's immutable factor or rescore bytes, so
     // it is walked once per reader and folded with each query's norm after.
-    // Two f64 held inline, covered by the accounted snapshot slot.
+    // Two f64 held inline, covered by the shared core charge.
     vector_ceiling_norm_range: OnceLock<crate::graph::search::GraphSegmentNormRange>,
+}
+
+/// Validated read-only segment handle with shared, lazily initialized state.
+pub struct SegmentReader {
+    core: Arc<SegmentReaderCore>,
+}
+
+impl Deref for SegmentReader {
+    type Target = SegmentReaderCore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
 }
 
 struct CachedQueryValue<T> {
@@ -606,8 +631,52 @@ pub fn set_query_checksum_verification(enabled: bool) {
 }
 
 impl SegmentReader {
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            core: Arc::clone(&self.core),
+        }
+    }
+
+    pub(crate) fn matches_snapshot(
+        &self,
+        expected: &SegmentMeta,
+        schema: &crate::meta::Schema,
+        accounting: &Arc<crate::lifecycle::stats::Accounting>,
+    ) -> bool {
+        self.meta == *expected
+            && self.collection_schema.as_deref() == Some(schema)
+            && self
+                .query_accounting
+                .as_ref()
+                .is_some_and(|owner| Arc::ptr_eq(owner, accounting))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_core_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.core, &other.core)
+    }
+
     /// Memory-maps a segment and validates only its bounded header/directory.
     pub fn open(vfs: &dyn Vfs, path: &Path, expected_id: SegmentId) -> Result<Self, SegmentError> {
+        Self::open_unaccounted(vfs, path, expected_id, None)
+    }
+
+    /// Opens a standalone reader whose columns use the published schema.
+    pub(crate) fn open_with_collection_schema(
+        vfs: &dyn Vfs,
+        path: &Path,
+        expected_id: SegmentId,
+        schema: Arc<crate::meta::Schema>,
+    ) -> Result<Self, SegmentError> {
+        Self::open_unaccounted(vfs, path, expected_id, Some(schema))
+    }
+
+    fn open_unaccounted(
+        vfs: &dyn Vfs,
+        path: &Path,
+        expected_id: SegmentId,
+        collection_schema: Option<Arc<crate::meta::Schema>>,
+    ) -> Result<Self, SegmentError> {
         let file = vfs
             .open_for_map(path)
             .map_err(|error| SegmentError::io(path, error))?;
@@ -621,27 +690,33 @@ impl SegmentReader {
         )?;
         let rescore_valid_chunks = rescore_validation_words(&parsed.entries)?;
         Ok(Self {
-            mapping,
-            meta: parsed.meta,
-            #[cfg(any(test, feature = "test-seams"))]
-            storage_store_directory: path.parent().unwrap_or(Path::new("")).to_path_buf(),
-            header_length: parsed.header_length,
-            entries: parsed.entries,
-            document_versions_validation: OnceLock::new(),
-            stored_text_validated: OnceLock::new(),
-            stored_metadata_validated: OnceLock::new(),
-            vector_codes_validated: OnceLock::new(),
-            vector_factors_validated: OnceLock::new(),
-            rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
-            query_accounting: None,
-            int8_factors_cache: OnceLock::new(),
-            postings_cache: OnceLock::new(),
-            columns_cache: OnceLock::new(),
-            collection_schema: None,
-            alive_cache: OnceLock::new(),
-            document_version_index_cache: OnceLock::new(),
-            graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
-            vector_ceiling_norm_range: OnceLock::new(),
+            core: Arc::new(SegmentReaderCore {
+                mapping,
+                meta: parsed.meta,
+                #[cfg(any(test, feature = "test-seams"))]
+                storage_store_directory: path.parent().unwrap_or(Path::new("")).to_path_buf(),
+                header_length: parsed.header_length,
+                entries: parsed.entries,
+                document_versions_validation: OnceLock::new(),
+                stored_text_validated: OnceLock::new(),
+                stored_metadata_validated: OnceLock::new(),
+                vector_codes_validated: OnceLock::new(),
+                vector_factors_validated: OnceLock::new(),
+                rescore_valid_chunks: Mutex::new(
+                    vec![0_u64; rescore_valid_chunks].into_boxed_slice(),
+                ),
+                query_accounting: None,
+                _snapshot_accounting: None,
+                _mapping_reservation: None,
+                int8_factors_cache: OnceLock::new(),
+                postings_cache: OnceLock::new(),
+                columns_cache: OnceLock::new(),
+                collection_schema,
+                alive_cache: OnceLock::new(),
+                document_version_index_cache: OnceLock::new(),
+                graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
+                vector_ceiling_norm_range: OnceLock::new(),
+            }),
         })
     }
 
@@ -651,8 +726,14 @@ impl SegmentReader {
         expected: &SegmentMeta,
         accounting: &Arc<crate::lifecycle::stats::Accounting>,
         collection_schema: &Arc<crate::meta::Schema>,
-        mut before_reader_allocation: impl FnMut(usize) -> Result<(), crate::lifecycle::StoreError>,
     ) -> Result<Self, crate::lifecycle::StoreError> {
+        let mut snapshot_accounting = crate::lifecycle::stats::AccountedCounter::new(
+            accounting,
+            crate::lifecycle::stats::AllocationComponent::Snapshot,
+        )?;
+        let core_bytes =
+            std::mem::size_of::<SegmentReaderCore>() + 2 * std::mem::size_of::<usize>();
+        snapshot_accounting.set(core_bytes)?;
         let file = vfs
             .open_for_map(path)
             .map_err(|error| SegmentError::io(path, error))
@@ -670,7 +751,14 @@ impl SegmentReader {
                 budget: u64::MAX,
                 component: "snapshot",
             })?;
-        before_reader_allocation(directory_bytes)?;
+        let reader_bytes = core_bytes.checked_add(directory_bytes).ok_or(
+            crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            },
+        )?;
+        snapshot_accounting.set(reader_bytes)?;
         let parsed = parse_segment_header(
             &artifact,
             mapping.as_bytes(),
@@ -695,55 +783,66 @@ impl SegmentReader {
                 budget: u64::MAX,
                 component: "snapshot",
             })?;
-        before_reader_allocation(validation_bytes)?;
+        snapshot_accounting.set(reader_bytes.checked_add(validation_bytes).ok_or(
+            crate::lifecycle::StoreError::BudgetExceeded {
+                needed: u64::MAX,
+                budget: u64::MAX,
+                component: "snapshot",
+            },
+        )?)?;
+        let mapped_bytes = u64::try_from(mapping.length()).map_err(|_| {
+            crate::lifecycle::StoreError::Statistics {
+                component: "mapped bytes",
+                source: std::io::Error::other("mapped byte count exceeds u64"),
+            }
+        })?;
+        let mapping_reservation = accounting.track_mapping(mapped_bytes)?;
         Ok(Self {
-            mapping,
-            meta: expected.clone(),
-            #[cfg(any(test, feature = "test-seams"))]
-            storage_store_directory: path.parent().unwrap_or(Path::new("")).to_path_buf(),
-            header_length: parsed.header_length,
-            entries: parsed.entries,
-            document_versions_validation: OnceLock::new(),
-            stored_text_validated: OnceLock::new(),
-            stored_metadata_validated: OnceLock::new(),
-            vector_codes_validated: OnceLock::new(),
-            vector_factors_validated: OnceLock::new(),
-            rescore_valid_chunks: Mutex::new(vec![0_u64; rescore_valid_chunks].into_boxed_slice()),
-            query_accounting: Some(Arc::clone(accounting)),
-            int8_factors_cache: OnceLock::new(),
-            postings_cache: OnceLock::new(),
-            columns_cache: OnceLock::new(),
-            collection_schema: Some(Arc::clone(collection_schema)),
-            alive_cache: OnceLock::new(),
-            document_version_index_cache: OnceLock::new(),
-            graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
-            vector_ceiling_norm_range: OnceLock::new(),
+            core: Arc::new(SegmentReaderCore {
+                mapping,
+                meta: expected.clone(),
+                #[cfg(any(test, feature = "test-seams"))]
+                storage_store_directory: path.parent().unwrap_or(Path::new("")).to_path_buf(),
+                header_length: parsed.header_length,
+                entries: parsed.entries,
+                document_versions_validation: OnceLock::new(),
+                stored_text_validated: OnceLock::new(),
+                stored_metadata_validated: OnceLock::new(),
+                vector_codes_validated: OnceLock::new(),
+                vector_factors_validated: OnceLock::new(),
+                rescore_valid_chunks: Mutex::new(
+                    vec![0_u64; rescore_valid_chunks].into_boxed_slice(),
+                ),
+                query_accounting: Some(Arc::clone(accounting)),
+                _snapshot_accounting: Some(snapshot_accounting),
+                _mapping_reservation: Some(mapping_reservation),
+                int8_factors_cache: OnceLock::new(),
+                postings_cache: OnceLock::new(),
+                columns_cache: OnceLock::new(),
+                collection_schema: Some(Arc::clone(collection_schema)),
+                alive_cache: OnceLock::new(),
+                document_version_index_cache: OnceLock::new(),
+                graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
+                vector_ceiling_norm_range: OnceLock::new(),
+            }),
         })
-    }
-
-    /// Decodes columns against the published manifest schema, as snapshot
-    /// readers do, for a reader opened outside a snapshot.
-    #[must_use]
-    pub(crate) fn with_collection_schema(mut self, schema: Arc<crate::meta::Schema>) -> Self {
-        self.collection_schema = Some(schema);
-        self
     }
 
     /// Returns immutable manifest-visible metadata decoded from the header.
     #[must_use]
-    pub const fn meta(&self) -> &SegmentMeta {
+    pub fn meta(&self) -> &SegmentMeta {
         &self.meta
     }
 
     /// Returns exact header bytes touched by an O(manifest) open.
     #[must_use]
-    pub const fn header_length(&self) -> usize {
+    pub fn header_length(&self) -> usize {
         self.header_length
     }
 
     /// Returns the exact virtual byte length of this immutable file mapping.
     #[must_use]
-    pub(crate) const fn mapped_bytes(&self) -> usize {
+    pub(crate) fn mapped_bytes(&self) -> usize {
         self.mapping.length()
     }
 
@@ -773,7 +872,10 @@ impl SegmentReader {
     #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     pub fn corrupt_mapped_byte_for_test(&mut self, offset: usize, mask: u8) -> std::io::Result<()> {
-        self.mapping.corrupt_byte(offset, mask)
+        Arc::get_mut(&mut self.core)
+            .ok_or_else(|| std::io::Error::other("cannot corrupt a shared segment reader"))?
+            .mapping
+            .corrupt_byte(offset, mask)
     }
 
     #[cfg(any(test, feature = "test-seams"))]
@@ -1919,6 +2021,7 @@ impl SegmentReader {
                 bytes.len()
             )));
         }
+        let _ = self.stored_text_validated.set(());
         Ok(Some(view))
     }
 

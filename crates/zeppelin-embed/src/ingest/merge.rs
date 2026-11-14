@@ -175,7 +175,20 @@ impl Store {
             publication
                 .commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
                 .map_err(StoreError::Manifest)?;
-            let remapped = PublishedSnapshot::load_on_vfs(&self.directory, &self.accounting, vfs)?;
+            let remapped = {
+                let reuse = self
+                    .snapshot
+                    .read()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "published snapshot",
+                    })?;
+                PublishedSnapshot::load_on_vfs(
+                    &self.directory,
+                    &self.accounting,
+                    vfs,
+                    reuse.as_deref(),
+                )?
+            };
             let mut published = self
                 .snapshot
                 .write()

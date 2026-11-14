@@ -905,12 +905,21 @@ fn checkpoint_manifest_locked(
             envelope_sequence: admitted.sequence(),
         },
     )?;
-    let remapped = crate::lifecycle::PublishedSnapshot::from_manifest(
-        vfs,
-        &store.directory,
-        &manifest,
-        &store.accounting,
-    )?;
+    let remapped =
+        {
+            let reuse = store.snapshot.read().map_err(|_| {
+                crate::lifecycle::StoreError::Synchronization {
+                    component: "published snapshot",
+                }
+            })?;
+            crate::lifecycle::PublishedSnapshot::from_manifest(
+                vfs,
+                &store.directory,
+                &manifest,
+                &store.accounting,
+                reuse.as_deref(),
+            )?
+        };
     let mut publication = wal.manifest_publication()?;
     publication
         .commit_manifest(vfs, &store.directory, &manifest, store.durability_policy)

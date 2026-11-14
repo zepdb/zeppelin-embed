@@ -121,8 +121,20 @@ impl Store {
                 self.durability_policy,
             )
             .map_err(StoreError::Manifest)?;
-        let remapped =
-            PublishedSnapshot::load_on_vfs(&self.directory, &self.accounting, self.vfs.as_ref())?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            PublishedSnapshot::load_on_vfs(
+                &self.directory,
+                &self.accounting,
+                self.vfs.as_ref(),
+                reuse.as_deref(),
+            )?
+        };
         *self
             .snapshot
             .write()

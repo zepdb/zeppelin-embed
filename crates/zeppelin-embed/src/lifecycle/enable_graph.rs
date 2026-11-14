@@ -173,12 +173,21 @@ impl Store {
         current: &mut crate::ingest::ActiveState,
     ) -> Result<(), StoreError> {
         self.native_graph.enable_registries()?;
-        let remapped = PublishedSnapshot::from_manifest(
-            self.vfs.as_ref(),
-            &self.directory,
-            manifest,
-            &self.accounting,
-        )?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            PublishedSnapshot::from_manifest(
+                self.vfs.as_ref(),
+                &self.directory,
+                manifest,
+                &self.accounting,
+                reuse.as_deref(),
+            )?
+        };
         *self
             .snapshot
             .write()

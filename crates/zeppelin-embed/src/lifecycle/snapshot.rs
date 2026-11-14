@@ -19,7 +19,7 @@ use crate::wal::WalReader;
 
 #[cfg(test)]
 use super::close::TeardownProbe;
-use super::stats::{Accounted, Accounting, AllocationComponent, MappingReservation};
+use super::stats::{Accounted, Accounting, AllocationComponent};
 use super::{Store, StoreError, StoreState};
 
 #[cfg(test)]
@@ -299,7 +299,20 @@ impl Store {
                 self.durability_policy,
             )
             .map_err(StoreError::Manifest)?;
-        let remapped = PublishedSnapshot::load_on_vfs(&self.directory, &self.accounting, vfs)?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            PublishedSnapshot::load_on_vfs(
+                &self.directory,
+                &self.accounting,
+                vfs,
+                reuse.as_deref(),
+            )?
+        };
         let mut published = self
             .snapshot
             .write()
@@ -395,7 +408,6 @@ pub struct PublishedSnapshot {
     query_segment_count: usize,
     cancelled: AtomicBool,
     reader_signal: Arc<ReaderSignal>,
-    _mapping_reservation: Option<Arc<MappingReservation>>,
     #[cfg(test)]
     release_probe: SnapshotReleaseProbe,
 }
@@ -422,7 +434,6 @@ impl PublishedSnapshot {
             query_segment_count: 0,
             cancelled: AtomicBool::new(false),
             reader_signal,
-            _mapping_reservation: None,
             #[cfg(test)]
             release_probe: SnapshotReleaseProbe(None),
         }
@@ -432,8 +443,9 @@ impl PublishedSnapshot {
         directory: &Path,
         accounting: &Arc<Accounting>,
         vfs: &dyn Vfs,
+        reuse: Option<&PublishedSnapshot>,
     ) -> Result<Self, StoreError> {
-        Self::load_impl(directory, accounting, vfs, false, None)
+        Self::load_impl(directory, accounting, vfs, false, None, reuse)
     }
 
     pub(crate) fn load_for_open_on_vfs(
@@ -442,7 +454,7 @@ impl PublishedSnapshot {
         vfs: &dyn Vfs,
         preparation: Option<&super::namespace_batch::PrivatePreparation>,
     ) -> Result<Self, StoreError> {
-        Self::load_impl(directory, accounting, vfs, true, preparation)
+        Self::load_impl(directory, accounting, vfs, true, preparation, None)
     }
 
     fn load_impl(
@@ -451,6 +463,7 @@ impl PublishedSnapshot {
         vfs: &dyn Vfs,
         probe_segment_headers: bool,
         preparation: Option<&super::namespace_batch::PrivatePreparation>,
+        reuse: Option<&PublishedSnapshot>,
     ) -> Result<Self, StoreError> {
         let manifest_path = if probe_segment_headers {
             super::namespace_batch::manifest_for_open(vfs, directory, preparation)?
@@ -508,7 +521,7 @@ impl PublishedSnapshot {
                 validate_header_with_vfs(vfs, &path, expected).map_err(StoreError::Segment)?;
             }
         }
-        Self::from_manifest(vfs, directory, &manifest, accounting)
+        Self::from_manifest(vfs, directory, &manifest, accounting, reuse)
     }
 
     pub(crate) fn from_manifest(
@@ -516,6 +529,7 @@ impl PublishedSnapshot {
         directory: &Path,
         manifest: &Manifest,
         accounting: &Arc<Accounting>,
+        reuse: Option<&PublishedSnapshot>,
     ) -> Result<Self, StoreError> {
         #[cfg(feature = "graph-cypher")]
         if let Some(graph) = &manifest.graph {
@@ -543,44 +557,32 @@ impl PublishedSnapshot {
             );
         let collection_schema = Arc::new(manifest.schema.clone());
         for expected in ordered_segments {
-            let path = directory.join(expected.id.file_name());
-            let reader = SegmentReader::open_accounted(
-                vfs,
-                &path,
-                expected,
-                accounting,
-                &collection_schema,
-                |allocation_bytes| {
-                    let bytes = u64::try_from(allocation_bytes).map_err(|_| {
-                        StoreError::BudgetExceeded {
-                            needed: u64::MAX,
-                            budget: u64::MAX,
-                            component: "snapshot",
-                        }
-                    })?;
-                    segments.reserve_additional_bytes(bytes)
-                },
-            )?;
-            // Stored text is an optional append-only region. Older segments
-            // omit it, while a present v1 region must be semantically valid
-            // before the snapshot becomes reachable by any query.
-            let _ = reader.stored_text().map_err(StoreError::Segment)?;
+            let previous = reuse
+                .and_then(|snapshot| {
+                    snapshot
+                        .all_segments()
+                        .iter()
+                        .find(|reader| reader.meta().id == expected.id)
+                })
+                .filter(|reader| reader.matches_snapshot(expected, &manifest.schema, accounting));
+            let reader = if let Some(previous) = previous {
+                previous.share()
+            } else {
+                let path = directory.join(expected.id.file_name());
+                let reader = SegmentReader::open_accounted(
+                    vfs,
+                    &path,
+                    expected,
+                    accounting,
+                    &collection_schema,
+                )?;
+                // Present stored text must be semantically valid before publication.
+                // Reused cores already passed this check on their first load.
+                let _ = reader.stored_text().map_err(StoreError::Segment)?;
+                reader
+            };
             segments.push(reader)?;
         }
-        let mapped_bytes = segments.iter().try_fold(0_u64, |total, segment| {
-            let bytes =
-                u64::try_from(segment.mapped_bytes()).map_err(|_| StoreError::Statistics {
-                    component: "mapped bytes",
-                    source: std::io::Error::other("mapped byte count exceeds u64"),
-                })?;
-            total
-                .checked_add(bytes)
-                .ok_or_else(|| StoreError::Statistics {
-                    component: "mapped bytes",
-                    source: std::io::Error::other("mapped byte count overflow"),
-                })
-        })?;
-        let mapping_reservation = accounting.track_mapping(mapped_bytes)?;
         let graph_profile = manifest.epoch_alias.map_or(
             Err(crate::graph::search::GraphProfileError::EpochUnstamped),
             |alias| {
@@ -634,7 +636,6 @@ impl PublishedSnapshot {
             query_segment_count,
             cancelled: AtomicBool::new(false),
             reader_signal: ReaderSignal::accounted(accounting)?,
-            _mapping_reservation: Some(Arc::new(mapping_reservation)),
             #[cfg(test)]
             release_probe: SnapshotReleaseProbe(None),
         })
@@ -657,7 +658,6 @@ impl PublishedSnapshot {
             query_segment_count: self.query_segment_count,
             cancelled: AtomicBool::new(false),
             reader_signal: ReaderSignal::accounted(accounting)?,
-            _mapping_reservation: self._mapping_reservation.clone(),
             #[cfg(test)]
             release_probe: SnapshotReleaseProbe(None),
         })
@@ -944,6 +944,129 @@ mod tests {
     use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
     use crate::vfs::crash::{CrashOperation, RecordingVfs};
     use crate::vfs::{CountingVfs, StdVfs, SyncKind};
+
+    #[test]
+    fn reload_shares_readers_only_for_identical_entries() {
+        use crate::meta::{ColumnDefinition, ColumnId, ColumnType};
+        use crate::segment::ClusteringKeyRange;
+        let directory = tempdir().expect("directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                    vec![1.0, 0.5],
+                )
+                .with_text("common"),
+            ]))
+            .expect("ingest");
+        store.seal().expect("seal");
+        let original = store.snapshot().expect("original snapshot");
+        let mut manifest = Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
+            generation: original.generation(),
+            log_seq: original.absorbed_through(),
+            segments: original
+                .all_segments()
+                .iter()
+                .map(|reader| reader.meta().clone())
+                .collect(),
+            epochs: Vec::new(),
+            epoch_alias: None,
+            schema: Schema::timestamp_only(),
+        };
+        let same = PublishedSnapshot::from_manifest(
+            &StdVfs,
+            directory.path(),
+            &manifest,
+            &store.accounting,
+            Some(&original),
+        )
+        .expect("same manifest");
+        assert!(
+            original
+                .segments()
+                .iter()
+                .zip(same.segments())
+                .all(|(a, b)| a.shares_core_with(b))
+        );
+        manifest
+            .segments
+            .first_mut()
+            .expect("entry")
+            .clustering_key_range = ClusteringKeyRange::Empty;
+        let changed = PublishedSnapshot::from_manifest(
+            &StdVfs,
+            directory.path(),
+            &manifest,
+            &store.accounting,
+            Some(&original),
+        )
+        .expect("changed range");
+        assert!(
+            !original
+                .segments()
+                .first()
+                .expect("old")
+                .shares_core_with(changed.segments().first().expect("new"))
+        );
+        assert_eq!(
+            changed
+                .segments()
+                .first()
+                .expect("changed reader")
+                .meta()
+                .clustering_key_range,
+            ClusteringKeyRange::Empty
+        );
+        manifest.segments = original
+            .all_segments()
+            .iter()
+            .map(|reader| reader.meta().clone())
+            .collect();
+        manifest.schema = Schema::new(vec![ColumnDefinition::new(
+            ColumnId::new(1),
+            "added",
+            ColumnType::I64,
+            true,
+        )])
+        .expect("add nullable column");
+        let schema_changed = PublishedSnapshot::from_manifest(
+            &StdVfs,
+            directory.path(),
+            &manifest,
+            &store.accounting,
+            Some(&original),
+        )
+        .expect("changed schema");
+        assert!(
+            original
+                .segments()
+                .iter()
+                .zip(schema_changed.segments())
+                .all(|(a, b)| !a.shares_core_with(b))
+        );
+        manifest.schema = Schema::timestamp_only();
+        let foreign_directory = tempdir().expect("foreign directory");
+        let foreign = Store::open(foreign_directory.path(), OpenOptions::default())
+            .expect("foreign accounting");
+        let foreign_accounting = PublishedSnapshot::from_manifest(
+            &StdVfs,
+            directory.path(),
+            &manifest,
+            &foreign.accounting,
+            Some(&original),
+        )
+        .expect("foreign accounting load");
+        assert!(
+            original
+                .segments()
+                .iter()
+                .zip(foreign_accounting.segments())
+                .all(|(a, b)| !a.shares_core_with(b))
+        );
+    }
 
     #[test]
     fn astra_05_snapshot_release_notifies_after_ownership_drops() {

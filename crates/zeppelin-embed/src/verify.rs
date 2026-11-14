@@ -537,8 +537,13 @@ impl Walk<'_> {
     fn segment(&mut self, expected: &SegmentMeta, schema: &Arc<Schema>) {
         let file = expected.id.file_name();
         let path = self.directory.join(&file);
-        let reader = match SegmentReader::open(self.vfs, &path, expected.id) {
-            Ok(reader) => reader.with_collection_schema(Arc::clone(schema)),
+        let reader = match SegmentReader::open_with_collection_schema(
+            self.vfs,
+            &path,
+            expected.id,
+            Arc::clone(schema),
+        ) {
+            Ok(reader) => reader,
             Err(SegmentError::Io { source, .. })
                 if source.kind() == std::io::ErrorKind::NotFound =>
             {

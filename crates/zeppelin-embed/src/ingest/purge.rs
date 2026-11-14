@@ -257,7 +257,13 @@ pub(crate) fn prepare_sealed_tombstones(
                 graph.generation_absorbed_through = Some(boundary);
             }
         }
-        let remapped = PublishedSnapshot::from_manifest(vfs, directory, &manifest, accounting)?;
+        let remapped = PublishedSnapshot::from_manifest(
+            vfs,
+            directory,
+            &manifest,
+            accounting,
+            Some(snapshot),
+        )?;
         Ok(Some(PreparedSealedTombstones {
             manifest,
             snapshot: remapped,
@@ -924,8 +930,21 @@ impl Store {
             .record_generation_bump(_durable_end)
             .map_err(StoreError::Manifest)?;
         manifest.epochs = self.epoch_registry(&manifest.epochs);
-        let remapped =
-            PublishedSnapshot::from_manifest(vfs, &self.directory, manifest, &self.accounting)?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            PublishedSnapshot::from_manifest(
+                vfs,
+                &self.directory,
+                manifest,
+                &self.accounting,
+                reuse.as_deref(),
+            )?
+        };
         let mut publication = writer.manifest_publication()?;
         publication
             .commit_manifest(vfs, &self.directory, manifest, policy)
@@ -1003,8 +1022,21 @@ impl Store {
             graph.generation_absorbed_through = Some(_durable_end);
         }
         manifest.epochs = self.epoch_registry(&manifest.epochs);
-        let remapped =
-            PublishedSnapshot::from_manifest(vfs, &self.directory, manifest, &self.accounting)?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            PublishedSnapshot::from_manifest(
+                vfs,
+                &self.directory,
+                manifest,
+                &self.accounting,
+                reuse.as_deref(),
+            )?
+        };
         publication
             .commit_manifest(vfs, &self.directory, manifest, policy)
             .map_err(StoreError::Manifest)?;

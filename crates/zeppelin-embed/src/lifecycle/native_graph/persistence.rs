@@ -417,6 +417,7 @@ fn create_with_high_waters(
         path,
         &manifest,
         &store.accounting,
+        None,
     )?;
     store.publish_snapshot(snapshot)?;
     {

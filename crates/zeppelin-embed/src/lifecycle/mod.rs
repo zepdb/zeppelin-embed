@@ -3340,7 +3340,7 @@ impl Store {
                     .map_err(StoreError::Manifest)?;
             }
             snapshot =
-                PublishedSnapshot::from_manifest(vfs.as_ref(), path, &manifest, &accounting)?;
+                PublishedSnapshot::from_manifest(vfs.as_ref(), path, &manifest, &accounting, None)?;
             active.generation = generation;
             #[cfg(feature = "graph-cypher")]
             if defer_commit {

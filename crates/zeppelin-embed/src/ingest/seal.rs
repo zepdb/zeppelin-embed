@@ -316,11 +316,20 @@ impl Store {
                 self.durability_policy,
             )
             .map_err(StoreError::Manifest)?;
-        let remapped = crate::lifecycle::PublishedSnapshot::load_on_vfs(
-            &self.directory,
-            &self.accounting,
-            vfs,
-        )?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            crate::lifecycle::PublishedSnapshot::load_on_vfs(
+                &self.directory,
+                &self.accounting,
+                vfs,
+                reuse.as_deref(),
+            )?
+        };
         let mut published = self
             .snapshot
             .write()

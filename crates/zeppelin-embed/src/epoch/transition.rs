@@ -335,8 +335,21 @@ impl Store {
             .record_generation_bump(manifest.log_seq)
             .map_err(StoreError::Manifest)?;
         manifest.epoch_alias = Some(target);
-        let remapped =
-            PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            PublishedSnapshot::from_manifest(
+                vfs,
+                &self.directory,
+                &manifest,
+                &self.accounting,
+                reuse.as_deref(),
+            )?
+        };
         let source_documents = live_document_versions(&remapped, previous.embedding)?;
         let target_documents = live_document_versions(&remapped, target.embedding)?;
         let missing_documents = multiset_difference(&source_documents, &target_documents);
@@ -441,8 +454,21 @@ impl Store {
         manifest
             .record_generation_bump(manifest.log_seq)
             .map_err(StoreError::Manifest)?;
-        let remapped =
-            PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
+        let remapped = {
+            let reuse = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            PublishedSnapshot::from_manifest(
+                vfs,
+                &self.directory,
+                &manifest,
+                &self.accounting,
+                reuse.as_deref(),
+            )?
+        };
         let mut publication = wal
             .as_ref()
             .ok_or(StoreError::ReadOnly)?
