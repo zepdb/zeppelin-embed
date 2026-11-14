@@ -380,9 +380,11 @@ fn self_check_samples_only_live_active_and_sealed_documents_against_the_exact_or
     assert_eq!(active.expected_hits, 4);
     assert_eq!(active.recalled_hits, 4);
     assert_eq!(active.recall, 1.0);
-    assert!(
-        (2.0..2.1).contains(&active.max_score_delta),
-        "the self-check must expose the coarse-score delta: {active:?}"
+    // ZE-536: the default path scores exactly without a graph, so the
+    // self-check sees no coarse-score delta against the exact oracle.
+    assert_eq!(
+        active.max_score_delta, 0.0,
+        "the default self-check path must be exact: {active:?}"
     );
     assert!(active.failures.is_empty());
 
@@ -392,9 +394,9 @@ fn self_check_samples_only_live_active_and_sealed_documents_against_the_exact_or
     assert_eq!(sealed.expected_hits, 2);
     assert_eq!(sealed.recalled_hits, 2);
     assert_eq!(sealed.recall, 1.0);
-    assert!(
-        (2.0..2.1).contains(&sealed.max_score_delta),
-        "the sealed self-check must retain score provenance: {sealed:?}"
+    assert_eq!(
+        sealed.max_score_delta, 0.0,
+        "the sealed default self-check path must be exact: {sealed:?}"
     );
     assert!(sealed.failures.is_empty());
 }

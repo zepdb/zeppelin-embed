@@ -3,8 +3,8 @@
 #[path = "../../../scripts/fixtures/common.rs"]
 mod common;
 use std::path::Path;
-use zeppelin_embed::ingest::DocId;
-use zeppelin_embed::lifecycle::{DocumentFields, Store};
+use zeppelin_embed::ingest::{DocId, SearchRequest};
+use zeppelin_embed::lifecycle::{DocumentFields, SearchOptions, SearchTier, Store};
 use zeppelin_embed::meta::{ColumnId, PredicateValue};
 
 fn copy_tree(from: &Path, to: &Path) {
@@ -45,6 +45,25 @@ fn ids(json: &str, key: &str) -> Vec<u128> {
             .collect()
     }
 }
+/// The release fixtures recorded the answer of the release default, which
+/// ranked a graph-free store by quantized estimates. Since ZE-536 an unset
+/// tier scores exactly, so the compatibility check names the tier the
+/// releases used: explicit Auto still returns the recorded estimate order.
+fn release_default_vector_hits(store: &Store) -> Vec<u128> {
+    store
+        .search(
+            SearchRequest::new(&common::vector(1)),
+            3,
+            SearchOptions::default().with_tier(SearchTier::Auto),
+            common::control(),
+        )
+        .expect("vector query")
+        .candidates
+        .iter()
+        .map(|hit| hit.document().expect("identity").doc_id().get())
+        .collect()
+}
+
 fn check(store: &Store, json: &str, appended: bool) {
     for id in ids(json, "live_ids") {
         let rows = store
@@ -82,7 +101,10 @@ fn check(store: &Store, json: &str, appended: bool) {
             "{query}"
         );
     }
-    assert_eq!(common::vector_hits(store), ids(json, "query_vector"));
+    assert_eq!(
+        release_default_vector_hits(store),
+        ids(json, "query_vector")
+    );
     let generation: u64 = value(json, "generation").parse().expect("generation");
     assert_eq!(
         store.count_documents(None, None).expect("count").generation,
