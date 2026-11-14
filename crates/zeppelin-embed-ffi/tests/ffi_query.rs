@@ -466,7 +466,8 @@ fn lexical_and_hybrid_legs_execute_through_the_structured_query_surface() {
     let (code, mut result) = query(handle, &explicit);
     assert_eq!(code, ZeErrorCode::ZeOk);
     assert!(
-        result.has_fusion == 1 && (result.fusion_method == 1 || result.effective_alpha == 0.25)
+        result.has_fusion == 1
+            && (result.fusion_method == 1 || result.effective_alpha == 8.0 / 8.75)
     );
     assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
 

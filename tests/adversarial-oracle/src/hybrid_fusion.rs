@@ -331,7 +331,7 @@ fn stable_bound(
     next_vector + next_lexical < threshold
 }
 
-/// Independent replay of Store policy v1 over complete primitive score facts.
+/// Independent replay of Store policy v2 over complete primitive score facts.
 /// No production normalizer, cross-fill, range, sorting or stop helper is used.
 fn expected_store_case(input: &FusionCaseInput, policy: StorePolicyFact) -> FusionCaseObserved {
     let ceiling = f64::from_bits(policy.vector_ceiling_bits);
@@ -341,7 +341,8 @@ fn expected_store_case(input: &FusionCaseInput, policy: StorePolicyFact) -> Fusi
     } else if lexical_maximum == 0.0 {
         1.0
     } else {
-        input.alpha()
+        let alpha = input.alpha();
+        (32.0 * alpha) / (32.0 * alpha + (1.0 - alpha))
     };
     let vector_part = |distance| {
         alpha
@@ -426,7 +427,7 @@ fn expected_store_case(input: &FusionCaseInput, policy: StorePolicyFact) -> Fusi
             return FusionCaseObserved {
                 hits,
                 report: FusionReportFact {
-                    normalization_policy_version: Some(1),
+                    normalization_policy_version: Some(2),
                     method: FusionMethodFact::ConvexCombination,
                     rounds,
                     budget_exhausted,
@@ -530,7 +531,7 @@ fn score_bits_by_id(values: &[RankedScore], id: u64) -> Option<u64> {
 fn guard_fixture(input: &HybridInput, checker: &str) -> Result<(), String> {
     for case in [&input.main, &input.rrf, &input.single, &input.empty] {
         if case.store_policy.is_some_and(|policy| {
-            policy.version != 1
+            policy.version != 2
                 || !f64::from_bits(policy.vector_ceiling_bits).is_finite()
                 || f64::from_bits(policy.vector_ceiling_bits) < 0.0
                 || policy.corpus_rows < case.vector.len()
@@ -909,7 +910,7 @@ mod tests {
             &[(100, 3.0), (99, 3.0), (98, 1.0)],
         );
         input.store_policy = Some(StorePolicyFact {
-            version: 1,
+            version: 2,
             vector_ceiling_bits: 4.0_f64.to_bits(),
             corpus_rows: 3,
         });
@@ -917,15 +918,16 @@ mod tests {
         assert_eq!(clean.hits[2].id, 98);
         assert_eq!(
             clean.hits[2].fused_score_bits,
-            (0.5_f64 * (3.0 / 4.0) + 0.5 * (1.0 / 3.0)).to_bits()
+            ((32.0_f64 / 33.0) * (3.0 / 4.0) + (1.0 - 32.0 / 33.0) * (1.0 / 3.0)).to_bits()
         );
         compare_scores(I46_CHECKER_ID, "literal zero anchors", &input, &clean)
             .expect("clean fixed-policy control");
         let mut floor_plant = clean.clone();
         // Treat the third lexical score as a W+1 normalization floor. Its
         // real positive contribution is then erased, exactly the old defect.
-        floor_plant.hits[2].fused_score_bits =
-            (0.5_f64 * (3.0 / 4.0) + 0.5 * ((1.0 - 1.0) / (3.0 - 1.0))).to_bits();
+        floor_plant.hits[2].fused_score_bits = ((32.0_f64 / 33.0) * (3.0 / 4.0)
+            + (1.0 - 32.0 / 33.0) * ((1.0 - 1.0) / (3.0 - 1.0)))
+            .to_bits();
         assert!(
             compare_scores(I46_CHECKER_ID, "boundary floor plant", &input, &floor_plant).is_err()
         );

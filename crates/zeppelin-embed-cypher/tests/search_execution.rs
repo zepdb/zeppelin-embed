@@ -178,7 +178,10 @@ fn ze58_modes_and_components_preserve_provenance() {
     // 2,000,000; max BM25 uses N=4, df=2, avgdl=1.
     let maximum = 2.0_f64.ln();
     let alpha = f64::from_bits(r.pools().reports[0].effective_alpha_bits);
-    assert_eq!(alpha, 0.7);
+    assert_eq!(
+        alpha.to_bits(),
+        ((32.0_f64 * 0.7) / (32.0 * 0.7 + 0.3)).to_bits()
+    );
     for row in 0..4 {
         let distance = scalar(&r, row, 2);
         let lexical = scalar(&r, row, 3);

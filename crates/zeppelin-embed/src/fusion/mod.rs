@@ -30,13 +30,19 @@ pub use rules::{
 /// 2024 literature prior the placeholder started from.
 pub const DEFAULT_ALPHA: f64 = 0.7;
 
-/// Store score policy v1: fixed zero lower anchors, the validated vector norm
+/// MEASURED (`tasks/evidence/ze-535-hybrid-vector-gain.md`): among plateau gains
+/// with passing neighbours, maximize worst margin; ties maximize summed nDCG@10.
+pub const STORE_VECTOR_GAIN: f64 = 32.0;
+
+/// Store score policy v2: fixed zero lower anchors, the validated vector norm
 /// enclosure and exact maximum live combined BM25 as upper anchors. Missing
 /// lexical membership is an explicit zero. An empty lexical leg gives vectors
 /// full weight; a zero vector enclosure scores every present vector as one.
-/// Store fusion uses these values even for equal or singleton lists. The pure
+/// Interior caller alpha is calibrated by `STORE_VECTOR_GAIN` in odds space;
+/// the anchors and degenerate-leg rules remain unchanged. Store fusion uses
+/// these values even for equal or singleton lists. The pure
 /// complete-list and bounded fusion APIs retain their min-max/RRF semantics.
-pub const HYBRID_NORMALIZATION_POLICY_VERSION: u16 = 1;
+pub const HYBRID_NORMALIZATION_POLICY_VERSION: u16 = 2;
 
 /// PLACEHOLDER -- NOT YET MEASURED.
 ///
@@ -312,7 +318,7 @@ pub enum FusionTermination {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VectorBounds {
     /// Lower normalization anchor. Complete-list callers use the nearest
-    /// alive row; Store normalization policy v1 uses zero.
+    /// alive row; Store normalization policy v2 uses zero.
     pub min_squared_l2: f64,
     /// Producer-supplied squared-L2 ceiling over every alive row.
     pub max_squared_l2: f64,
@@ -326,7 +332,7 @@ pub struct LexicalBounds {
     /// Exact BM25 of the best matching document.
     pub max_bm25: f64,
     /// Lower normalization anchor. Complete-list callers use the worst
-    /// matching score; Store normalization policy v1 uses zero.
+    /// matching score; Store normalization policy v2 uses zero.
     pub min_bm25: f64,
     /// Exact BM25 of the (W+1)-th hit, absent when the leg is complete.
     pub next_unseen_bm25: Option<f64>,
@@ -346,12 +352,12 @@ pub struct LegBounds {
 pub struct FusionReport {
     /// Formula actually used.
     pub method: FusionMethod,
-    /// Effective alpha, including a reported rule shift when applicable.
+    /// Effective alpha, including rule shifts and Store vector gain when applicable.
     pub effective_alpha: f64,
     /// Rules applied in stable policy order.
     pub applied_rules: Vec<FusionRule>,
     /// Degenerate leg conditions. Pure APIs select RRF for these conditions;
-    /// Store policy v1 keeps its defined fixed-anchor value scores.
+    /// Store policy v2 keeps its defined fixed-anchor value scores.
     pub degenerate_legs: Vec<DegenerateLeg>,
     /// Number of geometric rounds attempted.
     pub rounds: usize,

@@ -37,7 +37,7 @@ R04 may replace the currently materialized leg producers with bounded producers.
 It must preserve every fusion invariant above; this ledger does not authorize
 that producer-contract change.
 
-## Store normalization policy v1 (Astra 03)
+## Store normalization policy v2 (ZE-535; anchors from Astra 03)
 
 Store hybrid freezes anchors after both initial producers complete: vector
 [0, validated norm enclosure] and lexical [0, exact maximum live combined BM25].
@@ -49,10 +49,15 @@ nonmembership is a computed zero. A missing score is never treated as absence.
 An empty lexical leg gives the vector leg full weight; an empty vector leg gives
 lexical full weight. A zero vector enclosure has constant normalized score one;
 a zero lexical maximum contributes zero. Store scoring remains convex combination
-for singleton and equal-score lists. Empty unions return no hits. The independent
-alpha policy is unchanged. Pure complete-list/bounded APIs retain their existing
+for singleton and equal-score lists. Empty unions return no hits. Every caller's
+selected alpha passes through the measured vector gain:
+`alpha' = 32 * alpha / (32 * alpha + (1 - alpha))`. Endpoints stay zero
+and one; the sole-useful-leg branches above take precedence. This depends
+only on caller alpha, so window and tier independence, convexity, monotonicity
+and the fixed-bound certificate remain intact. `FusionReport.effective_alpha`
+reports alpha'. Pure complete-list/bounded APIs retain their existing
 min-max/RRF rules and their separate rank-bound proofs. HybridReport records
-normalization_policy_version=1 and complete structured lexical aggregations.
+normalization_policy_version=2 and complete structured lexical aggregations.
 
 Exact W+1 producer boundaries bound rows outside both windows. ANN boundaries
 remain approximate even after exact cross-scoring; plan 01's coverage guard still
@@ -62,7 +67,15 @@ plan 10 replaces that cost with exact combined top-k. No persisted or C layout
 is extended by this Rust policy change.
 
 The alpha measurements above describe the historical normalization policy. Their
-quality optimum is not assumed to transfer to v1; relevance calibration and
-held-out qualification remain separate work. Public fixed-policy literal/parity
-and degenerate controls are in hybrid_bounded.rs; independent Store replay and
+quality optimum is not assumed to transfer to fixed anchors. `STORE_VECTOR_GAIN`
+is MEASURED on the frozen 768-dimensional SciFact, FiQA and TREC-COVID inputs
+at caller alphas 0.5 and 0.7. Gains 1, 2, 4, 8, 16, 32, 64, 128 and 256 were
+swept. Among plateau gains whose neighbours keep the worst margin >= -0.005,
+choose the best worst margin, then the highest summed nDCG@10. This selects 32:
+worst margin +0.00648591, with passing neighbours 16 and 64. The 1,999 versus
+1,996 rounds at gains 32 and 64 differ by only 0.15%; they do not break ties.
+Raw measurements, held-out NQ and Cohere checks,
+and qualification limits are in
+[`tasks/evidence/ze-535-hybrid-vector-gain.md`](../../../../tasks/evidence/ze-535-hybrid-vector-gain.md).
+Public fixed-policy literal/parity and degenerate controls are in hybrid_bounded.rs; independent Store replay and
 missing-score/floor/policy/round plants are in the adversarial hybrid oracle.

@@ -23,7 +23,130 @@ use zeppelin_embed::lifecycle::{
 };
 
 const DIMENSION: usize = 6;
+// Independent literal arithmetic for Store normalization policy v2.
+const DEFAULT_STORE_ALPHA: f64 = (32.0 * 0.7) / (32.0 * 0.7 + 0.3);
+// Gain 32 maps this caller alpha to exactly 0.7, retaining the three-round
+// reuse witnesses and their original capacity/cross-score assertions.
+const THREE_ROUND_ALPHA: f64 = 0.06796116504854369;
 const TERMS: [&str; 6] = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+
+#[test]
+fn ze535_default_hybrid_ranks_the_nearest_vector_above_a_distant_lexical_match() {
+    let directory = tempdir().expect("gain fixture");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("other"),
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(2), Revision::new(1)),
+                vec![0.5, 0.75_f32.sqrt()],
+            )
+            .with_text("amber"),
+        ]))
+        .expect("ingest unit vectors");
+    let run = |query: &HybridQuery| {
+        store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0]),
+                &TermQuery::flat(vec![b"amber".to_vec()], &[DEFAULT_FIELD]),
+                query,
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("hybrid")
+    };
+    let default = run(&HybridQuery::new(1));
+    assert_eq!(default.hits[0].key, DocId::new(1));
+    assert_eq!(
+        run(&HybridQuery::new(1).with_alpha(0.0)).hits[0].key,
+        DocId::new(2)
+    );
+    assert_eq!(
+        default
+            .diagnostics
+            .hybrid
+            .expect("policy report")
+            .normalization_policy_version,
+        2
+    );
+    store.close().expect("close");
+}
+
+#[test]
+fn ze535_a_strong_lexical_match_overturns_a_small_vector_gap() {
+    // With unit q and x the ceiling is C ~= 4. At text alpha 0.5 and
+    // gain 32, a' = 32/33. Top BM25 wins iff gap < C*(1-a')/a' ~= 1/8.
+    // The small gap is 3/4 of that threshold; the large gap is four times it.
+    for (squared_gap, expected_winner) in [(3.0_f32 / 32.0, 2), (0.5, 1)] {
+        let directory = tempdir().expect("lexical trade fixture");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        let cosine = 1.0 - squared_gap / 2.0;
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_text("other"),
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(2), Revision::new(1)),
+                    vec![cosine, (1.0 - cosine * cosine).sqrt()],
+                )
+                .with_text("amber"),
+            ]))
+            .expect("ingest unit vectors");
+        let ceiling = store
+            .search(
+                SearchRequest::new(&[1.0, 0.0]),
+                2,
+                SearchOptions::default().with_tier(SearchTier::Exact),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("fixed norm ceiling")
+            .vector_ceiling
+            .expect("ceiling");
+        assert!((ceiling - 4.0).abs() < 1e-5);
+        let outcome = store
+            .search_hybrid(
+                SearchRequest::new(&[1.0, 0.0]),
+                &TermQuery::flat(vec![b"amber".to_vec()], &[DEFAULT_FIELD]),
+                &HybridQuery::new(2).with_alpha(0.5),
+                SearchOptions::default(),
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("text-default hybrid");
+        let lexical_hit = outcome
+            .hits
+            .iter()
+            .find(|hit| hit.key == DocId::new(2))
+            .expect("lexical match");
+        let actual_gap = lexical_hit.vector_squared_l2.expect("exact distance");
+        let alpha = 32.0_f64 / 33.0;
+        let threshold = ceiling * (1.0 - alpha) / alpha;
+        assert!(lexical_hit.lexical_bm25.expect("top BM25") > 0.0);
+        if expected_winner == 2 {
+            assert!(
+                actual_gap < 0.8 * threshold,
+                "small gap safely below threshold"
+            );
+        } else {
+            assert!(
+                actual_gap > 3.0 * threshold,
+                "large gap safely above threshold"
+            );
+        }
+        assert_eq!(
+            outcome.hits[0].key,
+            DocId::new(expected_winner),
+            "gap={actual_gap} threshold={threshold}"
+        );
+        store.close().expect("close");
+    }
+}
 
 #[test]
 fn astra_06_rescored_scan_reports_exact_scores_and_approximate_coverage() {
@@ -84,7 +207,7 @@ fn astra_06_rescored_scan_reports_exact_scores_and_approximate_coverage() {
         CandidateCoverage::Approximate
     );
     assert!(report.provenance.cross_scores_complete);
-    assert_eq!(report.normalization_policy_version, 1);
+    assert_eq!(report.normalization_policy_version, 2);
     assert_eq!(report.total_cross_filled_vector, 1);
     let fusion = outcome.diagnostics.fusion.expect("fusion report");
     assert_eq!(fusion.termination, FusionTermination::ApproximateCandidates);
@@ -101,7 +224,8 @@ fn astra_06_rescored_scan_reports_exact_scores_and_approximate_coverage() {
             hit.vector_squared_l2.map(f64::to_bits),
             Some(distance.to_bits())
         );
-        let expected = 0.7 * ((ceiling - distance) / ceiling) + (1.0 - 0.7) * f64::from(row == 0);
+        let expected = DEFAULT_STORE_ALPHA * ((ceiling - distance) / ceiling)
+            + (1.0 - DEFAULT_STORE_ALPHA) * f64::from(row == 0);
         assert_eq!(hit.fused_score.to_bits(), expected.to_bits());
     }
     assert_eq!(outcome.diagnostics.counters.scan.bytes_read, 100 + 408 + 8);
@@ -265,8 +389,8 @@ fn astra_03_unseen_lexical_contribution_is_not_erased_by_window_floor() {
         .iter()
         .find(|hit| hit.key == DocId::new(1))
         .expect("lowest lexical match");
-    let expected = 0.7 * ((ceiling - 0.015625) / ceiling)
-        + (1.0 - 0.7) * (astra_03_bm25(1) / astra_03_bm25(80));
+    let expected = DEFAULT_STORE_ALPHA * ((ceiling - 0.015625) / ceiling)
+        + (1.0 - DEFAULT_STORE_ALPHA) * (astra_03_bm25(1) / astra_03_bm25(80));
     assert_eq!(
         hit.fused_score.to_bits(),
         expected.to_bits(),
@@ -301,8 +425,8 @@ fn astra_03_bounded_exact_matches_independent_fixed_policy_oracle() {
                 0
             };
             let bm25 = astra_03_bm25(tf as u32);
-            let score =
-                0.7 * ((ceiling - distance) / ceiling) + (1.0 - 0.7) * (bm25 / astra_03_bm25(80));
+            let score = DEFAULT_STORE_ALPHA * ((ceiling - distance) / ceiling)
+                + (1.0 - DEFAULT_STORE_ALPHA) * (bm25 / astra_03_bm25(80));
             (DocId::new(row as u128 + 1), distance, bm25, score)
         })
         .collect::<Vec<_>>();
@@ -338,7 +462,7 @@ fn astra_03_bounded_exact_matches_independent_fixed_policy_oracle() {
                     .hybrid
                     .expect("hybrid")
                     .normalization_policy_version,
-                1
+                2
             );
             assert!(matches!(
                 outcome.diagnostics.fusion.expect("fusion").termination,
@@ -500,7 +624,11 @@ fn offline_full_list_fusion(
         .max_by(f64::total_cmp)
         .unwrap_or(0.0);
     let ceiling = vector_leg.vector_ceiling.expect("validated norm enclosure");
-    let alpha = if maximum == 0.0 { 1.0 } else { 0.7 };
+    let alpha = if maximum == 0.0 {
+        1.0
+    } else {
+        DEFAULT_STORE_ALPHA
+    };
     let mut hits = vector_leg
         .candidates
         .iter()
@@ -1293,7 +1421,7 @@ fn astra_09_widening_cross_scores_each_candidate_once() {
         .search_hybrid(
             SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
-            &HybridQuery::new(1),
+            &HybridQuery::new(1).with_alpha(THREE_ROUND_ALPHA),
             SearchOptions::default().with_tier(SearchTier::Exact),
             QueryControl::Cancel(CancelToken::new()),
         )
@@ -1405,7 +1533,7 @@ fn astra_09_widening_prepares_lexical_statistics_once_for_both_legs() {
         .search_hybrid(
             SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
-            &HybridQuery::new(1),
+            &HybridQuery::new(1).with_alpha(THREE_ROUND_ALPHA),
             SearchOptions::default().with_tier(SearchTier::Exact),
             QueryControl::Cancel(CancelToken::new()),
         )
@@ -1442,7 +1570,7 @@ fn astra_09_structured_widening_reuses_expansions_and_constants() {
         .search_hybrid_structured(
             SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             &LexicalQuery::prefix(b"zep".to_vec(), DEFAULT_FIELD),
-            &HybridQuery::new(1),
+            &HybridQuery::new(1).with_alpha(THREE_ROUND_ALPHA),
             SearchOptions::default().with_tier(SearchTier::Exact),
             QueryControl::Cancel(CancelToken::new()),
         )
@@ -1478,7 +1606,7 @@ fn astra_09_widening_retains_candidate_buffers_between_rounds() {
             .search_hybrid(
                 SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
-                &HybridQuery::new(1),
+                &HybridQuery::new(1).with_alpha(THREE_ROUND_ALPHA),
                 SearchOptions::default().with_tier(SearchTier::Exact),
                 QueryControl::Cancel(CancelToken::new()),
             )
@@ -1538,7 +1666,7 @@ fn astra_09_small_then_large_query_releases_accounted_capacity_on_drop() {
             .search_hybrid(
                 SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
-                &HybridQuery::new(k),
+                &HybridQuery::new(k).with_alpha(THREE_ROUND_ALPHA),
                 SearchOptions::default().with_tier(SearchTier::Exact),
                 QueryControl::Cancel(CancelToken::new()),
             )
@@ -1653,7 +1781,7 @@ fn astra_09_query_reuse_never_crosses_epoch_source_or_revision() {
                 .search_hybrid(
                     SearchRequest::new(&vector),
                     &lexical,
-                    &HybridQuery::new(1),
+                    &HybridQuery::new(1).with_alpha(THREE_ROUND_ALPHA),
                     SearchOptions::default().with_tier(SearchTier::Exact),
                     QueryControl::Cancel(CancelToken::new()),
                 )
@@ -1767,7 +1895,7 @@ fn astra_09_reused_rounds_match_fresh_rounds_in_scores_and_termination() {
             .search_hybrid(
                 SearchRequest::new(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),
-                &HybridQuery::new(1),
+                &HybridQuery::new(1).with_alpha(THREE_ROUND_ALPHA),
                 SearchOptions::default().with_tier(SearchTier::Exact),
                 QueryControl::Cancel(CancelToken::new()),
             )
@@ -1996,7 +2124,10 @@ fn astra_01_exact_hybrid_can_still_certify() {
         })
         .collect::<Vec<_>>();
     let std_reference = astra_std_cc_reference(&raw_vectors, &raw_lexical, ceiling);
-    assert_eq!(std_reference[0].0, 202, "literal best balanced fixture row");
+    assert_eq!(
+        std_reference[0].0, 1,
+        "literal nearest-vector fixture winner"
+    );
     for certified in [&outcome, &bounded] {
         assert_eq!(certified.hits[0].key.get(), std_reference[0].0);
         assert_eq!(
@@ -2021,7 +2152,7 @@ fn astra_std_cc_reference(
     let mut ranked = vector
         .iter()
         .map(|(id, distance)| {
-            let alpha = 0.7_f64; // Declared core default; text queries explicitly choose 0.5.
+            let alpha = DEFAULT_STORE_ALPHA; // Caller alpha 0.7 after Store calibration.
             let dense = alpha * ((ceiling - distance) / ceiling);
             let sparse = lexical
                 .get(id)

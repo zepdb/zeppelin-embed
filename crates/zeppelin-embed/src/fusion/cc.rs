@@ -868,15 +868,16 @@ fn next_lexical_bound<K>(
     }
 }
 
-/// Store policy v1 gives the sole useful leg full weight. A zero-distance
-/// vector enclosure is a constant perfect vector score, not an RRF trigger.
+/// Store policy v2 gives the sole useful leg full weight and calibrates alpha.
+/// A zero-distance vector enclosure is a constant perfect vector score, not an RRF trigger.
 fn store_policy_alpha(alpha: f64, vector_present: bool, lexical_maximum: Option<f64>) -> f64 {
     if !vector_present {
         0.0
     } else if lexical_maximum.is_none_or(|maximum| maximum == 0.0) {
         1.0
     } else {
-        alpha
+        let gained = super::STORE_VECTOR_GAIN * alpha;
+        gained / (gained + (1.0 - alpha))
     }
 }
 
@@ -886,6 +887,104 @@ mod reuse_tests {
     use super::*;
     use crate::lifecycle::stats::Accounting;
     use std::sync::Arc;
+
+    #[test]
+    fn ze535_store_alpha_applies_the_measured_vector_gain() {
+        for alpha in [0.0, 0.5, 0.7, 1.0] {
+            assert_eq!(
+                store_policy_alpha(alpha, false, Some(2.0)).to_bits(),
+                0.0_f64.to_bits()
+            );
+            assert_eq!(
+                store_policy_alpha(alpha, false, None).to_bits(),
+                0.0_f64.to_bits()
+            );
+            for maximum in [None, Some(0.0)] {
+                assert_eq!(
+                    store_policy_alpha(alpha, true, maximum).to_bits(),
+                    1.0_f64.to_bits()
+                );
+            }
+        }
+        for (alpha, expected) in [
+            (0.0, 0.0_f64),
+            (1.0, 1.0),
+            (0.5, 32.0 / 33.0),
+            (0.7, (0.7 * 32.0) / (0.7 * 32.0 + 0.3)),
+        ] {
+            assert_eq!(
+                store_policy_alpha(alpha, true, Some(2.0)).to_bits(),
+                expected.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn ze293_store_policy_score_is_monotone() {
+        use crate::fusion::{
+            DEFAULT_ALPHA, HYBRID_NORMALIZATION_POLICY_VERSION, LexicalBounds, VectorBounds,
+        };
+        use rand::Rng;
+        assert_eq!(HYBRID_NORMALIZATION_POLICY_VERSION, 2);
+        let mut rng =
+            crate::test_support::seeded_rng("fusion::cc::ze293_store_policy_score_is_monotone");
+        let anchors = [0.0, f64::MIN_POSITIVE, 1.0, 1e300];
+        let mut cases = anchors
+            .into_iter()
+            .flat_map(|ceiling| anchors.map(|maximum| (ceiling, maximum)))
+            .collect::<Vec<_>>();
+        cases.extend((0..256).map(|_| (rng.random::<f64>() * 1e300, rng.random::<f64>() * 1e300)));
+        let mut scratch = StoreFusionScratch::new(Arc::new(Accounting::new(u64::MAX, u64::MAX)));
+        for (ceiling, maximum) in cases {
+            let farther = rng.random::<f64>() * ceiling;
+            let closer = rng.random::<f64>() * farther;
+            let higher = rng.random::<f64>() * maximum;
+            let lower = rng.random::<f64>() * higher;
+            for alpha in [0.0, 1.0, DEFAULT_ALPHA, rng.random::<f64>()] {
+                let bounds = LegBounds {
+                    vector: Some(VectorBounds {
+                        min_squared_l2: 0.0,
+                        max_squared_l2: ceiling,
+                        next_unseen_squared_l2: None,
+                    }),
+                    lexical: Some(LexicalBounds {
+                        min_bm25: 0.0,
+                        max_bm25: maximum,
+                        next_unseen_bm25: None,
+                    }),
+                };
+                let mut score = |distance, bm25| {
+                    fuse_store_bounded_joined(
+                        &HybridQuery::new(1).with_alpha(alpha),
+                        &[JoinedVector {
+                            key: 1_u32,
+                            squared_l2: distance,
+                        }],
+                        &[JoinedLexical { key: 1_u32, bm25 }],
+                        bounds,
+                        alpha,
+                        Vec::new(),
+                        &mut scratch,
+                    )
+                    .expect("valid cross-filled singleton")
+                    .hits
+                    .first()
+                    .expect("scored candidate")
+                    .fused_score
+                };
+                let baseline = score(farther, lower);
+                assert!(baseline.is_finite());
+                assert!(
+                    score(closer, lower) >= baseline,
+                    "closer vector reduced score at ceiling={ceiling} alpha={alpha}"
+                );
+                assert!(
+                    score(farther, higher) >= baseline,
+                    "higher BM25 reduced score at maximum={maximum} alpha={alpha}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn astra_09_fusion_union_reuse_matches_literal_scores_and_old_accumulator() {

@@ -475,7 +475,7 @@ pub fn build_hybrid_episode(seed: u64) -> Result<HybridEpisode, String> {
     let live_count = generated_docs - deleted_docs;
     let (vector, ceiling) = vector_scores(&store, &documents, &vector_query, live_count)?;
     let policy = StorePolicyFact {
-        version: 1,
+        version: 2,
         vector_ceiling_bits: ceiling.to_bits(),
         corpus_rows: generated_docs,
     };

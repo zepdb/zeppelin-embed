@@ -214,6 +214,7 @@ fn check_hybrid_entry(entry: HybridEntry) {
                 .collect::<Vec<_>>();
             let lexical_max = terms.first().map_or(0.0, |hit| hit.score);
             let ceiling = all_vector.vector_ceiling.expect("corpus ceiling");
+            let effective_alpha = 32.0 * alpha / (32.0 * alpha + (1.0 - alpha));
             let mut expected = all_vector
                 .candidates
                 .iter()
@@ -228,14 +229,14 @@ fn check_hybrid_entry(entry: HybridEntry) {
                         .find(|hit| hit.document.doc_id() == key)
                         .expect("matching lexical score")
                         .score;
-                    // Store normalization policy v1: fixed zero lower bounds,
+                    // Store normalization policy v2: fixed zero lower bounds,
                     // corpus vector ceiling, and best eligible lexical score.
                     Some(FusedHit {
                         key,
                         vector_squared_l2: Some(distance),
                         lexical_bm25: Some(bm25),
-                        fused_score: alpha * (1.0 - distance / ceiling)
-                            + (1.0 - alpha) * bm25 / lexical_max,
+                        fused_score: effective_alpha * (1.0 - distance / ceiling)
+                            + (1.0 - effective_alpha) * bm25 / lexical_max,
                     })
                 })
                 .collect::<Vec<_>>();

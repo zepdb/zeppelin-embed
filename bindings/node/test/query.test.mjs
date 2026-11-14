@@ -174,16 +174,19 @@ test('a hybrid query reports the fusion that produced its ranking', () => {
       { id: 2n, vector: new Float32Array([0, 1]), text: 'quantized vectors' },
     ]);
 
+    const storeVectorGain = 32; // fusion::STORE_VECTOR_GAIN
+    const alpha = 0.75;
     const result = store.query({
       text: 'harbour',
       vector: new Float32Array([1, 0]),
       k: 2,
-      alpha: 0.75,
+      alpha,
     });
     assert.equal(result.mode, 'hybrid');
     assert.notEqual(result.fusion, undefined);
     assert.equal(result.fusion.method, 'convex');
-    assert.equal(result.fusion.effectiveAlpha, 0.75);
+    const gainedAlpha = storeVectorGain * alpha / (storeVectorGain * alpha + (1 - alpha));
+    assert.equal(result.fusion.effectiveAlpha, gainedAlpha);
     assert.equal(typeof result.fusion.rounds, 'bigint');
     assert.equal(result.hits[0].id, 1n);
   } finally {

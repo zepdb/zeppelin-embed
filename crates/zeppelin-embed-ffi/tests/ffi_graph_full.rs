@@ -907,12 +907,13 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     );
     let result = rows(&response);
     assert_eq!(result.len(), 3);
-    assert!((result[0][1].floating - (0.25 + 0.75 * 4.7 / 5.0)).abs() < 1e-6);
-    assert!((result[1][1].floating - (0.75 + 0.25 * 0.75)).abs() < 1e-6);
-    assert_eq!(result[1][2].floating, 2_000_000.0);
-    assert!((result[2][1].floating - 0.25 * (1.0 - 25.0 / 8_000_000.0)).abs() < 1e-6);
-    assert_eq!(result[2][3].floating, 0.0);
-    assert_eq!(unsafe { (*response.reports).effective_alpha }, 0.25);
+    let alpha = 8.0 / 8.75; // Literal Store gain 32 applied to caller alpha 0.25.
+    assert!((result[0][1].floating - (alpha + (1.0 - alpha) * 4.7 / 5.0)).abs() < 1e-6);
+    assert!((result[1][1].floating - alpha * (1.0 - 25.0 / 8_000_000.0)).abs() < 1e-6);
+    assert_eq!(result[1][3].floating, 0.0);
+    assert!((result[2][1].floating - ((1.0 - alpha) + alpha * 0.75)).abs() < 1e-6);
+    assert_eq!(result[2][2].floating, 2_000_000.0);
+    assert_eq!(unsafe { (*response.reports).effective_alpha }, alpha);
     ze_graph_response_free(&mut response);
     options.has_alpha = 0;
     options.alpha = 0.0;
@@ -924,7 +925,10 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
         ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk
     );
-    assert_eq!(unsafe { (*response.reports).effective_alpha }, 0.7);
+    assert_eq!(
+        unsafe { (*response.reports).effective_alpha },
+        (32.0 * 0.7) / (32.0 * 0.7 + 0.3)
+    );
     ze_graph_response_free(&mut response);
     // The eager call survives a root LIMIT 0 and still validates its window.
     let mut limit: ZeGraphOperator = sized_zeroed();
