@@ -13,6 +13,7 @@ use tempfile::tempdir;
 use zeppelin_embed::epoch::{
     ComputeUnits, EmbeddingEpoch, EmbeddingRuntime, EmbeddingTower, Normalization, StoreEpoch,
 };
+use zeppelin_embed::format::frame::FILE_HEADER_LEN;
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
@@ -21,6 +22,7 @@ use zeppelin_embed::lifecycle::{
     DocumentFields, OpenOptions, Store, StoreError, StoreErrorKind, StoreTestDependencies,
     SystemMonotonicClock,
 };
+use zeppelin_embed::segment::layout::{REGION_ENTRY_LEN, RegionKind, SEGMENT_PREFIX_LEN};
 use zeppelin_embed::tier::{MaintenanceBudget, TierThresholds};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
@@ -150,6 +152,77 @@ fn segment_names(directory: &Path) -> Vec<String> {
         .into_iter()
         .filter(|name| name.starts_with("segment-") && name.ends_with(".zseg"))
         .collect()
+}
+
+/// Directory index, offset and length of the first region of `kind`.
+fn region(bytes: &[u8], kind: RegionKind) -> (usize, usize, usize) {
+    let count = u16::from_le_bytes(
+        bytes[FILE_HEADER_LEN + 20..FILE_HEADER_LEN + 22]
+            .try_into()
+            .expect("region count"),
+    ) as usize;
+    (0..count)
+        .map(|index| {
+            let entry = FILE_HEADER_LEN + SEGMENT_PREFIX_LEN + index * REGION_ENTRY_LEN;
+            let id = u16::from_le_bytes(bytes[entry..entry + 2].try_into().expect("region kind"));
+            (index, id, entry)
+        })
+        .find(|(_, id, _)| *id == kind.id())
+        .map(|(index, _, entry)| {
+            (
+                index,
+                u64::from_le_bytes(
+                    bytes[entry + 8..entry + 16]
+                        .try_into()
+                        .expect("region offset"),
+                ) as usize,
+                u64::from_le_bytes(
+                    bytes[entry + 16..entry + 24]
+                        .try_into()
+                        .expect("region length"),
+                ) as usize,
+            )
+        })
+        .unwrap_or_else(|| panic!("segment has no {kind:?} region"))
+}
+
+#[test]
+fn snapshot_refuses_a_segment_with_a_corrupt_region() {
+    let source = tempdir().expect("source");
+    let parent = tempdir().expect("snapshot parent");
+    let store = open_read_write(source.path());
+    ingest_range(&store, 1, 64);
+    store.seal().expect("seal");
+    store.close().expect("close before corruption");
+
+    let segments = segment_names(source.path());
+    assert_eq!(segments.len(), 1);
+    let filename = &segments[0];
+    let path = source.path().join(filename);
+    let mut bytes = std::fs::read(&path).expect("segment bytes");
+    let (_, offset, length) = region(&bytes, RegionKind::VectorRescore);
+    assert!(length > 0);
+    bytes[offset + length / 2] ^= 0x5a;
+    std::fs::write(&path, bytes).expect("corrupt rescore region");
+
+    let store = open_read_write(source.path());
+    let target = parent.path().join("backup");
+    let error = store
+        .write_snapshot(&target)
+        .expect_err("corrupt segment must refuse snapshot");
+    assert!(matches!(error, StoreError::Segment(_)), "{error:?}");
+    let id = filename
+        .strip_prefix("segment-")
+        .expect("segment prefix")
+        .strip_suffix(".zseg")
+        .expect("segment suffix");
+    assert!(error.to_string().contains(id), "{error}");
+    assert!(!target.exists());
+    assert!(
+        names(parent.path()).is_empty(),
+        "failed staging must be removed"
+    );
+    store.close().expect("close source");
 }
 
 /// Test filesystem: `StdVfs` plus a probe on every mutation below one watched

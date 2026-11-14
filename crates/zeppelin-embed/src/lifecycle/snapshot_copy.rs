@@ -99,6 +99,8 @@ impl Store {
     /// otherwise), because only the writer owns the WAL tail. While a
     /// physical purge is pending the call is refused with
     /// [`StoreError::SnapshotPurgePending`].
+    /// Every sealed segment is checksum-validated before copying; corruption
+    /// returns [`StoreError::Segment`] without publishing the snapshot.
     ///
     /// Writers are blocked while the generation is pinned and any graph tail
     /// is checkpointed. Graph-free pinning is O(manifest + unsealed records)
@@ -447,6 +449,8 @@ fn stage(vfs: &dyn Vfs, staging: &Path, pinned: &Pinned) -> Result<(), StoreErro
                 detail: "a pinned segment mapping differs from its manifest length",
             });
         }
+        lease.check_active()?;
+        segment.validate_all().map_err(StoreError::Segment)?;
         write_file(
             vfs,
             &staging.join(segment.meta().id.file_name()),

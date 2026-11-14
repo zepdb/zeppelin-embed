@@ -1,5 +1,16 @@
 # Core crate guide
 
+## ZE-538 Durable-mode gaps
+
+- A syncing writable open syncs an adopted WAL and then its directory before
+  schema evolution or later writes can depend on its recovered end. Derived,
+  Durable/None and read-only opens add no adoption syncs.
+- Namespace relocation retains every source lock through return. Create empty
+  destination lock stubs without opening the source lock files.
+- Snapshot export validates every sealed segment's checksums before copying
+  it. Corruption returns `StoreError::Segment` and removes staging without
+  publishing the target.
+
 ## Task 01 invariants
 
 - This crate is the engine boundary. FFI and benchmarks remain separate so

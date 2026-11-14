@@ -3288,6 +3288,22 @@ impl Store {
         )?;
         let mut active = recovered.active;
         let recovered_wal = recovered.wal;
+        // ZE-538: adopt the WAL bytes and dirent before schema evolution or
+        // later writes can durably depend on the recovered end.
+        if options.access_mode == AccessMode::ReadWrite && recovered_wal.is_some() {
+            if let SyncRequirement::Sync(kind) = durability_policy.data_file_sync() {
+                vfs.sync(&wal_path, kind).map_err(|source| StoreError::Io {
+                    path: wal_path.clone(),
+                    source,
+                })?;
+            }
+            if let SyncRequirement::Sync(kind) = durability_policy.directory_sync() {
+                vfs.sync(path, kind).map_err(|source| StoreError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            }
+        }
         let sealed_tombstones = recovered.tombstones;
         #[cfg(feature = "graph-cypher")]
         let graph_replay = recovered.graph;

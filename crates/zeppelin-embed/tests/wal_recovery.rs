@@ -72,7 +72,9 @@ use fault_support::{BlockingVfs, FaultImage, FaultVfs};
 #[allow(dead_code)]
 mod crash_support;
 
-use crash_support::{CrashOperation, CrashStateClass, CrashStateKind, CrashVfs, MemoryVfs};
+use crash_support::{
+    CrashOperation, CrashStateClass, CrashStateKind, CrashVfs, MemoryVfs, RecordingVfs,
+};
 
 const WAL_PATH: &str = "/wal-recovery/wal.ze";
 const SEALED_RECOVERY_DIMS: usize = 128;
@@ -2225,6 +2227,124 @@ fn maintain_sealed_recovery_graph(store: &Store) -> zeppelin_embed::tier::Mainte
             graph_min_rows: SEALED_RECOVERY_ROWS as u32,
         },
     )
+}
+
+#[test]
+fn a_durable_open_makes_an_adopted_wal_and_its_dirent_durable() {
+    fn lose_unsynced_wal(directory: &Path, operations: &[CrashOperation]) {
+        let wal = directory.join("wal.ze");
+        let mut length = 0;
+        let mut durable_length = 0;
+        let mut durable_dirent = false;
+        for operation in operations {
+            match operation {
+                CrashOperation::Append { path, bytes } if path == &wal => {
+                    length += bytes.len() as u64;
+                }
+                CrashOperation::Sync {
+                    path,
+                    kind: SyncKind::Full,
+                } if path == &wal => {
+                    durable_length = length;
+                }
+                CrashOperation::Sync {
+                    path,
+                    kind: SyncKind::Full,
+                } if path == directory => {
+                    durable_dirent = true;
+                }
+                _ => {}
+            }
+        }
+        if durable_dirent {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&wal)
+                .expect("open WAL for power loss")
+                .set_len(durable_length)
+                .expect("discard unsynced WAL bytes");
+        } else {
+            std::fs::remove_file(wal).expect("lose unsynced WAL dirent");
+        }
+    }
+
+    let directory = tempdir().expect("WAL adoption directory");
+    let vfs = Arc::new(RecordingVfs::new(StdVfs));
+    let open = |tier| {
+        Store::open_with_test_dependencies(
+            directory.path(),
+            StoreOpenOptions::default().with_durability(DurabilityMode::Durable, tier),
+            StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock)),
+        )
+        .expect("open WAL adoption store")
+    };
+    let ingest = |store: &Store, id| {
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .expect("ingest adoption document");
+    };
+    let first = open(CommitTier::None);
+    ingest(&first, 1);
+    drop(first);
+
+    let start = vfs.operations().expect("trace before reopen").len();
+    let second = open(CommitTier::Durable);
+    let operations = vfs.operations().expect("trace after reopen");
+    let open_operations = &operations[start..];
+    let wal_sync = open_operations.iter().position(|operation| {
+        matches!(operation, CrashOperation::Sync { path, kind: SyncKind::Full }
+            if path == &directory.path().join("wal.ze"))
+    });
+    let directory_sync = open_operations.iter().position(|operation| {
+        matches!(operation, CrashOperation::Sync { path, kind: SyncKind::Full }
+            if path == directory.path())
+    });
+    let ordered = matches!((wal_sync, directory_sync), (Some(wal), Some(dir)) if wal < dir);
+    let syncs = open_operations
+        .iter()
+        .filter(|op| matches!(op, CrashOperation::Sync { .. }))
+        .collect::<Vec<_>>();
+    eprintln!("ZE-538 Durable open syncs: {} {syncs:?}", syncs.len());
+    ingest(&second, 2);
+    drop(second);
+    lose_unsynced_wal(directory.path(), &vfs.operations().expect("complete trace"));
+
+    let recovered = Store::open(directory.path(), StoreOpenOptions::default())
+        .expect("recover after power loss");
+    let documents = recovered
+        .get_documents(
+            &[DocId::new(1), DocId::new(2)],
+            zeppelin_embed::lifecycle::DocumentFields::NONE,
+        )
+        .expect("recovered documents");
+
+    let derived_directory = tempdir().expect("Derived directory");
+    let derived_vfs = Arc::new(RecordingVfs::new(StdVfs));
+    let derived = Store::open_with_test_dependencies(
+        derived_directory.path(),
+        StoreOpenOptions::default(),
+        StoreTestDependencies::new(derived_vfs.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .expect("Derived open");
+    let derived_syncs = derived_vfs
+        .operations()
+        .expect("Derived trace")
+        .into_iter()
+        .filter(|op| matches!(op, CrashOperation::Sync { .. }))
+        .count();
+    eprintln!("ZE-538 Derived open syncs: {derived_syncs}");
+    assert_eq!(derived_syncs, 0);
+    drop(derived);
+
+    assert_eq!(
+        (documents[1].is_some(), ordered),
+        (true, true),
+        "acknowledged doc 2 must survive, and open must sync WAL before directory"
+    );
+    assert!(documents[0].is_some(), "adopted doc 1 must survive");
 }
 
 #[test]

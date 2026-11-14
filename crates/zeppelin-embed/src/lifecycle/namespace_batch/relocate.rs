@@ -640,12 +640,18 @@ fn execute(
     for relative in &inventory.files {
         let from = source.join(relative);
         let to = staging.join(relative);
-        std::fs::copy(&from, &to).map_err(|e| io(&to, e))?;
-        step("conversion copy").map_err(|e| io(&to, e))?;
         let filename = relative
             .file_name()
             .and_then(|s| s.to_str())
             .ok_or_else(|| invalid(&from, "filename"))?;
+        if matches!(filename, "writer.lock" | ".ze-readers.lock") {
+            // Opening and closing a source stub releases our fcntl locks.
+            StdVfs.write(&to, &[]).map_err(|e| io(&to, e))?;
+            step("conversion copy").map_err(|e| io(&to, e))?;
+            continue;
+        }
+        std::fs::copy(&from, &to).map_err(|e| io(&to, e))?;
+        step("conversion copy").map_err(|e| io(&to, e))?;
         if matches!(
             filename,
             RECORD | ".ze-namespaces.tmp" | REFERENCE | ".ze-namespace-root.tmp" | "wal.ze"

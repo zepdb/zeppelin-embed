@@ -1393,10 +1393,11 @@ fn store_open_cleans_only_eligible_orphans() {
         "read-write cleanup removed writer.lock"
     );
     assert_eq!(vfs.delete_calls(), 3, "exact eligible deletion count");
+    // ZE-538 adds WAL file and directory syncs before manifest adoption.
     assert_eq!(
         vfs.full_sync_calls(),
-        2,
-        "one directory sync for manifest adoption and one after cleanup"
+        4,
+        "WAL file and directory adoption, manifest adoption, and cleanup"
     );
     read_write.close().expect("close read-write store");
 }

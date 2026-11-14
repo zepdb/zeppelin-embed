@@ -26,6 +26,71 @@ fn copy_tree(from: &Path, to: &Path) {
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/releases/v0.6.0-namespaces")
 }
+
+#[test]
+#[cfg(unix)]
+fn relocate_holds_every_source_writer_lock_through_the_copy() {
+    let temp = tempfile::tempdir().expect("relocate scratch");
+    let source = temp.path().join("source");
+    let destination = temp.path().join("converted");
+    copy_tree(&fixture(), &source);
+    let mut codes = Vec::new();
+    namespace_relocate_with_steps(&source, &destination, &mut |step| {
+        if step == "conversion before publish" {
+            for relative in ["", "a", "b"] {
+                let status =
+                    std::process::Command::new(std::env::current_exe().expect("test binary"))
+                        .args(["--exact", "relocate_lock_probe_child", "--ignored"])
+                        .env("ZE_RELOCATE_PROBE_DIR", source.join(relative))
+                        .status()
+                        .expect("spawn source lock probe");
+                codes.push(status.code());
+            }
+        }
+        Ok(())
+    })
+    .expect("relocate");
+    assert_eq!(
+        codes,
+        vec![Some(0); 3],
+        "all source writer locks must remain held"
+    );
+    for relative in ["", "a", "b"] {
+        for stub in ["writer.lock", ".ze-readers.lock"] {
+            let path = destination.join(relative).join(stub);
+            assert_eq!(
+                std::fs::metadata(&path)
+                    .expect("destination lock stub")
+                    .len(),
+                0,
+                "{path:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "subprocess-only helper selected by the relocation lock probe"]
+#[cfg(unix)]
+fn relocate_lock_probe_child() {
+    use zeppelin_embed::lifecycle::lock::{StoreLock, StoreLockError};
+    let directory =
+        PathBuf::from(std::env::var_os("ZE_RELOCATE_PROBE_DIR").expect("probe directory"));
+    let code = match StoreLock::acquire(&directory) {
+        Err(StoreLockError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            0
+        }
+        Ok(lock) => {
+            drop(lock);
+            2
+        }
+        Err(error) => panic!("unexpected source lock probe error: {error}"),
+    };
+    std::process::exit(code);
+}
+
 fn bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &Path, directory: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for entry in std::fs::read_dir(directory).expect("entries") {
